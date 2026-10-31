@@ -9,12 +9,14 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 extern "C" {
 void* csv_parser_create(int encoding, uint8_t delimiter);
 void csv_parser_destroy(void* parser);
 void* csv_parser_write_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
+void* csv_parser_write_fixed_batch(void* parser, const uint8_t* data, uint64_t len, bool final, uint32_t columns);
 void* csv_parser_write_strict_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
 void* csv_parser_write_projected_batch(void* parser, const uint8_t* data, uint64_t len, bool final, bool has_projection,
                                        const uint32_t* selected_columns, uint64_t selected_columns_len, bool has_filter,
@@ -254,6 +256,31 @@ void bench_strict_latin1_batch() {
   csv_batch_destroy(batch);
 }
 
+// Compare fixed-column arena writes against the ordinary binary batch on the same input.
+void bench_fixed_batch() {
+  void* parser = new_parser();
+  void* batch = csv_parser_write_fixed_batch(parser, g_input.data(), g_input.size(), true, 20);
+  csv_parser_destroy(parser);
+  if (batch == nullptr) {
+    fail("fixed batch returned null (fixture must have 20 columns)");
+  }
+  consume(csv_batch_row_count(batch));
+  consume(csv_batch_total_fields(batch));
+  csv_batch_destroy(batch);
+}
+
+void bench_latin1_fixed_batch() {
+  void* parser = new_parser(1);
+  void* batch = csv_parser_write_fixed_batch(parser, g_input.data(), g_input.size(), true, 20);
+  csv_parser_destroy(parser);
+  if (batch == nullptr) {
+    fail("fixed batch returned null (fixture must have 20 columns)");
+  }
+  consume(csv_batch_row_count(batch));
+  consume(csv_batch_total_fields(batch));
+  csv_batch_destroy(batch);
+}
+
 void bench_split_offsets() {
   void* batch = csv_parser_find_split_offsets(g_split_input_path.c_str(), 16, delimiter);
   if (batch == nullptr) {
@@ -265,6 +292,20 @@ void bench_split_offsets() {
 
 void bench_project_filter() {
   void* parser = new_parser();
+  void* batch = csv_parser_write_projected_batch(parser, g_input.data(), g_input.size(), true, true, selected_columns,
+                                                 sizeof(selected_columns) / sizeof(selected_columns[0]), true,
+                                                 filter_column, filter_value, sizeof(filter_value));
+  csv_parser_destroy(parser);
+  if (batch == nullptr) {
+    fail("csv_parser_write_projected_batch returned null");
+  }
+  consume(csv_batch_row_count(batch));
+  consume(csv_batch_total_fields(batch));
+  csv_batch_destroy(batch);
+}
+
+void bench_latin1_project_filter() {
+  void* parser = new_parser(1);
   void* batch = csv_parser_write_projected_batch(parser, g_input.data(), g_input.size(), true, true, selected_columns,
                                                  sizeof(selected_columns) / sizeof(selected_columns[0]), true,
                                                  filter_column, filter_value, sizeof(filter_value));
@@ -302,6 +343,32 @@ int main() {
   }
 
   std::cerr << "native bench input: " << path << " bytes=" << g_input.size() << std::endl;
+
+  // Bounded measurements avoid allocating/exporting millions of optimized-out noop samples.
+  if (std::getenv("CSV_NATIVE_BENCH_COMPACT") != nullptr) {
+    mitata::lib::k_options options;
+    options.min_samples = 12;
+    options.max_samples = 200;
+    options.min_cpu_time = 250e6;
+    const std::pair<const char*, void (*)()> cases[] = {
+        {"native binary batch", bench_binary_batch},
+        {"native latin1 batch", bench_latin1_batch},
+        {"native fixed batch 20 columns", bench_fixed_batch},
+        {"native latin1 fixed batch 20 columns", bench_latin1_fixed_batch},
+        {"native projected filter", bench_project_filter},
+        {"native latin1 projected filter", bench_latin1_project_filter},
+    };
+    for (const auto& [name, fn] : cases) {
+      if (!std::regex_match(name, benchmark_filter)) {
+        continue;
+      }
+      const auto stats = mitata::lib::fn(fn, options);
+      std::cout << "{\"name\":\"" << name << "\",\"avg\":" << stats.avg << ",\"min\":" << stats.min
+                << ",\"max\":" << stats.max << ",\"p50\":" << stats.p50 << ",\"p99\":" << stats.p99
+                << ",\"samples\":" << stats.samples.size() << "}\n";
+    }
+    return 0;
+  }
 
   mitata::runner runner;
   auto* count = runner.bench("native count", bench_count);
