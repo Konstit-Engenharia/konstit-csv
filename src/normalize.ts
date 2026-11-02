@@ -10,6 +10,7 @@ import type {
   CsvFieldValue,
   CsvInFilter,
   CsvNativeFilter,
+  CsvNativeProjectionOptions,
   CsvRegex,
   CsvStartsWithFilter,
 } from './types.js';
@@ -40,6 +41,22 @@ export interface CsvNativeFilterOperator {
 }
 
 export type CsvNativeFilterProgramEntry = CsvNativeFilter | CsvNativeFilterOperator;
+
+export function projectionFilterProgram(
+  options: CsvNativeProjectionOptions,
+): readonly CsvNativeFilterProgramEntry[] | undefined {
+  if (options.equalsFilter !== undefined && options.filters !== undefined) {
+    throw new Error('use equalsFilter or filters, not both');
+  }
+  if (options.equalsFilter !== undefined) {
+    return [options.equalsFilter];
+  }
+  const filters = options.filters;
+  if (filters === undefined || filters.length === 0) {
+    return undefined;
+  }
+  return filters.length === 1 ? filters : [...filters, { operator: 'all', operandCount: filters.length }];
+}
 
 export function encodingCode(encoding: CsvEncoding = 'utf8'): number {
   const normalized = encoding.toLowerCase();

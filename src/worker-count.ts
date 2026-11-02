@@ -4,6 +4,7 @@ import {
 } from './file-stream.js';
 import { findCsvSafeShards } from './files.js';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
+import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvParallelCountOptions,
   CsvShard,
@@ -40,7 +41,8 @@ interface WorkerErrorMessage {
   type: 'error';
 }
 
-export async function parallelCount(path: string, options: CsvParallelCountOptions): Promise<number> {
+export async function parallelCount(path: string, suppliedOptions: CsvParallelCountOptions): Promise<number> {
+  const options = snapshotCsvOptions(suppliedOptions);
   const workerCount = options.workerCount ?? 1;
   if (!Number.isInteger(workerCount) || workerCount <= 1) {
     throw new RangeError(`parallel count require workerCount > 1: ${workerCount}`);

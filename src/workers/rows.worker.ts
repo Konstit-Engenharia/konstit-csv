@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { NativeCsvParser } from '../parser.js';
+import { createPreparedParser } from '../parser.js';
 import type {
   CsvColumns,
   CsvEncoding,
@@ -59,39 +59,25 @@ addEventListener('message', async (event: MessageEvent<WorkerRowsMessage>) => {
 });
 
 async function streamShardRows(message: WorkerRowsMessage): Promise<void> {
-  const parser = new NativeCsvParser({
-    delimiter: message.delimiter,
-    encoding: message.encoding,
-  });
+  using parser = createPreparedParser(
+    {
+      delimiter: message.delimiter,
+      encoding: message.encoding,
+    },
+    message.selectedColumns,
+    message.filterProgram,
+  );
   const rowsBuffer: string[][] = [];
-  try {
-    for await (
-      const chunk of createReadStream(message.path, {
-        end: message.shard.end,
-        highWaterMark: message.chunkSize,
-        start: message.shard.start,
-      })
-    ) {
-      const batch = writeRowsBatch(parser, chunk as Buffer, message);
-      try {
-        const rows = materializeRows(batch, message, rowsBuffer);
-        if (rows.length > 0) {
-          postMessage(
-            {
-              rows,
-              shardIndex: message.shardIndex,
-              type: 'rows',
-            } satisfies WorkerRowsBatchMessage,
-          );
-        }
-      } finally {
-        batch.close();
-      }
-    }
-
-    const batch = finishRowsBatch(parser, message);
+  for await (
+    const chunk of createReadStream(message.path, {
+      end: message.shard.end,
+      highWaterMark: message.chunkSize,
+      start: message.shard.start,
+    })
+  ) {
+    const batch = parser.writeBatch(chunk as Buffer);
     try {
-      const rows = materializeRows(batch, message, rowsBuffer);
+      const rows = batch.rowsInto(rowsBuffer);
       if (rows.length > 0) {
         postMessage(
           {
@@ -104,46 +90,21 @@ async function streamShardRows(message: WorkerRowsMessage): Promise<void> {
     } finally {
       batch.close();
     }
+  }
+
+  const batch = parser.endBatch();
+  try {
+    const rows = batch.rowsInto(rowsBuffer);
+    if (rows.length > 0) {
+      postMessage(
+        {
+          rows,
+          shardIndex: message.shardIndex,
+          type: 'rows',
+        } satisfies WorkerRowsBatchMessage,
+      );
+    }
   } finally {
-    parser.close();
+    batch.close();
   }
-}
-
-function materializeRows(
-  batch: ReturnType<NativeCsvParser['writeBatch']>,
-  message: WorkerRowsMessage,
-  rowsBuffer: string[][],
-): string[][] {
-  if (usesProjectedMaterialization(message)) {
-    return batch.rowsInto(rowsBuffer);
-  }
-  return batch.rowsInto(rowsBuffer, message.selectedColumns);
-}
-
-function writeRowsBatch(parser: NativeCsvParser, chunk: Buffer, message: WorkerRowsMessage) {
-  if (message.filterProgram !== undefined) {
-    return parser.writeProjectedBatchWhere(chunk, message.selectedColumns, message.filterProgram);
-  }
-  if (message.selectedColumns !== undefined) {
-    return parser.writeProjectedBatch(chunk, {
-      selectedColumns: message.selectedColumns,
-    });
-  }
-  return parser.writeBatch(chunk);
-}
-
-function finishRowsBatch(parser: NativeCsvParser, message: WorkerRowsMessage) {
-  if (message.filterProgram !== undefined) {
-    return parser.endProjectedBatchWhere(message.selectedColumns, message.filterProgram);
-  }
-  if (message.selectedColumns !== undefined) {
-    return parser.endProjectedBatch({
-      selectedColumns: message.selectedColumns,
-    });
-  }
-  return parser.endBatch();
-}
-
-function usesProjectedMaterialization(message: WorkerRowsMessage): boolean {
-  return message.filterProgram !== undefined || message.selectedColumns !== undefined;
 }

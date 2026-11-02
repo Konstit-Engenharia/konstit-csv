@@ -254,6 +254,25 @@ describe('compressed CSV file streams', () => {
     ).toBe(4);
   });
 
+  test('captures nested ZIP settings before iteration without freezing the caller', async () => {
+    const compression = { entry: 'nested/input.tsv', format: 'zip' as const, maxDecompressedBytes: source.byteLength };
+    const options = { chunkSize: 1, compression, delimiter: ';' };
+    const stream = csv.rows(join(temporaryDirectory, 'input.zip'), options);
+    const count = csv.count(join(temporaryDirectory, 'input.zip'), options);
+    expect(options.compression).toBe(compression);
+    expect(Object.isFrozen(compression)).toBe(false);
+    compression.entry = 'README.txt';
+    compression.maxDecompressedBytes = 1;
+    expect(await count).toBe(4);
+    const rows: string[][] = [];
+    for await (const batch of stream) {
+      rows.push(...batch);
+    }
+    expect(rows).toEqual(expectedRows);
+    expect(compression.entry).toBe('README.txt');
+    expect(compression.maxDecompressedBytes).toBe(1);
+  });
+
   test('streams a stored ZIP entry', async () => {
     expect(
       await csv.count(join(temporaryDirectory, 'stored.zip'), {

@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { extname } from 'node:path';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
+import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvCompression,
   CsvDelimiter,
@@ -50,8 +51,9 @@ interface StableDelimiterCandidate {
 
 export async function prepareCsvFileInput(
   path: string,
-  options: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter'>,
+  suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter'>,
 ): Promise<CsvFileInput> {
+  const options = snapshotCsvOptions(suppliedOptions);
   const configuredDelimiter = options.delimiter ?? ',';
   if (configuredDelimiter !== 'auto') {
     let opened = false;
@@ -113,8 +115,9 @@ export async function prepareCsvFileInput(
 
 export function readCsvFileChunks(
   path: string,
-  options: Pick<CsvFileOptions, 'chunkSize' | 'compression'>,
+  suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression'>,
 ): AsyncIterable<Uint8Array> {
+  const options = snapshotCsvOptions(suppliedOptions);
   const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
   if (options.compression === undefined) {
     return createReadStream(path, { highWaterMark: chunkSize });

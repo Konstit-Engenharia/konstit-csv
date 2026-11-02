@@ -1,7 +1,9 @@
 import { NativeCsvBatch } from './batches.js';
 import {
+  EMPTY_BUFFER,
   native,
   type NativePointer,
+  optionalPreparedParserNative,
   u64ToSafeNumber,
 } from './native.js';
 import {
@@ -17,6 +19,7 @@ import {
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import type {
+  CsvColumns,
   CsvEqualsFilter,
   CsvInFilter,
   CsvNativeFilter,
@@ -32,27 +35,210 @@ function destroyNativeCsvParser(handle: NativePointer): void {
 
 const nativeCsvParserFinalizer = new FinalizationRegistry<NativePointer>(destroyNativeCsvParser);
 
+export type PreparedCsvParser = Pick<
+  NativeCsvParser,
+  'writeBatch' | 'endBatch' | 'writeCount' | 'endCount' | 'close' | typeof Symbol.dispose
+>;
+
+// High-level operations own a fixed configuration. Explicit per-write options on
+// NativeCsvParser remain independent and continue to support reconfiguration.
+export function createPreparedParser(
+  options: CsvParserOptions,
+  selectedColumns?: CsvColumns,
+  program?: readonly CsvNativeFilterProgramEntry[],
+  projected = false,
+): PreparedCsvParser {
+  if (!projected && selectedColumns === undefined && program === undefined) {
+    return new NativeCsvParser(options);
+  }
+  if (options.strict === true) {
+    throw new Error('strict CSV validation is not supported for projected batches');
+  }
+  if (options.selectedColumns !== selectedColumns) {
+    normalizeColumns(options.selectedColumns);
+  }
+  normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
+  return new PreparedNativeCsvParser(options, selectedColumns, program);
+}
+
+interface PreparedNativeWriter {
+  writeBatch(input: NodeJS.TypedArray | DataView, final: boolean): NativePointer | null;
+  writeCount(input: NodeJS.TypedArray | DataView, final: boolean): bigint | number;
+}
+
+// The fallback closures retain all normalized buffers for the parser's lifetime.
+// New native libraries additionally copy the configuration into native storage.
+export function prepareNativeParser(
+  handle: NativePointer,
+  selectedColumns: CsvColumns | undefined,
+  program: readonly CsvNativeFilterProgramEntry[] | undefined,
+): PreparedNativeWriter {
+  const columns = normalizeColumns(selectedColumns);
+  const hasProjection = selectedColumns !== undefined;
+  const columnCount = BigInt(selectedColumns?.length ?? 0);
+  const normalized = program === undefined ? normalizeNativeFilters(undefined) : normalizeNativeFilterProgram(program);
+  const filterCount = BigInt(normalized.filterCount);
+  const valueCount = BigInt(normalized.valueCount);
+  const prepared = optionalPreparedParserNative();
+  if (prepared !== null) {
+    if (
+      !prepared.symbols.csv_parser_prepare(
+        handle,
+        hasProjection,
+        columns,
+        columnCount,
+        normalized.descriptors,
+        filterCount,
+        normalized.valuesData,
+        normalized.valuesData,
+        normalized.valueOffsets,
+        valueCount,
+      )
+    ) {
+      throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
+    }
+    return {
+      writeBatch: (input, final) => prepared.symbols.csv_parser_write_prepared_batch(handle, input, input, final),
+      writeCount: (input, final) => {
+        const count = prepared.symbols.csv_parser_write_prepared_count(handle, input, input, final);
+        // The prepared ABI reserves UINT64_MAX so successful chunks need only one FFI call.
+        if (count === 0xffff_ffff_ffff_ffffn) {
+          throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
+        }
+        return count;
+      },
+    };
+  }
+  return {
+    writeBatch: (input, final) =>
+      native.symbols.csv_parser_write_projected_batch_where_all(
+        handle,
+        input,
+        input,
+        final,
+        hasProjection,
+        columns,
+        columnCount,
+        normalized.descriptors,
+        filterCount,
+        normalized.valuesData,
+        normalized.valuesData,
+        normalized.valueOffsets,
+        valueCount,
+      ),
+    writeCount: (input, final) => {
+      const count = native.symbols.csv_parser_write_count_where_all(
+        handle,
+        input,
+        input,
+        final,
+        normalized.descriptors,
+        filterCount,
+        normalized.valuesData,
+        normalized.valuesData,
+        normalized.valueOffsets,
+        valueCount,
+      );
+      const error = native.symbols.csv_parser_last_error(handle);
+      if (error !== null && error.length > 0) {
+        throw new Error(`native CSV parser failed: ${error}`);
+      }
+      return count;
+    },
+  };
+}
+
+class PreparedNativeCsvParser implements PreparedCsvParser {
+  #handle: NativePointer | null;
+  readonly #writer: PreparedNativeWriter;
+
+  constructor(
+    options: CsvParserOptions,
+    selectedColumns: CsvColumns | undefined,
+    program: readonly CsvNativeFilterProgramEntry[] | undefined,
+  ) {
+    const handle = createNativeCsvParser(options);
+    try {
+      this.#writer = prepareNativeParser(handle, selectedColumns, program);
+    } catch (error) {
+      destroyNativeCsvParser(handle);
+      throw error;
+    }
+    this.#handle = handle;
+    nativeCsvParserFinalizer.register(this, handle, this);
+  }
+
+  writeBatch(chunk: NodeJS.TypedArray | DataView, final = false): NativeCsvBatch {
+    const handle = this.#requireHandle();
+    const batch = this.#writer.writeBatch(normalizeChunk(chunk), final);
+    if (batch === null) {
+      throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
+    }
+    return new NativeCsvBatch(batch);
+  }
+
+  endBatch(): NativeCsvBatch {
+    return this.writeBatch(EMPTY_BUFFER, true);
+  }
+
+  writeCount(chunk: NodeJS.TypedArray | DataView, final = false): number {
+    this.#requireHandle();
+    const count = this.#writer.writeCount(normalizeChunk(chunk), final);
+    return u64ToSafeNumber(count, 'CSV filtered row count');
+  }
+
+  endCount(): number {
+    return this.writeCount(EMPTY_BUFFER, true);
+  }
+
+  close(): void {
+    const handle = this.#handle;
+    if (handle === null) {
+      return;
+    }
+    this.#handle = null;
+    nativeCsvParserFinalizer.unregister(this);
+    destroyNativeCsvParser(handle);
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
+  #requireHandle(): NativePointer {
+    if (this.#handle === null) {
+      throw new Error('native CSV parser is closed');
+    }
+    return this.#handle;
+  }
+}
+
+function createNativeCsvParser(options: CsvParserOptions): NativePointer {
+  const delimiter = options.delimiter ?? ',';
+  if (delimiter === 'auto') {
+    throw new Error('automatic delimiter detection is only supported by file APIs');
+  }
+  if (delimiter.length !== 1) {
+    throw new Error('delimiter must be one character');
+  }
+  const handle = native.symbols.csv_parser_create(encodingCode(options.encoding), delimiter.charCodeAt(0));
+  if (handle === null) {
+    throw new Error('failed to create native CSV parser');
+  }
+  return handle;
+}
+
 export class NativeCsvParser {
   #handle: NativePointer | null;
   readonly #strict: boolean;
   readonly #fixedColumns: number | undefined;
 
   constructor(options: CsvParserOptions = {}) {
-    const delimiter = options.delimiter ?? ',';
-    if (delimiter === 'auto') {
-      throw new Error('automatic delimiter detection is only supported by file APIs');
-    }
-    if (delimiter.length !== 1) {
-      throw new Error('delimiter must be one character');
-    }
     this.#strict = options.strict === true;
     normalizeColumns(options.selectedColumns);
     this.#fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
 
-    const handle = native.symbols.csv_parser_create(encodingCode(options.encoding), delimiter.charCodeAt(0));
-    if (handle === null) {
-      throw new Error('failed to create native CSV parser');
-    }
+    const handle = createNativeCsvParser(options);
     this.#handle = handle;
     nativeCsvParserFinalizer.register(this, handle, this);
   }

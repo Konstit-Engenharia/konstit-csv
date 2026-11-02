@@ -359,6 +359,44 @@ const CSV_SYMBOLS = {
 const nativeLibraryPath = resolveNativeLibraryPath();
 export const native = dlopen(nativeLibraryPath, CSV_SYMBOLS);
 
+const PREPARED_PARSER_SYMBOLS = {
+  // C signature:
+  // bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
+  //                         uint64_t selected_columns_len, const uint32_t* filter_descriptors,
+  //                         uint64_t filter_count, const uint8_t* values_data, uint64_t values_data_len,
+  //                         const uint32_t* value_offsets, uint64_t total_value_count);
+  csv_parser_prepare: {
+    args: ['ptr', 'bool', 'buffer', 'u64', 'buffer', 'u64', 'buffer', 'buffer_length', 'buffer', 'u64'],
+    returns: 'bool',
+  },
+  // C signature:
+  // void* csv_parser_write_prepared_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
+  csv_parser_write_prepared_batch: {
+    args: ['ptr', 'buffer', 'buffer_length', 'bool'],
+    returns: 'ptr',
+  },
+  // C signature:
+  // uint64_t csv_parser_write_prepared_count(void* parser, const uint8_t* data, uint64_t len, bool final);
+  csv_parser_write_prepared_count: {
+    args: ['ptr', 'buffer', 'buffer_length', 'bool'],
+    returns: 'u64',
+  },
+} as const;
+
+let preparedParserNative: Library<typeof PREPARED_PARSER_SYMBOLS> | null | undefined;
+
+export function optionalPreparedParserNative(): Library<typeof PREPARED_PARSER_SYMBOLS> | null {
+  if (preparedParserNative === undefined) {
+    try {
+      preparedParserNative = dlopen(nativeLibraryPath, PREPARED_PARSER_SYMBOLS);
+    } catch {
+      // Older prebuilt libraries keep using the normalized-buffer fallback.
+      preparedParserNative = null;
+    }
+  }
+  return preparedParserNative;
+}
+
 const LATIN1_ROWS_SYMBOLS = {
   // C signature:
   // void* csv_parser_create_latin1_rows(uint8_t delimiter);

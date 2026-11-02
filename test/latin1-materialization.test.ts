@@ -20,7 +20,6 @@ import {
 let directory = '';
 let bytesPath = '';
 let filtersPath = '';
-let mutationPath = '';
 const allBytes = Buffer.from(Array.from({ length: 256 }, (_, index) => index)).toString('latin1');
 const byteRows = [['', allBytes, 'é"\r\nÿ'], ['tail', '\0\x80\x9f', '']];
 const filterRows = [
@@ -34,8 +33,9 @@ beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'csv-latin1-materialization-'));
   bytesPath = join(directory, 'bytes.csv');
   filtersPath = join(directory, 'filters.csv');
-  mutationPath = join(directory, 'mutation.csv');
-  await Bun.write(mutationPath, Buffer.from('é;ÿ\né;ÿ\né;ÿ\né;ÿ', 'latin1'));
+  for (const encoding of ['utf8', 'latin1'] as const) {
+    await Bun.write(join(directory, `mutation-${encoding}.csv`), Buffer.from('é;ÿ\né;ÿ\né;ÿ\né;ÿ', encoding));
+  }
   for (const [path, rows,] of [[bytesPath, byteRows], [filtersPath, filterRows]] as const) {
     const text = rows.map((row) => row.map((field) => `"${field.replaceAll('"', '""')}"`).join(';')).join('\r\n');
     await Bun.write(path, Buffer.from(text, 'latin1'));
@@ -55,56 +55,66 @@ async function collect(path: string, options: CsvRowsOptions<readonly number[] |
 }
 
 describe('private Latin1 row materialization compatibility', () => {
-  test('refreshes replaced projection options between chunks and before final rows', async () => {
-    for (const alias of ['columns', 'selectedColumns'] as const) {
-      const options = { chunkSize: 4, [alias]: [0], delimiter: ';' as const, encoding: 'latin1' as const };
-      const stream = csv.rows(mutationPath, options);
+  test('captures replaced projections before iteration and across split records and final rows', async () => {
+    for (const encoding of ['utf8', 'latin1'] as const) {
+      for (const alias of ['columns', 'selectedColumns'] as const) {
+        // The first chunk ends inside the next record, including a UTF-8 character.
+        const chunkSize = Buffer.byteLength('é;ÿ\n', encoding) + 1;
+        const options = { chunkSize, [alias]: [0], delimiter: ';' as const, encoding };
+        const stream = csv.rows(join(directory, `mutation-${encoding}.csv`), options);
+        options[alias] = [1];
+        try {
+          expect((await stream.next()).value).toEqual([['é']]);
+          options[alias] = [];
+          expect((await stream.next()).value).toEqual([['é']]);
+          options[alias] = [1, 0];
+          expect((await stream.next()).value).toEqual([['é']]);
+          expect((await stream.next()).value).toEqual([['é']]);
+          expect((await stream.next()).done).toBe(true);
+        } finally {
+          await stream.return();
+        }
+      }
+    }
+  });
+
+  test('ignores conflicting projection aliases introduced after the operation starts', async () => {
+    const options = { chunkSize: 4, columns: [0], delimiter: ';' as const, encoding: 'latin1' as const };
+    const stream = csv.rows(join(directory, 'mutation-latin1.csv'), options);
+    try {
+      expect((await stream.next()).value).toEqual([['é']]);
+      Object.assign(options, { selectedColumns: [1] });
+      const remaining: string[][] = [];
+      for await (const rows of stream) {
+        remaining.push(...rows);
+      }
+      expect(remaining).toEqual([['é'], ['é'], ['é']]);
+    } finally {
+      await stream.return();
+    }
+  });
+
+  test('copies mutable projection arrays without freezing caller arrays', async () => {
+    for (const encoding of ['utf8', 'latin1'] as const) {
+      const columns = [0];
+      const chunkSize = Buffer.byteLength('é;ÿ\n', encoding) + 1;
+      const options = { chunkSize, columns, delimiter: ';' as const, encoding };
+      const stream = csv.rows(join(directory, `mutation-${encoding}.csv`), options);
+      expect(Object.isFrozen(options)).toBe(false);
+      expect(Object.isFrozen(columns)).toBe(false);
+      expect(options.columns).toBe(columns);
+      columns.push(1);
       try {
         expect((await stream.next()).value).toEqual([['é']]);
-        options[alias] = [1];
-        expect((await stream.next()).value).toEqual([['ÿ']]);
-        options[alias] = [];
-        expect((await stream.next()).value).toEqual([[]]);
-        options[alias] = [1, 0];
-        expect((await stream.next()).value).toEqual([['ÿ', 'é']]);
+        columns.length = 0;
+        expect((await stream.next()).value).toEqual([['é']]);
+        columns.push(1);
+        expect((await stream.next()).value).toEqual([['é']]);
+        expect((await stream.next()).value).toEqual([['é']]);
         expect((await stream.next()).done).toBe(true);
       } finally {
         await stream.return();
       }
-    }
-  });
-
-  test('rejects conflicting projection aliases introduced between batches', async () => {
-    expect.assertions(2);
-    const options = { chunkSize: 4, columns: [0], delimiter: ';' as const, encoding: 'latin1' as const };
-    const stream = csv.rows(mutationPath, options);
-    try {
-      expect((await stream.next()).value).toEqual([['é']]);
-      Object.assign(options, { selectedColumns: [1] });
-      try {
-        await stream.next();
-      } catch (error) {
-        expect(error).toMatchObject({ message: 'use columns or selectedColumns, not both' });
-      }
-    } finally {
-      await stream.return();
-    }
-  });
-
-  test('refreshes mutable projection arrays between chunks and before final rows', async () => {
-    const columns = [0];
-    const stream = csv.rows(mutationPath, { chunkSize: 4, columns, delimiter: ';', encoding: 'latin1' });
-    try {
-      expect((await stream.next()).value).toEqual([['é']]);
-      columns.push(1);
-      expect((await stream.next()).value).toEqual([['é', 'ÿ']]);
-      columns.length = 0;
-      expect((await stream.next()).value).toEqual([[]]);
-      columns.push(1);
-      expect((await stream.next()).value).toEqual([['ÿ']]);
-      expect((await stream.next()).done).toBe(true);
-    } finally {
-      await stream.return();
     }
   });
 

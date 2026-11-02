@@ -5,6 +5,7 @@ import {
 import { findCsvSafeShards } from './files.js';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
 import { normalizeColumns } from './normalize.js';
+import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvApiFileOptions,
   CsvColumns,
@@ -78,7 +79,8 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
   #closed = false;
   #busy = false;
 
-  constructor(path: string, options: CsvWorkerPoolOptions<TColumns>) {
+  constructor(path: string, suppliedOptions: CsvWorkerPoolOptions<TColumns>) {
+    const options = snapshotCsvOptions(suppliedOptions);
     const workerCount = options.workerCount ?? 1;
     if (!Number.isInteger(workerCount) || workerCount <= 1) {
       throw new RangeError(`worker pool requires workerCount > 1: ${workerCount}`);
@@ -86,7 +88,7 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
     rejectCompressedSharding(options, 'worker pool');
     rejectAutoDelimiterSharding(options, 'worker pool');
     this.#path = path;
-    this.#options = { ...options };
+    this.#options = options;
   }
 
   get closed(): boolean {

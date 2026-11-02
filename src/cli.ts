@@ -364,8 +364,10 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
   };
 }
 
-function parseCommonOptions(values: CommonOptionValues): CsvApiFileOptions {
-  const options: CsvApiFileOptions = {};
+type MutableCliOptions = { -readonly [Key in keyof CsvApiFileOptions]: CsvApiFileOptions[Key]; };
+
+function parseCommonOptions(values: CommonOptionValues): MutableCliOptions {
+  const options: MutableCliOptions = {};
   if (values.delimiter !== undefined) {
     options.delimiter = parseDelimiter(values.delimiter);
   }

@@ -24,7 +24,8 @@ import {
   normalizeColumns,
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
-import { NativeCsvParser } from './parser.js';
+import { snapshotCsvOptions } from './options-snapshot.js';
+import { createPreparedParser } from './parser.js';
 import {
   rejectStrictSchemaUnsupported,
   strictSchemaValidator,
@@ -67,8 +68,9 @@ import { parallelRows } from './worker-rows.js';
  */
 export async function parse<TColumns extends CsvColumns | undefined = undefined>(
   buffer: NodeJS.TypedArray | DataView,
-  options: CsvParseOptions<TColumns> = {},
+  suppliedOptions: CsvParseOptions<TColumns> = {},
 ): Promise<CsvProjectedRow<TColumns>[]> {
+  const options = snapshotCsvOptions(suppliedOptions);
   if ('compression' in options && options.compression !== undefined) {
     throw new Error('parse() does not support compression; pass decompressed bytes or use a file API');
   }
@@ -77,19 +79,17 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
   }
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
-  const parser = new NativeCsvParser(toParserOptions(options));
+  const columns = selectedColumns(options);
+  const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
+  using parser = createPreparedParser(toParserOptions(options), projected ? columns : undefined, filters);
   const validator = strictSchemaValidator(options);
+  const batch = parser.writeBatch(buffer, true);
   try {
-    const batch = writeMaterializeBatch(parser, buffer, options, filters, true);
-    try {
-      validator?.validateBatch(batch);
-      validator?.finish();
-      return materializeRows(batch, options);
-    } finally {
-      batch.close();
-    }
+    validator?.validateBatch(batch);
+    validator?.finish();
+    return materializeRows<TColumns>(batch, columns, projected);
   } finally {
-    parser.close();
+    batch.close();
   }
 }
 
@@ -99,9 +99,16 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
  * Use this for the most direct high-level API. With `workerCount > 1`, the work
  * fans out across Bun workers.
  */
-export async function* rows<TColumns extends CsvColumns | undefined = undefined>(
+export function rows<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
   options: CsvRowsOptions<TColumns> = {},
+): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
+  return iterateRows(path, snapshotCsvOptions(options));
+}
+
+async function* iterateRows<TColumns extends CsvColumns | undefined>(
+  path: string,
+  options: CsvRowsOptions<TColumns>,
 ): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
   if ((options.workerCount ?? 1) > 1) {
     rejectCompressedSharding(options, 'parallel row parsing');
@@ -112,6 +119,8 @@ export async function* rows<TColumns extends CsvColumns | undefined = undefined>
 
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
+  const columns = selectedColumns(options);
+  const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   await using input = await prepareCsvFileInput(path, options);
   const parserOptions = toParserOptions(options, input.delimiter);
   const validator = strictSchemaValidator(options);
@@ -119,19 +128,19 @@ export async function* rows<TColumns extends CsvColumns | undefined = undefined>
     options.strict !== true && options.fixedColumns === undefined && validator === undefined
     && encodingCode(options.encoding) === 1 && optionalLatin1RowsNative() !== null
   ) {
-    yield* latin1Rows(input.chunks(), input.delimiter, () => selectedColumns(options), filters) as AsyncGenerator<
+    yield* latin1Rows(input.chunks(), input.delimiter, columns, filters) as AsyncGenerator<
       CsvProjectedRow<TColumns>[],
       void
     >;
     return;
   }
-  using parser = new NativeCsvParser(parserOptions);
+  using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters);
   for await (const chunk of input.chunks()) {
-    const batch = writeMaterializeBatch(parser, chunk, options, filters);
+    const batch = parser.writeBatch(chunk);
     if (batch.rowCount > 0) {
       try {
         validator?.validateBatch(batch);
-        const values = materializeRows(batch, options);
+        const values = materializeRows<TColumns>(batch, columns, projected);
         if (values.length > 0) {
           yield values;
         }
@@ -143,12 +152,12 @@ export async function* rows<TColumns extends CsvColumns | undefined = undefined>
     }
   }
 
-  const batch = finishMaterializeBatch(parser, options, filters);
+  const batch = parser.endBatch();
   if (batch.rowCount > 0) {
     try {
       validator?.validateBatch(batch);
       validator?.finish();
-      const values = materializeRows(batch, options);
+      const values = materializeRows<TColumns>(batch, columns, projected);
       if (values.length > 0) {
         yield values;
       }
@@ -170,14 +179,19 @@ export { CsvWorkerPool };
  * Use this when you want low-allocation access to row views or byte ranges and
  * are comfortable closing each batch yourself.
  */
-export async function* batches(path: string, options: CsvBatchesOptions = {}): AsyncGenerator<NativeCsvBatch, void> {
+export function batches(path: string, options: CsvBatchesOptions = {}): AsyncGenerator<NativeCsvBatch, void> {
+  return iterateBatches(path, snapshotCsvOptions(options));
+}
+
+async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncGenerator<NativeCsvBatch, void> {
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
+  const columns = filters === undefined ? undefined : selectedColumns(options);
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser(toParserOptions(options, input.delimiter));
+  using parser = createPreparedParser(toParserOptions(options, input.delimiter), columns, filters);
   const validator = strictSchemaValidator(options);
   for await (const chunk of input.chunks()) {
-    const batch = writeRowsBatch(parser, chunk, options, filters);
+    const batch = parser.writeBatch(chunk);
     if (batch.rowCount > 0) {
       try {
         validator?.validateBatch(batch);
@@ -191,7 +205,7 @@ export async function* batches(path: string, options: CsvBatchesOptions = {}): A
     }
   }
 
-  const batch = finishRowsBatch(parser, options, filters);
+  const batch = parser.endBatch();
   if (batch.rowCount > 0) {
     try {
       validator?.validateBatch(batch);
@@ -239,18 +253,20 @@ export function forEachColumnarBatches(
 ): Promise<void>;
 export async function forEachColumnarBatches<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
-  options: CsvColumnarBatchOptions<TColumns> = {} as CsvColumnarBatchOptions<TColumns>,
+  suppliedOptions: CsvColumnarBatchOptions<TColumns> = {} as CsvColumnarBatchOptions<TColumns>,
   callback: CsvColumnarBatchCallback<TColumns>,
 ): Promise<void> {
+  const options = snapshotCsvOptions(suppliedOptions);
   ensureColumnarBatchesSupported(options);
   const filters = toNativeFilters(options.where);
-  const scopedBatch = new ScopedCsvColumnarBatchView(selectedColumns(options) as TColumns);
+  const columns = selectedColumns(options);
+  const scopedBatch = new ScopedCsvColumnarBatchView(columns as TColumns);
   let batchIndex = 0;
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser(toParserOptions(options, input.delimiter));
+  using parser = createPreparedParser(toParserOptions(options, input.delimiter), columns, filters);
   const validator = strictSchemaValidator(options);
   for await (const chunk of input.chunks()) {
-    const batch = writeColumnarBatch(parser, chunk, options, filters);
+    const batch = parser.writeBatch(chunk);
     if (batch.rowCount > 0) {
       try {
         validator?.validateBatch(batch);
@@ -272,7 +288,7 @@ export async function forEachColumnarBatches<TColumns extends CsvColumns | undef
     }
   }
 
-  const batch = finishColumnarBatch(parser, options, filters);
+  const batch = parser.endBatch();
   if (batch.rowCount > 0) {
     try {
       validator?.validateBatch(batch);
@@ -327,9 +343,10 @@ export function forEachRowViews(
 ): Promise<void>;
 export async function forEachRowViews<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
-  options: CsvRowViewsOptions<TColumns> = {} as CsvRowViewsOptions<TColumns>,
+  suppliedOptions: CsvRowViewsOptions<TColumns> = {} as CsvRowViewsOptions<TColumns>,
   callback: CsvRowViewCallback<TColumns>,
 ): Promise<void> {
+  const options = snapshotCsvOptions(suppliedOptions);
   ensureRowViewsSupported(options);
   const scopedRowView = new ScopedCsvRowView(selectedColumns(options) as TColumns);
   for await (const batch of batches(path, options)) {
@@ -375,7 +392,8 @@ export function withRowViews(
  * Full filter support exists here because count has native fast paths for
  * filters created with `csv.column()` and grouped with `csv.all()`, `csv.any()`, and `csv.not()`.
  */
-export async function count(path: string, options: CsvCountOptions = {}): Promise<number> {
+export async function count(path: string, suppliedOptions: CsvCountOptions = {}): Promise<number> {
+  const options = snapshotCsvOptions(suppliedOptions);
   if ((options.workerCount ?? 1) > 1) {
     rejectCompressedSharding(options, 'parallel counting');
     rejectAutoDelimiterSharding(options, 'parallel counting');
@@ -384,7 +402,10 @@ export async function count(path: string, options: CsvCountOptions = {}): Promis
 
   const filters = toNativeFilters(options.where);
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser(toParserOptions(options, input.delimiter));
+  if (options.strict === true && filters !== undefined) {
+    throw new Error('strict CSV validation is not supported for count filters');
+  }
+  using parser = createPreparedParser(toParserOptions(options, input.delimiter), undefined, filters);
   const validator = strictSchemaValidator(options);
   let total = 0;
   if (options.strict === true && filters === undefined) {
@@ -409,21 +430,23 @@ export async function count(path: string, options: CsvCountOptions = {}): Promis
   }
 
   for await (const chunk of input.chunks()) {
-    total += writeCount(parser, chunk, filters);
+    total += parser.writeCount(chunk);
   }
-  total += finishCount(parser, filters);
+  total += parser.endCount();
   return total;
 }
 
 export { parallelCount };
 
-export function findCsvSafeSplitOffsets(path: string, shardCount: number, options: CsvShardingOptions = {}): number[] {
+export function findCsvSafeSplitOffsets(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): number[] {
+  const options = snapshotCsvOptions(suppliedOptions);
   rejectCompressedSharding(options, 'CSV split offset scanning');
   rejectAutoDelimiterSharding(options, 'CSV split offset scanning');
   return findCsvSafeSplitOffsetsNative(path, shardCount, options.delimiter ?? ',');
 }
 
-export function findCsvSafeShards(path: string, shardCount: number, options: CsvShardingOptions = {}): CsvShard[] {
+export function findCsvSafeShards(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): CsvShard[] {
+  const options = snapshotCsvOptions(suppliedOptions);
   rejectCompressedSharding(options, 'CSV shard scanning');
   rejectAutoDelimiterSharding(options, 'CSV shard scanning');
   return findCsvSafeShardsNative(path, shardCount, options.delimiter ?? ',');
@@ -494,105 +517,13 @@ function selectedColumns(options: CsvApiFileOptions): CsvColumns | undefined {
 
 function materializeRows<TColumns extends CsvColumns | undefined>(
   batch: NativeCsvBatch,
-  options: CsvApiFileOptions & { columns?: TColumns; },
+  columns: CsvColumns | undefined,
+  projected: boolean,
 ): CsvProjectedRow<TColumns>[] {
-  const columns = selectedColumns(options);
-  if (usesProjectedMaterialization(options)) {
+  if (projected) {
     return batch.rowsInto([]) as CsvProjectedRow<TColumns>[];
   }
   return batch.rowsInto([], columns) as CsvProjectedRow<TColumns>[];
-}
-
-function usesProjectedMaterialization(options: CsvApiFileOptions): boolean {
-  return options.where !== undefined || (options.strict !== true && selectedColumns(options) !== undefined);
-}
-
-function writeRowsBatch(
-  parser: NativeCsvParser,
-  chunk: NodeJS.TypedArray | DataView,
-  options: CsvApiFileOptions,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-  final = false,
-): NativeCsvBatch {
-  if (filters !== undefined) {
-    return parser.writeProjectedBatchWhere(chunk, selectedColumns(options), filters, final);
-  }
-  return parser.writeBatch(chunk, final);
-}
-
-function writeMaterializeBatch(
-  parser: NativeCsvParser,
-  chunk: NodeJS.TypedArray | DataView,
-  options: CsvApiFileOptions,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-  final = false,
-): NativeCsvBatch {
-  const columns = selectedColumns(options);
-  if (filters !== undefined) {
-    return parser.writeProjectedBatchWhere(chunk, columns, filters, final);
-  }
-  if (options.strict !== true && columns !== undefined) {
-    return parser.writeProjectedBatch(chunk, { selectedColumns: columns }, final);
-  }
-  return parser.writeBatch(chunk, final);
-}
-
-function writeColumnarBatch(
-  parser: NativeCsvParser,
-  chunk: NodeJS.TypedArray | DataView,
-  options: CsvApiFileOptions,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-  final = false,
-): NativeCsvBatch {
-  const columns = selectedColumns(options);
-  if (filters !== undefined) {
-    return parser.writeProjectedBatchWhere(chunk, columns, filters, final);
-  }
-  if (columns !== undefined) {
-    return parser.writeProjectedBatch(chunk, { selectedColumns: columns }, final);
-  }
-  return parser.writeBatch(chunk, final);
-}
-
-function finishRowsBatch(
-  parser: NativeCsvParser,
-  options: CsvApiFileOptions,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-): NativeCsvBatch {
-  if (filters !== undefined) {
-    return parser.endProjectedBatchWhere(selectedColumns(options), filters);
-  }
-  return parser.endBatch();
-}
-
-function finishMaterializeBatch(
-  parser: NativeCsvParser,
-  options: CsvApiFileOptions,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-): NativeCsvBatch {
-  const columns = selectedColumns(options);
-  if (filters !== undefined) {
-    return parser.endProjectedBatchWhere(columns, filters);
-  }
-  if (options.strict !== true && columns !== undefined) {
-    return parser.endProjectedBatch({ selectedColumns: columns });
-  }
-  return parser.endBatch();
-}
-
-function finishColumnarBatch(
-  parser: NativeCsvParser,
-  options: CsvApiFileOptions,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-): NativeCsvBatch {
-  const columns = selectedColumns(options);
-  if (filters !== undefined) {
-    return parser.endProjectedBatchWhere(columns, filters);
-  }
-  if (columns !== undefined) {
-    return parser.endProjectedBatch({ selectedColumns: columns });
-  }
-  return parser.endBatch();
 }
 
 function ensureRowViewsSupported(options: CsvApiFileOptions): void {
@@ -797,24 +728,6 @@ class ScopedCsvColumnarBatchView<TSelectedColumns extends CsvColumns | undefined
     }
     return this.#batch;
   }
-}
-
-function writeCount(
-  parser: NativeCsvParser,
-  chunk: NodeJS.TypedArray | DataView,
-  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
-): number {
-  if (filters === undefined) {
-    return parser.writeCount(chunk);
-  }
-  return parser.writeCountWhere(chunk, filters);
-}
-
-function finishCount(parser: NativeCsvParser, filters: readonly CsvNativeFilterProgramEntry[] | undefined): number {
-  if (filters === undefined) {
-    return parser.endCount();
-  }
-  return parser.endCountWhere(filters);
 }
 
 function toNativeFilters(where: CsvFilter | undefined): readonly CsvNativeFilterProgramEntry[] | undefined {

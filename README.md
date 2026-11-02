@@ -235,6 +235,13 @@ The public option types reject combinations unsupported by the native path, incl
 workers. `columns` and the legacy `selectedColumns` alias are mutually exclusive. Each operation accepts only the
 options supported by its native path.
 
+Parsing and file operations capture their options when called, before the first `next()` call on a returned stream.
+That configuration stays fixed until the operation finishes. Projection arrays, expected headers, and nested ZIP
+settings are copied; later changes to the original options do not affect the operation. A worker pool captures its
+configuration when created and uses it for every operation. Caller-owned objects remain mutable, and filters created
+with `csv.column()`, `csv.all()`, `csv.any()`, and `csv.not()` remain reusable.
+Option types are readonly. Start a new operation (or create a new pool) to apply changed settings.
+
 Column indexes are integers from `0` through `2024`. A projection may contain at most 2024 columns and must not repeat
 an index. A filter can contain at most 2024 predicates and 4096 total predicates and Boolean operators. Invalid values
 fail before parsing begins.

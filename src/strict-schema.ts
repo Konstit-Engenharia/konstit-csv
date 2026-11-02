@@ -1,13 +1,14 @@
 import type { NativeCsvBatch } from './batches.js';
+import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvParserOptions,
   CsvRow,
 } from './types.js';
 
 interface StrictSchemaOptions {
-  expectedHeaders?: readonly string[];
-  requireHeader?: boolean;
-  minDataRows?: number;
+  readonly expectedHeaders?: readonly string[];
+  readonly requireHeader?: boolean;
+  readonly minDataRows?: number;
 }
 
 export class CsvStrictSchemaValidator {
@@ -15,7 +16,8 @@ export class CsvStrictSchemaValidator {
   #seenHeader = false;
   #dataRows = 0;
 
-  constructor(options: CsvParserOptions) {
+  constructor(suppliedOptions: CsvParserOptions) {
+    const options = snapshotCsvOptions(suppliedOptions);
     this.#options = {
       expectedHeaders: options.expectedHeaders,
       minDataRows: normalizeMinDataRows(options.minDataRows),

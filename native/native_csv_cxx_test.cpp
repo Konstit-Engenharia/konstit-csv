@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -15,6 +16,13 @@ int csv_runtime_supports_avx2();
 void* csv_parser_create(int encoding, uint8_t delimiter);
 void* csv_parser_create_latin1_rows(uint8_t delimiter);
 void csv_parser_destroy(void* parser);
+void csv_parser_reset(void* parser);
+bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
+                        uint64_t selected_columns_len, const uint32_t* filter_descriptors, uint64_t filter_count,
+                        const uint8_t* values_data, uint64_t values_data_len, const uint32_t* value_offsets,
+                        uint64_t total_value_count);
+void* csv_parser_write_prepared_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
+uint64_t csv_parser_write_prepared_count(void* parser, const uint8_t* data, uint64_t len, bool final);
 void* csv_parser_write_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
 void* csv_parser_finish_batch(void* parser);
 void* csv_parser_write_strict_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
@@ -145,6 +153,30 @@ void require_two_field_batch(void* batch, std::string_view first, std::string_vi
   REQUIRE(field_offsets[0] == 0);
   REQUIRE(field_offsets[1] == first.size());
   REQUIRE(field_offsets[2] == expected.size());
+}
+
+void append_batch_rows(void* batch, std::vector<std::vector<std::string>>& rows) {
+  REQUIRE(batch != nullptr);
+  const uint64_t* row_offsets = csv_batch_row_offsets_ptr(batch);
+  const uint64_t* field_offsets = csv_batch_field_offsets_ptr(batch);
+  const uint8_t* data = csv_batch_data_ptr(batch);
+  REQUIRE(row_offsets[0] == 0);
+  REQUIRE(field_offsets[0] == 0);
+  for (uint64_t row = 0; row < csv_batch_row_count(batch); ++row) {
+    auto& fields = rows.emplace_back();
+    REQUIRE(row_offsets[row] <= row_offsets[row + 1]);
+    REQUIRE(row_offsets[row + 1] <= csv_batch_total_fields(batch));
+    for (uint64_t field = row_offsets[row]; field < row_offsets[row + 1]; ++field) {
+      const uint64_t start = field_offsets[field];
+      const uint64_t end = field_offsets[field + 1];
+      REQUIRE(start <= end);
+      REQUIRE(end <= csv_batch_data_len(batch));
+      fields.emplace_back(reinterpret_cast<const char*>(data + start), end - start);
+    }
+  }
+  REQUIRE(row_offsets[csv_batch_row_count(batch)] == csv_batch_total_fields(batch));
+  REQUIRE(field_offsets[csv_batch_total_fields(batch)] == csv_batch_data_len(batch));
+  csv_batch_destroy(batch);
 }
 
 void fuzz_batch_mode(std::string_view input, bool strict) {
@@ -658,6 +690,170 @@ TEST_CASE("native C ABI validates filter column indexes") {
     REQUIRE(std::string_view(csv_parser_last_error(parser)).find("2024") != std::string_view::npos);
     csv_parser_destroy(parser);
   }
+}
+
+TEST_CASE("native prepared configuration owns caller buffers across chunk boundaries") {
+  const std::string input = "alpha,SP,1,\"a\"\"b\r\nc\"\r\nalpine,RJ,2,ignored\r\n"
+                            "alba,MG,1,ignored\nalbatross,RJ,3,last";
+  const std::vector<std::vector<std::string>> expected = {
+      {"alpha", "SP", "1", "a\"b\r\nc"},
+      {"albatross", "RJ", "3", "last"},
+  };
+  const std::vector<std::vector<uint32_t>> projections = {{}, {0, 3, 5}, {3, 0, 5}};
+
+  for (const bool count_only : {false, true}) {
+    for (const auto& projection : projections) {
+      for (size_t split = 0; split <= input.size(); ++split) {
+        CAPTURE(count_only, projection, split);
+        void* parser = csv_parser_create(0, ',');
+        REQUIRE(parser != nullptr);
+        {
+          auto columns = projection;
+          std::string values = "alSPRJ^[13]$";
+          uint32_t value_offsets[] = {0, 2, 4, 6, 12};
+          uint32_t filters[] = {
+              3, 0, 0, 1, // column 0 starts with "al"
+              2, 1, 1, 2, // column 1 is in {"SP", "RJ"}
+              4, 2, 3, 1, // column 2 matches "^[13]$"
+              7, 3, 0, 0, // all three leaves
+          };
+          REQUIRE(csv_parser_prepare(parser, !projection.empty(), columns.data(), columns.size(), filters, 4,
+                                     reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 4));
+          // Caller storage is overwritten and released before either chunk is parsed.
+          std::fill(columns.begin(), columns.end(), 0);
+          std::fill(std::begin(filters), std::end(filters), 0);
+          std::fill(values.begin(), values.end(), 'x');
+          std::fill(std::begin(value_offsets), std::end(value_offsets), 0);
+        }
+
+        std::vector<std::vector<std::string>> actual;
+        uint64_t count = 0;
+        for (const bool final : {false, true}) {
+          const size_t offset = final ? split : 0;
+          const size_t len = final ? input.size() - split : split;
+          const auto* data = reinterpret_cast<const uint8_t*>(input.data() + offset);
+          if (count_only) {
+            count += csv_parser_write_prepared_count(parser, data, len, final);
+          } else {
+            append_batch_rows(csv_parser_write_prepared_batch(parser, data, len, final), actual);
+          }
+          REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+        }
+        csv_parser_destroy(parser);
+
+        if (count_only) {
+          REQUIRE(count == expected.size());
+        } else if (projection.empty()) {
+          REQUIRE(actual == expected);
+        } else {
+          std::vector<std::vector<std::string>> selected;
+          for (const auto& row : expected) {
+            auto& fields = selected.emplace_back();
+            for (const uint32_t column : projection) {
+              fields.push_back(column < row.size() ? row[column] : "");
+            }
+          }
+          REQUIRE(actual == selected);
+        }
+      }
+    }
+  }
+}
+
+TEST_CASE("native prepared parser preserves empty projections and empty filter values") {
+  const std::string input = ",first\r\nno,skip\n,last";
+  const uint32_t columns[] = {0};
+  const uint32_t value_offsets[] = {0, 0};
+  const uint32_t filters[] = {1, 0, 0, 1};
+
+  for (const bool count_only : {false, true}) {
+    void* parser = csv_parser_create(0, ',');
+    REQUIRE(parser != nullptr);
+    REQUIRE(csv_parser_prepare(parser, true, columns, 0, filters, 1, nullptr, 0, value_offsets, 1));
+    std::vector<std::vector<std::string>> actual;
+    uint64_t count = 0;
+    for (const char& byte : input) {
+      const auto* data = reinterpret_cast<const uint8_t*>(&byte);
+      if (count_only) {
+        count += csv_parser_write_prepared_count(parser, data, 1, false);
+      } else {
+        append_batch_rows(csv_parser_write_prepared_batch(parser, data, 1, false), actual);
+      }
+    }
+    if (count_only) {
+      count += csv_parser_write_prepared_count(parser, nullptr, 0, true);
+      REQUIRE(count == 2);
+    } else {
+      append_batch_rows(csv_parser_write_prepared_batch(parser, nullptr, 0, true), actual);
+      REQUIRE(actual == std::vector<std::vector<std::string>>(2));
+    }
+    REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+    csv_parser_destroy(parser);
+  }
+}
+
+TEST_CASE("native prepared parser requires preparation and supports reset") {
+  const uint32_t value_offsets[] = {0};
+  const std::string first = "old,\"unfinished";
+  const std::string replacement = "new,value\n";
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  REQUIRE(csv_parser_write_prepared_batch(parser, nullptr, 0, true) == nullptr);
+  REQUIRE(std::string_view(csv_parser_last_error(parser)).find("prepared configuration") != std::string_view::npos);
+  csv_parser_reset(parser);
+
+  REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, value_offsets, 0));
+  void* partial =
+      csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(first.data()), first.size(), false);
+  REQUIRE(partial != nullptr);
+  REQUIRE(csv_batch_row_count(partial) == 0);
+  csv_batch_destroy(partial);
+  REQUIRE_FALSE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, value_offsets, 0));
+  csv_parser_reset(parser);
+
+  REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, value_offsets, 0));
+  void* batch = csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(replacement.data()),
+                                                replacement.size(), true);
+  require_two_field_batch(batch, "new", "value");
+  REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+  csv_batch_destroy(batch);
+  csv_parser_destroy(parser);
+}
+
+TEST_CASE("native prepared count distinguishes errors from zero matches") {
+  constexpr uint64_t error_result = std::numeric_limits<uint64_t>::max();
+  REQUIRE(csv_parser_write_prepared_count(nullptr, nullptr, 0, true) == error_result);
+
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  REQUIRE(csv_parser_write_prepared_count(parser, nullptr, 0, true) == error_result);
+  REQUIRE(std::string_view(csv_parser_last_error(parser)) == "parser has no prepared configuration");
+  csv_parser_reset(parser);
+
+  const std::string value = "keep";
+  const uint32_t value_offsets[] = {0, 4};
+  const uint32_t filters[] = {1, 0, 0, 1};
+  REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, filters, 1, reinterpret_cast<const uint8_t*>(value.data()),
+                             value.size(), value_offsets, 1));
+
+  SECTION("invalid input retains its error on later writes") {
+    REQUIRE(csv_parser_write_prepared_count(parser, nullptr, 1, false) == error_result);
+    REQUIRE(std::string_view(csv_parser_last_error(parser)) == "prepared parser input is invalid");
+    REQUIRE(csv_parser_write_prepared_count(parser, nullptr, 0, true) == error_result);
+    REQUIRE(std::string_view(csv_parser_last_error(parser)) == "prepared parser input is invalid");
+  }
+
+  SECTION("valid zero matches and later matching rows remain counts") {
+    const std::string rejected = "drop\n";
+    REQUIRE(csv_parser_write_prepared_count(parser, reinterpret_cast<const uint8_t*>(rejected.data()), rejected.size(),
+                                            false) == 0);
+    REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+    REQUIRE(csv_parser_write_prepared_count(parser, reinterpret_cast<const uint8_t*>(value.data()), value.size(),
+                                            true) == 1);
+    REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+  }
+
+  csv_parser_destroy(parser);
 }
 
 TEST_CASE("native C ABI evaluates AND filters across columns and chunks") {

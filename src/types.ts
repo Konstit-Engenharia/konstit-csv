@@ -2,10 +2,10 @@ import type { NativeCsvRowView } from './batches.js';
 
 export type CsvEncoding = 'utf8' | 'latin1' | 'iso88591' | 'iso-8859-1';
 export interface CsvZipCompression {
-  format: 'zip';
-  entry: string;
-  maxCompressionRatio?: number;
-  maxDecompressedBytes?: number;
+  readonly format: 'zip';
+  readonly entry: string;
+  readonly maxCompressionRatio?: number;
+  readonly maxDecompressedBytes?: number;
 }
 export type CsvCompression = Bun.CompressionFormat | 'auto' | CsvZipCompression;
 export type CsvDelimiter =
@@ -55,53 +55,53 @@ export interface CsvShard {
 }
 
 export interface CsvParserOptions {
-  encoding?: CsvEncoding;
-  delimiter?: CsvDelimiter;
-  selectedColumns?: CsvColumns;
-  fixedColumns?: number;
-  strict?: boolean;
-  expectedHeaders?: readonly string[];
-  requireHeader?: boolean;
-  minDataRows?: number;
+  readonly encoding?: CsvEncoding;
+  readonly delimiter?: CsvDelimiter;
+  readonly selectedColumns?: CsvColumns;
+  readonly fixedColumns?: number;
+  readonly strict?: boolean;
+  readonly expectedHeaders?: readonly string[];
+  readonly requireHeader?: boolean;
+  readonly minDataRows?: number;
 }
 
 export interface CsvFileOptions extends CsvParserOptions {
-  chunkSize?: number;
-  compression?: CsvCompression;
+  readonly chunkSize?: number;
+  readonly compression?: CsvCompression;
 }
 
 export type CsvShardingOptions = Omit<CsvFileOptions, 'compression'> & {
-  compression?: never;
+  readonly compression?: never;
 };
 
 export interface CsvEqualsFilter {
-  column: number;
-  value: CsvFieldValue;
+  readonly column: number;
+  readonly value: CsvFieldValue;
 }
 
 export interface CsvInFilter {
-  column: number;
-  values: readonly CsvFieldValue[];
+  readonly column: number;
+  readonly values: readonly CsvFieldValue[];
 }
 
 export interface CsvNotEqualsFilter {
-  column: number;
-  notEquals: CsvFieldValue;
+  readonly column: number;
+  readonly notEquals: CsvFieldValue;
 }
 
 export interface CsvNotInFilter {
-  column: number;
-  notIn: readonly CsvFieldValue[];
+  readonly column: number;
+  readonly notIn: readonly CsvFieldValue[];
 }
 
 export interface CsvStartsWithFilter {
-  column: number;
-  prefix: CsvFieldValue;
+  readonly column: number;
+  readonly prefix: CsvFieldValue;
 }
 
 export interface CsvRegexFilter {
-  column: number;
-  regex: CsvRegex;
+  readonly column: number;
+  readonly regex: CsvRegex;
 }
 
 export type CsvNativeFilter =
@@ -113,25 +113,25 @@ export type CsvNativeFilter =
   | CsvStartsWithFilter;
 
 export interface CsvNativeProjectionOptions {
-  selectedColumns?: CsvColumns;
-  equalsFilter?: CsvEqualsFilter;
-  filters?: readonly CsvNativeFilter[];
+  readonly selectedColumns?: CsvColumns;
+  readonly equalsFilter?: CsvEqualsFilter;
+  readonly filters?: readonly CsvNativeFilter[];
 }
 
 export interface CsvApiFileOptions extends CsvFileOptions {
-  columns?: CsvColumns;
-  workerCount?: number;
-  where?: CsvFilter;
+  readonly columns?: CsvColumns;
+  readonly workerCount?: number;
+  readonly where?: CsvFilter;
 }
 
 export type CsvColumnSelection<TColumns extends CsvColumns | undefined> =
   | {
-    columns?: TColumns;
-    selectedColumns?: never;
+    readonly columns?: TColumns;
+    readonly selectedColumns?: never;
   }
   | {
-    columns?: never;
-    selectedColumns?: TColumns;
+    readonly columns?: never;
+    readonly selectedColumns?: TColumns;
   };
 
 type CsvApiOptionsWithoutSelection = Omit<CsvApiFileOptions, 'columns' | 'selectedColumns'>;
@@ -146,14 +146,14 @@ type CsvOptionsWithoutWhereWorkerCount<TColumns extends CsvColumns | undefined> 
 
 export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
   | (CsvDistributiveOmit<CsvOptionsWithoutWhereWorkerCount<TColumns>, 'strict'> & {
-    strict?: false | undefined;
-    where?: CsvFilter | undefined;
-    workerCount?: 1 | undefined;
+    readonly strict?: false | undefined;
+    readonly where?: CsvFilter | undefined;
+    readonly workerCount?: 1 | undefined;
   })
   | (CsvDistributiveOmit<CsvOptionsWithoutWhereWorkerCount<TColumns>, 'strict'> & {
-    strict: true;
-    where?: undefined;
-    workerCount?: 1 | undefined;
+    readonly strict: true;
+    readonly where?: undefined;
+    readonly workerCount?: 1 | undefined;
   });
 
 export type CsvParallelRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
@@ -163,10 +163,10 @@ export type CsvParallelRowsOptions<TColumns extends CsvColumns | undefined = und
   >
   & CsvColumnSelection<TColumns>
   & {
-    compression?: never;
-    where?: CsvFilter | undefined;
-    workerCount: number;
-    strict?: false | undefined;
+    readonly compression?: never;
+    readonly where?: CsvFilter | undefined;
+    readonly workerCount: number;
+    readonly strict?: false | undefined;
   };
 
 export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> = CsvDistributiveOmit<
@@ -184,28 +184,28 @@ export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefin
 
 export type CsvColumnarBatchOptions<TColumns extends CsvColumns | undefined = undefined> = [TColumns] extends [undefined]
   ? CsvSingleThreadRowsOptions<TColumns>
-  : CsvDistributiveOmit<CsvSingleThreadRowsOptions<TColumns>, 'strict'> & { strict?: false | undefined; };
+  : CsvDistributiveOmit<CsvSingleThreadRowsOptions<TColumns>, 'strict'> & { readonly strict?: false | undefined; };
 
 type CsvCountSingleThreadOptions =
   | (Omit<CsvApiOptionsWithoutSelection, 'where' | 'workerCount' | 'strict'> & CsvColumnSelection<CsvColumns | undefined> & {
-    strict?: false | undefined;
-    where?: CsvFilter | undefined;
-    workerCount?: 1 | undefined;
+    readonly strict?: false | undefined;
+    readonly where?: CsvFilter | undefined;
+    readonly workerCount?: 1 | undefined;
   })
   | (Omit<CsvApiOptionsWithoutSelection, 'where' | 'workerCount' | 'strict'> & CsvColumnSelection<CsvColumns | undefined> & {
-    strict: true;
-    where?: undefined;
-    workerCount?: 1 | undefined;
+    readonly strict: true;
+    readonly where?: undefined;
+    readonly workerCount?: 1 | undefined;
   });
 
 export type CsvParallelCountOptions =
   & Omit<CsvApiOptionsWithoutSelection, 'compression' | 'where' | 'workerCount' | 'strict'>
   & CsvColumnSelection<CsvColumns | undefined>
   & {
-    compression?: never;
-    where?: CsvFilter | undefined;
-    workerCount: number;
-    strict?: false | undefined;
+    readonly compression?: never;
+    readonly where?: CsvFilter | undefined;
+    readonly workerCount: number;
+    readonly strict?: false | undefined;
   };
 
 export type CsvCountOptions =

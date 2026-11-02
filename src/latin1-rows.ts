@@ -1,7 +1,6 @@
 import { decodeMaterializedField } from './materialize-field.js';
 import {
   EMPTY_BUFFER,
-  EMPTY_U32,
   native,
   type NativePointer,
   optionalLatin1RowsNative,
@@ -9,13 +8,9 @@ import {
   toArrayBuffer,
   u64ToSafeNumber,
 } from './native.js';
-import {
-  normalizeChunk,
-  normalizeColumns,
-  normalizeNativeFilterProgram,
-  normalizeNativeFilters,
-} from './normalize.js';
+import { normalizeChunk } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
+import { prepareNativeParser } from './parser.js';
 import type {
   CsvColumns,
   CsvDelimiter,
@@ -30,7 +25,7 @@ const latin1RowsParserFinalizer = new FinalizationRegistry<NativePointer>((parse
 export async function* latin1Rows(
   chunks: AsyncIterable<Uint8Array>,
   delimiter: CsvDelimiter,
-  getColumns: () => CsvColumns | undefined,
+  columns: CsvColumns | undefined,
   filters: readonly CsvNativeFilterProgramEntry[] | undefined,
 ): AsyncGenerator<CsvRow[], void> {
   if (delimiter === 'auto') {
@@ -39,7 +34,6 @@ export async function* latin1Rows(
   if (delimiter.length !== 1) {
     throw new Error('delimiter must be one character');
   }
-  const normalized = filters === undefined ? normalizeNativeFilters(undefined) : normalizeNativeFilterProgram(filters);
   const parser = optionalLatin1RowsNative()?.symbols.csv_parser_create_latin1_rows(delimiter.charCodeAt(0));
   if (parser === null || parser === undefined) {
     throw new Error('failed to create native CSV parser');
@@ -48,46 +42,16 @@ export async function* latin1Rows(
   const lifetime = {};
   latin1RowsParserFinalizer.register(lifetime, parser, lifetime);
   try {
+    const prepared = prepareNativeParser(parser, columns, filters);
     for await (const chunk of chunks) {
       const input = normalizeChunk(chunk);
-      const columns = getColumns();
-      const projection = normalizeColumns(columns);
-      const projectionCount = projection === EMPTY_U32 ? 0 : projection.length;
-      const batch = native.symbols.csv_parser_write_projected_batch_where_all(
-        parser,
-        input,
-        input,
-        false,
-        columns !== undefined,
-        projection,
-        BigInt(projectionCount),
-        normalized.descriptors,
-        BigInt(normalized.filterCount),
-        normalized.valuesData,
-        normalized.valuesData,
-        normalized.valueOffsets,
-        BigInt(normalized.valueCount),
-      );
+      const batch = prepared.writeBatch(input, false);
       const rows = consumeLatin1Batch(parser, batch);
       if (rows.length > 0) {
         yield rows;
       }
     }
-    const columns = getColumns();
-    const projection = normalizeColumns(columns);
-    const projectionCount = projection === EMPTY_U32 ? 0 : projection.length;
-    const batch = native.symbols.csv_parser_finish_projected_batch_where_all(
-      parser,
-      columns !== undefined,
-      projection,
-      BigInt(projectionCount),
-      normalized.descriptors,
-      BigInt(normalized.filterCount),
-      normalized.valuesData,
-      normalized.valuesData,
-      normalized.valueOffsets,
-      BigInt(normalized.valueCount),
-    );
+    const batch = prepared.writeBatch(EMPTY_BUFFER, true);
     const rows = consumeLatin1Batch(parser, batch);
     if (rows.length > 0) {
       yield rows;

@@ -23,6 +23,9 @@ namespace csv_native {
 
 namespace hn = hwy::HWY_NAMESPACE;
 
+// Internal prepared-count ABI reserves UINT64_MAX, outside JavaScript's safe count range, for errors.
+constexpr uint64_t prepared_count_error = std::numeric_limits<uint64_t>::max();
+
 enum class csv_encoding : int {
   utf8 = 0,
   latin1 = 1,
@@ -561,6 +564,88 @@ public:
   csv_parser(csv_encoding encoding, uint8_t delimiter, bool preserve_latin1 = false)
       : encoding_(encoding), delimiter_(delimiter), preserve_latin1_(preserve_latin1) {}
 
+  bool prepare_configuration(const uint32_t* selected_columns, size_t selected_columns_len,
+                             std::vector<row_filter> filters, const uint8_t* values_data, size_t values_data_len,
+                             const uint32_t* value_offsets, size_t total_value_count) {
+    if (configuration_initialized_) {
+      set_error("prepared configuration requires a new or reset parser");
+      return false;
+    }
+
+    // Keep every pointer in the prepared filters and projection owned by this
+    // parser. The caller's FFI buffers may be released as soon as preparation ends.
+    owned_selected_columns_.resize(std::max<size_t>(selected_columns_len, 1));
+    if (selected_columns_len != 0) {
+      std::copy_n(selected_columns, selected_columns_len, owned_selected_columns_.begin());
+    }
+    owned_filter_values_.resize(std::max<size_t>(values_data_len, 1));
+    if (values_data_len != 0) {
+      std::copy_n(values_data, values_data_len, owned_filter_values_.begin());
+    }
+    owned_filter_offsets_.assign(value_offsets, value_offsets + total_value_count + 1);
+    for (auto& filter : filters) {
+      if (is_boolean_operator(filter.kind)) {
+        continue;
+      }
+      if (filter.kind == row_filter_kind::in || filter.kind == row_filter_kind::noin) {
+        const auto first_value = filter.value_offsets - value_offsets;
+        filter.values_data = owned_filter_values_.data();
+        filter.value_offsets = owned_filter_offsets_.data() + first_value;
+      } else {
+        const auto start = filter.value == nullptr ? 0 : filter.value - values_data;
+        filter.value = owned_filter_values_.data() + start;
+      }
+    }
+
+    mode_ = output_mode::batch;
+    allow_direct_projection_ = true;
+    if (!configure(selected_columns == nullptr ? nullptr : owned_selected_columns_.data(), selected_columns_len,
+                   filters.data(), filters.size())) {
+      return false;
+    }
+    prepared_configuration_ = true;
+    prepared_direct_projection_ = direct_projection_;
+    return true;
+  }
+
+  csv_batch* write_prepared_batch(const uint8_t* data, size_t len, bool final) {
+    if (!prepared_configuration_) {
+      set_error("parser has no prepared configuration");
+      return nullptr;
+    }
+    auto batch = std::make_unique<csv_batch>();
+    batch->reserve(len, encoding_);
+    mode_ = output_mode::batch;
+    batch_ = batch.get();
+    direct_projection_ = prepared_direct_projection_;
+    restore_direct_projection_row();
+    emitted_rows_ = 0;
+    parse(data, len);
+    if (final) {
+      finish_stream();
+    } else {
+      spill_unfinished_direct_projection_row();
+      spill_unfinished_batch_row();
+    }
+    batch_ = nullptr;
+    return batch.release();
+  }
+
+  uint64_t write_prepared_count(const uint8_t* data, size_t len, bool final) {
+    if (!prepared_configuration_) {
+      set_error("parser has no prepared configuration");
+      return prepared_count_error;
+    }
+    mode_ = output_mode::count;
+    direct_projection_ = false;
+    emitted_rows_ = 0;
+    parse(data, len);
+    if (final) {
+      finish_stream();
+    }
+    return error_.empty() ? emitted_rows_ : prepared_count_error;
+  }
+
   csv_batch* write_batch(const uint8_t* data, size_t len, bool final) {
     if (encoding_ == csv_encoding::latin1) {
       return write_latin1_batch_impl(data, len, final, false);
@@ -715,6 +800,12 @@ public:
   }
 
   void reset() {
+    configuration_initialized_ = false;
+    prepared_configuration_ = false;
+    prepared_direct_projection_ = false;
+    owned_selected_columns_.clear();
+    owned_filter_values_.clear();
+    owned_filter_offsets_.clear();
     field_.clear();
     row_fields_.clear();
     projected_fields_.clear();
@@ -828,6 +919,8 @@ private:
 
   bool configure(const uint32_t* selected_columns, size_t selected_columns_len, const row_filter* filters,
                  size_t filter_count) {
+    configuration_initialized_ = true;
+    prepared_configuration_ = false;
     selected_columns_ = selected_columns;
     selected_columns_len_ = selected_columns_len;
     projection_enabled_ = selected_columns != nullptr;
@@ -2059,6 +2152,12 @@ private:
   std::string utf8_filter_field_;
   output_mode mode_ = output_mode::batch;
   csv_batch* batch_ = nullptr;
+  bool configuration_initialized_ = false;
+  bool prepared_configuration_ = false;
+  bool prepared_direct_projection_ = false;
+  std::vector<uint32_t> owned_selected_columns_;
+  std::vector<uint8_t> owned_filter_values_;
+  std::vector<uint32_t> owned_filter_offsets_;
   const uint32_t* selected_columns_ = nullptr;
   size_t selected_columns_len_ = 0;
   std::vector<uint8_t> selected_column_counts_;
@@ -2347,6 +2446,53 @@ CSV_EXPORT void* csv_parser_create_latin1_rows(uint8_t delimiter) {
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }
+
+// Internal fixed-configuration entry points used by high-level operations.
+CSV_EXPORT bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
+                                   uint64_t selected_columns_len, const uint32_t* filter_descriptors,
+                                   uint64_t filter_count, const uint8_t* values_data, uint64_t values_data_len,
+                                   const uint32_t* value_offsets, uint64_t total_value_count) {
+  if (parser == nullptr) {
+    return false;
+  }
+  auto* typed = csv_native::checked_parser(parser);
+  if (has_projection && !csv_native::valid_projection(*typed, selected_columns, selected_columns_len)) {
+    return false;
+  }
+  std::vector<csv_native::row_filter> filters;
+  if (!csv_native::build_row_filters(*typed, filter_descriptors, filter_count, values_data, values_data_len,
+                                     value_offsets, total_value_count, filters)) {
+    return false;
+  }
+  return typed->prepare_configuration(has_projection ? selected_columns : nullptr,
+                                      has_projection ? static_cast<size_t>(selected_columns_len) : 0,
+                                      std::move(filters), values_data, static_cast<size_t>(values_data_len),
+                                      value_offsets, static_cast<size_t>(total_value_count));
+}
+
+CSV_EXPORT void* csv_parser_write_prepared_batch(void* parser, const uint8_t* data, uint64_t len, bool final) {
+  if (parser == nullptr) {
+    return nullptr;
+  }
+  auto* typed = csv_native::checked_parser(parser);
+  if (len > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) || (data == nullptr && len != 0)) {
+    typed->set_error("prepared parser input is invalid");
+    return nullptr;
+  }
+  return typed->write_prepared_batch(data, static_cast<size_t>(len), final);
+}
+
+CSV_EXPORT uint64_t csv_parser_write_prepared_count(void* parser, const uint8_t* data, uint64_t len, bool final) {
+  if (parser == nullptr) {
+    return csv_native::prepared_count_error;
+  }
+  auto* typed = csv_native::checked_parser(parser);
+  if (len > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) || (data == nullptr && len != 0)) {
+    typed->set_error("prepared parser input is invalid");
+    return csv_native::prepared_count_error;
+  }
+  return typed->write_prepared_count(data, static_cast<size_t>(len), final);
+}
 
 CSV_EXPORT void csv_parser_reset(void* parser) {
   if (parser == nullptr) {

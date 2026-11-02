@@ -5,6 +5,7 @@ import {
 import { findCsvSafeShards } from './files.js';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
 import { normalizeColumns } from './normalize.js';
+import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvApiFileOptions,
   CsvColumns,
@@ -57,7 +58,14 @@ interface WorkerErrorMessage {
  * Use this when the main cost is parsing/materialization and you want explicit
  * worker fan-out. `workerCount` is required here by design.
  */
-export async function* parallelRows<TColumns extends CsvColumns | undefined = undefined>(
+export function parallelRows<TColumns extends CsvColumns | undefined = undefined>(
+  path: string,
+  options: CsvParallelRowsOptions<TColumns>,
+): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
+  return iterateParallelRows(path, snapshotCsvOptions(options));
+}
+
+async function* iterateParallelRows<TColumns extends CsvColumns | undefined>(
   path: string,
   options: CsvParallelRowsOptions<TColumns>,
 ): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
