@@ -13,6 +13,7 @@
 extern "C" {
 int csv_runtime_supports_avx2();
 void* csv_parser_create(int encoding, uint8_t delimiter);
+void* csv_parser_create_latin1_rows(uint8_t delimiter);
 void csv_parser_destroy(void* parser);
 void* csv_parser_write_batch(void* parser, const uint8_t* data, uint64_t len, bool final);
 void* csv_parser_finish_batch(void* parser);
@@ -755,6 +756,76 @@ TEST_CASE("native C ABI materializes filtered unprojected rows directly across c
           "akeeptail");
   csv_batch_destroy(second);
   csv_parser_destroy(parser);
+}
+
+TEST_CASE("private Latin-1 rows preserve raw bytes and UTF-8 filters across chunk splits") {
+  const std::string e_acute(1, static_cast<char>(0xE9));
+  const std::string c_cedilla(1, static_cast<char>(0xE7));
+  const std::string values =
+      decode_latin1_reference(reinterpret_cast<const uint8_t*>(e_acute.data()), e_acute.size()) + "EX";
+  const uint32_t value_offsets[] = {0, 2, 4};
+  const uint32_t filters[] = {
+      1, 2, 0, 1, // column 2 equals UTF-8 e-acute
+      5, 3, 1, 1, // column 3 is not "EX"
+  };
+  const std::string input = e_acute + ",\"q\"\"\n" + c_cedilla + "\"," + e_acute + ",OK\r\n" + c_cedilla +
+                            ",\"rollback\"\"value\",drop,\"skip\r\nthis\"\r\n" + e_acute + ",," + e_acute + ",EX\n" +
+                            c_cedilla + ",\"last\"\"" + e_acute + "\"," + e_acute + ",OK";
+  const std::vector<std::vector<std::string>> expected = {
+      {e_acute, "q\"\n" + c_cedilla, e_acute, "OK"},
+      {c_cedilla, "last\"" + e_acute, e_acute, "OK"},
+  };
+  const std::vector<std::vector<uint32_t>> projections = {{}, {0, 1, 2, 3, 5}, {3, 1, 5, 0, 2}};
+
+  for (const auto& projection : projections) {
+    for (size_t split = 0; split <= input.size(); ++split) {
+      CAPTURE(projection, split);
+      void* parser = csv_parser_create_latin1_rows(',');
+      REQUIRE(parser != nullptr);
+      size_t emitted_rows = 0;
+      for (const bool final : {false, true}) {
+        const size_t offset = final ? split : 0;
+        const size_t len = final ? input.size() - split : split;
+        void* batch = csv_parser_write_projected_batch_where_all(
+            parser, reinterpret_cast<const uint8_t*>(input.data() + offset), len, final, !projection.empty(),
+            projection.empty() ? nullptr : projection.data(), projection.size(), filters, 2,
+            reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 2);
+        REQUIRE(batch != nullptr);
+        REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+        const uint64_t* row_offsets = csv_batch_row_offsets_ptr(batch);
+        const uint64_t* field_offsets = csv_batch_field_offsets_ptr(batch);
+        const uint8_t* data = csv_batch_data_ptr(batch);
+        REQUIRE(row_offsets[0] == 0);
+        REQUIRE(field_offsets[0] == 0);
+        for (uint64_t row = 0; row < csv_batch_row_count(batch); ++row) {
+          REQUIRE(emitted_rows < expected.size());
+          const auto& expected_row = expected[emitted_rows++];
+          const size_t columns = projection.empty() ? expected_row.size() : projection.size();
+          REQUIRE(row_offsets[row + 1] - row_offsets[row] == columns);
+          for (size_t column = 0; column < columns; ++column) {
+            const size_t source_column = projection.empty() ? column : projection[column];
+            const std::string_view expected_value = source_column < expected_row.size()
+                                                        ? std::string_view(expected_row[source_column])
+                                                        : std::string_view{};
+            const uint64_t field = row_offsets[row] + column;
+            const uint64_t start = field_offsets[field];
+            const uint64_t end = field_offsets[field + 1];
+            REQUIRE(end >= start);
+            REQUIRE(end <= csv_batch_data_len(batch));
+            REQUIRE(end - start == expected_value.size());
+            if (!expected_value.empty()) {
+              REQUIRE(std::string_view(reinterpret_cast<const char*>(data + start), end - start) == expected_value);
+            }
+          }
+        }
+        REQUIRE(row_offsets[csv_batch_row_count(batch)] == csv_batch_total_fields(batch));
+        REQUIRE(field_offsets[csv_batch_total_fields(batch)] == csv_batch_data_len(batch));
+        csv_batch_destroy(batch);
+      }
+      REQUIRE(emitted_rows == expected.size());
+      csv_parser_destroy(parser);
+    }
+  }
 }
 
 TEST_CASE("native C ABI stops after definitive Boolean rejection but keeps CSV structure") {

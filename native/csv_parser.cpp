@@ -558,7 +558,8 @@ uint64_t clear_mask_bits_through(uint64_t bits, size_t lane) {
 
 class csv_parser {
 public:
-  csv_parser(csv_encoding encoding, uint8_t delimiter) : encoding_(encoding), delimiter_(delimiter) {}
+  csv_parser(csv_encoding encoding, uint8_t delimiter, bool preserve_latin1 = false)
+      : encoding_(encoding), delimiter_(delimiter), preserve_latin1_(preserve_latin1) {}
 
   csv_batch* write_batch(const uint8_t* data, size_t len, bool final) {
     if (encoding_ == csv_encoding::latin1) {
@@ -1111,6 +1112,9 @@ private:
     }
 
     size_t i = 0;
+    if (!strict_quote_syntax_ && row_filter_rejected()) {
+      i = skip_rejected_row_tail(data, len);
+    }
     while (i < len) {
       if (in_quotes_) {
         if (pending_quote_) {
@@ -1156,6 +1160,9 @@ private:
         finish_field();
         saw_row_data_ = true;
         ++i;
+        if (!strict_quote_syntax_ && row_filter_rejected()) {
+          i += skip_rejected_row_tail(data + i, len - i);
+        }
         continue;
       }
 
@@ -1176,6 +1183,9 @@ private:
             finish_field();
             saw_row_data_ = true;
             i = terminator_index + 1;
+            if (!strict_quote_syntax_ && row_filter_rejected()) {
+              i += skip_rejected_row_tail(data + i, len - i);
+            }
             continue;
           }
           if (terminator == '\n' || terminator == '\r') {
@@ -1204,6 +1214,32 @@ private:
       append_plain_span(data + i, span, len - i);
       i += span;
     }
+  }
+
+  size_t skip_rejected_row_tail(const uint8_t* data, size_t len) {
+    // A definitive false result cannot be changed by later fields. Retain the tolerant
+    // quote state while skipping their boundaries; strict syntax still uses parse().
+    csv_structural_state state{
+        .in_quotes = in_quotes_,
+        .pending_quote = pending_quote_,
+        .at_field_start = at_field_start_,
+        .previous_was_cr = previous_was_cr_,
+        .saw_row_data = saw_row_data_,
+    };
+    size_t consumed = len;
+    const bool unfinished = scan_csv_row_ends<false>(data, len, delimiter_, 0, state, [&](uint64_t row_end) {
+      consumed = static_cast<size_t>(row_end);
+      return false;
+    });
+    in_quotes_ = state.in_quotes;
+    pending_quote_ = state.pending_quote;
+    at_field_start_ = state.at_field_start;
+    previous_was_cr_ = state.previous_was_cr;
+    saw_row_data_ = state.saw_row_data;
+    if (!unfinished) {
+      finish_row();
+    }
+    return consumed;
   }
 
   void parse_count_only(const uint8_t* data, size_t len) {
@@ -1704,10 +1740,16 @@ private:
       return;
     }
 
+    // Private row materialization stores Latin1 bytes, but predicates always consume UTF-8.
+    if (preserve_latin1_ && is_filter_column(current_column_)) {
+      utf8_filter_field_.clear();
+      append_latin1(utf8_filter_field_, reinterpret_cast<const uint8_t*>(field_.data()), field_.size());
+    }
+    const std::string& filter_field = preserve_latin1_ ? utf8_filter_field_ : field_;
     bool changed = false;
     for (uint32_t filter_index = first_filter_by_column_[current_column_];
          filter_index != std::numeric_limits<uint32_t>::max(); filter_index = next_filter_[filter_index]) {
-      const bool matched = field_matches_filter(filter_index);
+      const bool matched = field_matches_filter(filter_index, filter_field);
       changed = changed || !row_filter_seen_[filter_index] || row_filter_matched_[filter_index] != matched;
       row_filter_seen_[filter_index] = true;
       row_filter_matched_[filter_index] = matched;
@@ -1789,23 +1831,23 @@ private:
     return filter_truth_stack_[0];
   }
 
-  bool field_matches_filter(size_t filter_index) const {
+  bool field_matches_filter(size_t filter_index, const std::string& field) const {
     const auto& filter = filters_[filter_index];
     switch (filter.kind) {
     case row_filter_kind::equals:
-      return field_equals_filter(filter.value, filter.value_len);
+      return field_equals_filter(field, filter.value, filter.value_len);
     case row_filter_kind::in:
-      return field_in_filter(filter, in_filter_caches_[filter_index]);
+      return field_in_filter(field, filter, in_filter_caches_[filter_index]);
     case row_filter_kind::neq:
-      return !field_equals_filter(filter.value, filter.value_len);
+      return !field_equals_filter(field, filter.value, filter.value_len);
     case row_filter_kind::noin:
-      return !field_in_filter(filter, in_filter_caches_[filter_index]);
+      return !field_in_filter(field, filter, in_filter_caches_[filter_index]);
     case row_filter_kind::starts_with:
-      return field_starts_with_filter(filter);
+      return field_starts_with_filter(field, filter);
     case row_filter_kind::regex: {
       const auto& expression = regex_filter_caches_[filter_index].expression;
       return expression != nullptr &&
-             re2::RE2::PartialMatch(absl::string_view(field_.data(), field_.size()), *expression);
+             re2::RE2::PartialMatch(absl::string_view(field.data(), field.size()), *expression);
     }
     case row_filter_kind::none:
       return true;
@@ -1817,42 +1859,42 @@ private:
     return false;
   }
 
-  bool field_equals_filter(const uint8_t* value, size_t value_len) const {
-    if (field_.size() != value_len) {
+  bool field_equals_filter(const std::string& field, const uint8_t* value, size_t value_len) const {
+    if (field.size() != value_len) {
       return false;
     }
     if (value_len == 0) {
       return true;
     }
-    return std::memcmp(field_.data(), value, value_len) == 0;
+    return std::memcmp(field.data(), value, value_len) == 0;
   }
 
-  bool field_in_filter(const row_filter& filter, const in_filter_cache& cache) const {
+  bool field_in_filter(const std::string& field, const row_filter& filter, const in_filter_cache& cache) const {
     if (filter.value_offsets == nullptr) {
       return false;
     }
     if (cache.use_set) {
-      return cache.value_set.find(field_) != cache.value_set.end();
+      return cache.value_set.find(field) != cache.value_set.end();
     }
     for (size_t index = 0; index < filter.value_count; ++index) {
       const uint32_t start = filter.value_offsets[index];
       const uint32_t end = filter.value_offsets[index + 1];
       const uint8_t* value = filter.values_data == nullptr ? nullptr : filter.values_data + start;
-      if (field_equals_filter(value, end - start)) {
+      if (field_equals_filter(field, value, end - start)) {
         return true;
       }
     }
     return false;
   }
 
-  bool field_starts_with_filter(const row_filter& filter) const {
-    if (field_.size() < filter.value_len) {
+  bool field_starts_with_filter(const std::string& field, const row_filter& filter) const {
+    if (field.size() < filter.value_len) {
       return false;
     }
     if (filter.value_len == 0) {
       return true;
     }
-    return std::memcmp(field_.data(), filter.value, filter.value_len) == 0;
+    return std::memcmp(field.data(), filter.value, filter.value_len) == 0;
   }
 
   void commit_deferred_batch_row() {
@@ -2013,6 +2055,8 @@ private:
 
   csv_encoding encoding_;
   uint8_t delimiter_;
+  const bool preserve_latin1_;
+  std::string utf8_filter_field_;
   output_mode mode_ = output_mode::batch;
   csv_batch* batch_ = nullptr;
   const uint32_t* selected_columns_ = nullptr;
@@ -2292,6 +2336,14 @@ CSV_EXPORT void* csv_parser_create(int encoding, uint8_t delimiter) {
   }
   const auto selected = encoding == 1 ? csv_native::csv_encoding::latin1 : csv_native::csv_encoding::utf8;
   return new csv_native::csv_parser(selected, delimiter);
+}
+
+// Internal materialization entry point. Its batches contain Latin1 and must never escape as public UTF-8 batches.
+CSV_EXPORT void* csv_parser_create_latin1_rows(uint8_t delimiter) {
+  if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
+    return nullptr;
+  }
+  return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter, true);
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }

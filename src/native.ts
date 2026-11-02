@@ -356,9 +356,33 @@ const CSV_SYMBOLS = {
   },
 } as const;
 
-export const native = loadNative();
+const nativeLibraryPath = resolveNativeLibraryPath();
+export const native = dlopen(nativeLibraryPath, CSV_SYMBOLS);
 
-function loadNative(): Library<typeof CSV_SYMBOLS> {
+const LATIN1_ROWS_SYMBOLS = {
+  // C signature:
+  // void* csv_parser_create_latin1_rows(uint8_t delimiter);
+  csv_parser_create_latin1_rows: {
+    args: ['u8'],
+    returns: 'ptr',
+  },
+} as const;
+
+let latin1RowsNative: Library<typeof LATIN1_ROWS_SYMBOLS> | null | undefined;
+
+export function optionalLatin1RowsNative(): Library<typeof LATIN1_ROWS_SYMBOLS> | null {
+  if (latin1RowsNative === undefined) {
+    try {
+      latin1RowsNative = dlopen(nativeLibraryPath, LATIN1_ROWS_SYMBOLS);
+    } catch {
+      // Older prebuilt libraries do not expose this optional optimization.
+      latin1RowsNative = null;
+    }
+  }
+  return latin1RowsNative;
+}
+
+function resolveNativeLibraryPath(): string {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
   const target = `${process.platform}-${process.arch}`;
   const configuredPath = process.env['CSV_NATIVE_LIBRARY_PATH'];
@@ -366,7 +390,7 @@ function loadNative(): Library<typeof CSV_SYMBOLS> {
     ? requireNativeLibraryPath(nativeLibraryCandidates(root, target, suffix))
     : requireConfiguredNativeLibraryPath(configuredPath);
 
-  return dlopen(resolve(libraryPath), CSV_SYMBOLS);
+  return resolve(libraryPath);
 }
 
 export function requireConfiguredNativeLibraryPath(configuredPath: string): string {

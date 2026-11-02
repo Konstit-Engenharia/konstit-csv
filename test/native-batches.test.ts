@@ -181,6 +181,71 @@ describe('NativeCsvParser batches and materialization', () => {
     expect(batch.rowsInto([])[0]?.[0]).toBe(expectedFirstField);
   });
 
+  test('materializes every one-byte and two-byte value like Buffer UTF-8 decoding', () => {
+    for (const width of [1, 2]) {
+      const count = width === 1 ? 256 : 65_536;
+      using parser = new NativeCsvParser();
+      using batch = parser.writeBatch(Buffer.from(`${'a'.repeat(width)}\n`.repeat(count)), true);
+      const data = batch.data();
+      const expected: string[][] = [];
+      for (let value = 0; value < count; ++value) {
+        const start = value * width;
+        data[start] = width === 1 ? value : value >>> 8;
+        if (width === 2) {
+          data[start + 1] = value & 255;
+        }
+        expected.push([data.toString('utf8', start, start + width)]);
+      }
+
+      const target: string[][] = [];
+      expect(batch.rowsInto(target)).toEqual(expected);
+      expect(batch.rowsInto(target, [0])).toEqual(expected);
+    }
+  });
+
+  test('short-field materialization observes byte and offset mutations with reused rows', () => {
+    using parser = new NativeCsvParser({ delimiter: ';' });
+    using batch = parser.writeBatch(Buffer.from(';a;SP;long\n'), true);
+    const target = [['stale', 'values']];
+    const originalRow = target[0];
+    expect(batch.rowsInto(target)).toEqual([['', 'a', 'SP', 'long']]);
+    expect(target[0]).toBe(originalRow);
+
+    batch.data().set([0x7a, 0x52, 0x4a]);
+    expect(batch.rowsInto(target)).toEqual([['', 'z', 'RJ', 'long']]);
+    batch.data().set([0xff, 0xc3, 0xa9]);
+    expect(batch.rowsInto(target, [2, 1, 0, 9])).toEqual([['é', '\ufffd', '', '']]);
+    expect(target[0]).toBe(originalRow);
+
+    batch.data().set([0x61, 0x62, 0x63]);
+    batch.fieldOffsets().set([0n, 1n, 3n, 3n, 7n]);
+    expect(batch.rowsInto(target)).toEqual([['a', 'bc', '', 'long']]);
+    expect(batch.rowsInto(target, [2, 1, 0])).toEqual([['', 'bc', 'a']]);
+  });
+
+  test('validates empty and short field offsets before decoding', () => {
+    using parser = new NativeCsvParser({ delimiter: ';' });
+    using batch = parser.writeBatch(Buffer.from(';a;SP\n'), true);
+    const offsets = batch.fieldOffsets();
+    offsets[0] = 4n;
+    offsets[1] = 4n;
+    expect(() => batch.rowsInto([])).toThrow('field offset exceeds backing storage: 4');
+    expect(() => batch.rowsInto([], [0])).toThrow('field offset exceeds backing storage: 4');
+    offsets[0] = 0n;
+    offsets[1] = 0x20_0000_0000_0000n;
+    expect(() => batch.rowsInto([])).toThrow('field offset exceeds Number.MAX_SAFE_INTEGER');
+    expect(() => batch.rowsInto([], [0])).toThrow('field offset exceeds Number.MAX_SAFE_INTEGER');
+  });
+
+  test('materialized empty and short strings survive batch disposal', () => {
+    using parser = new NativeCsvParser({ delimiter: ';' });
+    const batch = parser.writeBatch(Buffer.from(';a;SP;é\n'), true);
+    const rows = batch.rowsInto([]);
+    batch.close();
+    expect(rows).toEqual([['', 'a', 'SP', 'é']]);
+    expect(() => batch.rowsInto(rows)).toThrow('native CSV batch is closed');
+  });
+
   test('reports exact numeric offset range and index errors', () => {
     const rowOffsets = new BigUint64Array([0n, 1n]);
     const data = Buffer.from('a');

@@ -1,3 +1,4 @@
+import { decodeMaterializedField } from './materialize-field.js';
 import {
   EMPTY_BUFFER,
   native,
@@ -200,7 +201,7 @@ export class NativeCsvBatch {
 
           const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
           const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
-          row[outputIndex] = data.toString('utf8', start, end);
+          row[outputIndex] = decodeMaterializedField(data, start, end, 'utf8');
         }
         target[rowIndex] = row;
       }
@@ -218,7 +219,7 @@ export class NativeCsvBatch {
         const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
         const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
         const column = fieldIndex - fieldStart;
-        row[column] = data.toString('utf8', start, end);
+        row[column] = decodeMaterializedField(data, start, end, 'utf8');
       }
       target[rowIndex] = row;
     }

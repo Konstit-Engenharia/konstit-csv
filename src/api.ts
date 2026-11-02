@@ -17,7 +17,12 @@ import {
   not,
   re,
 } from './filter.js';
-import { normalizeColumns } from './normalize.js';
+import { latin1Rows } from './latin1-rows.js';
+import { optionalLatin1RowsNative } from './native.js';
+import {
+  encodingCode,
+  normalizeColumns,
+} from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import { NativeCsvParser } from './parser.js';
 import {
@@ -108,8 +113,19 @@ export async function* rows<TColumns extends CsvColumns | undefined = undefined>
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser(toParserOptions(options, input.delimiter));
+  const parserOptions = toParserOptions(options, input.delimiter);
   const validator = strictSchemaValidator(options);
+  if (
+    options.strict !== true && options.fixedColumns === undefined && validator === undefined
+    && encodingCode(options.encoding) === 1 && optionalLatin1RowsNative() !== null
+  ) {
+    yield* latin1Rows(input.chunks(), input.delimiter, () => selectedColumns(options), filters) as AsyncGenerator<
+      CsvProjectedRow<TColumns>[],
+      void
+    >;
+    return;
+  }
+  using parser = new NativeCsvParser(parserOptions);
   for await (const chunk of input.chunks()) {
     const batch = writeMaterializeBatch(parser, chunk, options, filters);
     if (batch.rowCount > 0) {
