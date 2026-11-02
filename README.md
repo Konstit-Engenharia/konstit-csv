@@ -312,6 +312,9 @@ console.log(batch.rowsInto(rowsBuffer));
 Always dispose parser-owned batches and the parser. `NativeCsvParser` supports row batches, projected batches, and direct
 count filters.
 
+Keep filter and projection options consistent across chunks belonging to the same row. Complete the row or reset the
+parser before changing those options; fields already consumed cannot be re-evaluated with a different filter.
+
 Resource objects expose `close()`, `dispose()`, `closed`, and `Symbol.dispose`, so explicit-resource-management syntax works
 in Bun:
 

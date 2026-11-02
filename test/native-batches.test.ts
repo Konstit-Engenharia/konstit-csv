@@ -125,6 +125,109 @@ describe('NativeCsvParser batches and materialization', () => {
     ]);
   });
 
+  test('keeps nonzero-offset views live after numeric materialization', () => {
+    const storage = new ArrayBuffer(64);
+    const rowOffsets = new BigUint64Array(storage, 8, 3);
+    const fieldOffsets = new BigUint64Array(storage, 32, 3);
+    rowOffsets.set([0n, 1n, 2n]);
+    fieldOffsets.set([0n, 1n, 2n]);
+    const rowView = new NativeCsvRowView(Buffer.from('ab'), rowOffsets, fieldOffsets);
+
+    expect(rowView.fieldCount).toBe(1);
+    expect(rowView.fieldString(0)).toBe('a');
+    rowOffsets[1] = 2n;
+    expect(rowView.fieldCount).toBe(2);
+    fieldOffsets[1] = 2n;
+    expect(rowView.fieldString(0)).toBe('ab');
+  });
+
+  test('preserves projected row reuse and missing-column behavior', () => {
+    using parser = new NativeCsvParser({ delimiter: ';' });
+    using batch = parser.writeBatch(readCsvFixture('native/quoted-semicolon-people.csv'), true);
+    const target = [['stale', 'value'], ['stale']];
+    const result = batch.rowsInto(target, [2, 0, 5]);
+
+    expect(result).toBe(target);
+    expect(result).toEqual([
+      ['SP', '1', ''],
+      ['RJ', '2', ''],
+    ]);
+    expect(() => batch.rowsInto(target, [2, 2])).toThrow('selected column repeated: 2');
+  });
+
+  test('observes mutable batch offsets after materialization', () => {
+    using parser = new NativeCsvParser({ delimiter: ';' });
+    using batch = parser.writeBatch(readCsvFixture('native/quoted-semicolon-people.csv'), true);
+    expect(batch.rowsInto([])).toEqual([
+      ['1', 'Ana', 'SP'],
+      ['2', 'Joao', 'RJ'],
+    ]);
+
+    const rowOffsets = batch.rowOffsets();
+    rowOffsets[1] = 6n;
+    expect(batch.rowsInto([])).toEqual([
+      ['1', 'Ana', 'SP', '2', 'Joao', 'RJ'],
+      [],
+    ]);
+
+    rowOffsets[1] = 3n;
+    const fieldOffsets = batch.fieldOffsets();
+    const firstFieldEnd = fieldOffsets[1];
+    if (firstFieldEnd === undefined) {
+      throw new Error('missing first field offset');
+    }
+    fieldOffsets[1] = firstFieldEnd + 1n;
+    const expectedFirstField = batch.data().subarray(0, Number(firstFieldEnd) + 1).toString('utf8');
+    expect(batch.rowsInto([])[0]?.[0]).toBe(expectedFirstField);
+  });
+
+  test('reports exact numeric offset range and index errors', () => {
+    const rowOffsets = new BigUint64Array([0n, 1n]);
+    const data = Buffer.from('a');
+
+    const aboveUint32Row = new NativeCsvRowView(
+      data,
+      new BigUint64Array([0n, 0x100000001n]),
+      new BigUint64Array([0n, 1n]),
+    );
+    expect(() => aboveUint32Row.fieldCount).toThrow('exceeds backing storage: 4294967297');
+
+    const aboveUint32 = new NativeCsvRowView(data, rowOffsets, new BigUint64Array([0n, 0x100000001n]));
+    expect(() => aboveUint32.fieldRange(0)).toThrow('exceeds backing storage: 4294967297');
+
+    const maxSafeRow = new NativeCsvRowView(
+      data,
+      new BigUint64Array([0n, BigInt(Number.MAX_SAFE_INTEGER)]),
+      new BigUint64Array([0n, 1n]),
+    );
+    expect(() => maxSafeRow.fieldCount).toThrow('exceeds backing storage: 9007199254740991');
+
+    const maxSafe = new NativeCsvRowView(data, rowOffsets, new BigUint64Array([0n, BigInt(Number.MAX_SAFE_INTEGER)]));
+    expect(() => maxSafe.fieldRange(0)).toThrow('exceeds backing storage: 9007199254740991');
+
+    const unsafe = new NativeCsvRowView(
+      data,
+      rowOffsets,
+      new BigUint64Array([0n, BigInt(Number.MAX_SAFE_INTEGER) + 1n]),
+    );
+    expect(() => unsafe.fieldRange(0)).toThrow('exceeds Number.MAX_SAFE_INTEGER: 9007199254740992');
+
+    const valid = new NativeCsvRowView(data, rowOffsets, new BigUint64Array([0n, 1n]));
+    expect(() => valid.fieldRange(0.5)).toThrow('field offset index out of range: 0.5');
+    expect(() => valid.moveTo(-1)).toThrow('row -1 offset index out of range: -1');
+    expect(() => valid.moveTo(2)).toThrow('row 2 offset index out of range: 2');
+  });
+
+  test('preserves closed-batch errors', () => {
+    using parser = new NativeCsvParser({ delimiter: ';' });
+    const batch = parser.writeBatch(readCsvFixture('native/quoted-semicolon-people.csv'), true);
+    batch.close();
+
+    expect(() => batch.rowsInto([])).toThrow('native CSV batch is closed');
+    expect(() => batch.rowFieldCount(0)).toThrow('native CSV batch is closed');
+    expect(() => batch.fieldRange(0, 0)).toThrow('native CSV batch is closed');
+  });
+
   test('parseCsvBuffer materializes selected columns', () => {
     expect(parseCsvBuffer(readCsvFixture('native/quoted-semicolon-one-person-with-header.csv'), {
       delimiter: ';',

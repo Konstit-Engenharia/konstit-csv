@@ -22,14 +22,16 @@ import type {
 
 export class NativeCsvRowView {
   #data: Buffer;
-  #rowOffsets: BigUint64Array;
+  #rowOffsetWords: Uint32Array;
   #fieldOffsets: BigUint64Array;
+  #fieldOffsetWords: Uint32Array;
   #rowIndex: number;
 
   constructor(data: Buffer, rowOffsets: BigUint64Array, fieldOffsets: BigUint64Array, rowIndex = 0) {
     this.#data = data;
-    this.#rowOffsets = rowOffsets;
+    this.#rowOffsetWords = offsetWords(rowOffsets);
     this.#fieldOffsets = fieldOffsets;
+    this.#fieldOffsetWords = offsetWords(fieldOffsets);
     this.#rowIndex = rowIndex;
   }
 
@@ -57,8 +59,8 @@ export class NativeCsvRowView {
     }
 
     return {
-      start: offsetAt(this.#fieldOffsets, fieldIndex, 'field offset', this.#data.byteLength),
-      end: offsetAt(this.#fieldOffsets, fieldIndex + 1, 'field offset', this.#data.byteLength),
+      start: offsetAt(this.#fieldOffsetWords, fieldIndex, 'field offset', this.#data.byteLength),
+      end: offsetAt(this.#fieldOffsetWords, fieldIndex + 1, 'field offset', this.#data.byteLength),
     };
   }
 
@@ -121,8 +123,8 @@ export class NativeCsvRowView {
 
   #rowRange(rowIndex: number): readonly [number, number] {
     const maxFieldIndex = this.#fieldOffsets.length - 1;
-    const rowStart = offsetAt(this.#rowOffsets, rowIndex, `row ${rowIndex} offset`, maxFieldIndex);
-    const rowEnd = offsetAt(this.#rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, maxFieldIndex);
+    const rowStart = offsetAt(this.#rowOffsetWords, rowIndex, `row ${rowIndex} offset`, maxFieldIndex);
+    const rowEnd = offsetAt(this.#rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, maxFieldIndex);
     if (rowEnd < rowStart) {
       throw new RangeError(`row ${rowIndex} offsets are not monotonic`);
     }
@@ -135,7 +137,9 @@ export class NativeCsvBatch {
   #data: Buffer | undefined;
   #dataView: Uint8Array | undefined;
   #rowOffsets: BigUint64Array | undefined;
+  #rowOffsetWords: Uint32Array | undefined;
   #fieldOffsets: BigUint64Array | undefined;
+  #fieldOffsetWords: Uint32Array | undefined;
 
   constructor(handle: NativePointer) {
     this.#handle = handle;
@@ -173,15 +177,15 @@ export class NativeCsvBatch {
     normalizeColumns(columns);
     const rowCount = this.rowCount;
     const totalFields = this.totalFields;
-    const rowOffsets = this.rowOffsets();
-    const fieldOffsets = this.fieldOffsets();
+    const rowOffsetWords = this.#rowOffsetWordsView();
+    const fieldOffsetWords = this.#fieldOffsetWordsView();
     const data = this.data();
     target.length = rowCount;
 
     if (columns !== undefined) {
       for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-        const fieldStart = offsetAt(rowOffsets, rowIndex, `row ${rowIndex} offset`, totalFields);
-        const fieldEnd = offsetAt(rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+        const fieldStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
+        const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
         const existing = target[rowIndex];
         const row = existing === undefined ? [] : existing;
         row.length = columns.length;
@@ -194,8 +198,8 @@ export class NativeCsvBatch {
             continue;
           }
 
-          const start = offsetAt(fieldOffsets, fieldIndex, 'field offset', data.byteLength);
-          const end = offsetAt(fieldOffsets, fieldIndex + 1, 'field offset', data.byteLength);
+          const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
+          const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
           row[outputIndex] = data.toString('utf8', start, end);
         }
         target[rowIndex] = row;
@@ -205,14 +209,14 @@ export class NativeCsvBatch {
     }
 
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-      const fieldStart = offsetAt(rowOffsets, rowIndex, `row ${rowIndex} offset`, totalFields);
-      const fieldEnd = offsetAt(rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+      const fieldStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
+      const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
       const existing = target[rowIndex];
       const row = existing === undefined ? [] : existing;
       row.length = fieldEnd - fieldStart;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
-        const start = offsetAt(fieldOffsets, fieldIndex, 'field offset', data.byteLength);
-        const end = offsetAt(fieldOffsets, fieldIndex + 1, 'field offset', data.byteLength);
+        const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
+        const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
         const column = fieldIndex - fieldStart;
         row[column] = data.toString('utf8', start, end);
       }
@@ -275,19 +279,19 @@ export class NativeCsvBatch {
   }
 
   rowFieldCount(rowIndex: number): number {
-    const rowOffsets = this.rowOffsets();
-    const start = offsetAt(rowOffsets, rowIndex, `row ${rowIndex} offset`, this.totalFields);
-    const end = offsetAt(rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, this.totalFields);
+    const rowOffsetWords = this.#rowOffsetWordsView();
+    const start = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, this.totalFields);
+    const end = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, this.totalFields);
     return end - start;
   }
 
   fieldRange(rowIndex: number, columnIndex: number): CsvFieldRange | null {
-    const rowOffsets = this.rowOffsets();
-    const fieldOffsets = this.fieldOffsets();
+    const rowOffsetWords = this.#rowOffsetWordsView();
+    const fieldOffsetWords = this.#fieldOffsetWordsView();
     const totalFields = this.totalFields;
     const dataLength = this.dataLength;
-    const rowStart = offsetAt(rowOffsets, rowIndex, `row ${rowIndex} offset`, totalFields);
-    const rowEnd = offsetAt(rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+    const rowStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
+    const rowEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
 
     const fieldIndex = rowStart + columnIndex;
     if (fieldIndex < rowStart || fieldIndex >= rowEnd) {
@@ -295,8 +299,8 @@ export class NativeCsvBatch {
     }
 
     return {
-      start: offsetAt(fieldOffsets, fieldIndex, 'field offset', dataLength),
-      end: offsetAt(fieldOffsets, fieldIndex + 1, 'field offset', dataLength),
+      start: offsetAt(fieldOffsetWords, fieldIndex, 'field offset', dataLength),
+      end: offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength),
     };
   }
 
@@ -330,16 +334,16 @@ export class NativeCsvBatch {
     startRow = 0,
     endRow = this.rowCount,
   ): void {
-    const rowOffsets = this.rowOffsets();
-    const fieldOffsets = this.fieldOffsets();
+    const rowOffsetWords = this.#rowOffsetWordsView();
+    const fieldOffsetWords = this.#fieldOffsetWordsView();
     const totalFields = this.totalFields;
     const dataLength = this.dataLength;
     const resolvedEndRow = this.#resolveEndRow(endRow);
     this.#validateRowRange(startRow, resolvedEndRow);
 
     for (let rowIndex = startRow; rowIndex < resolvedEndRow; ++rowIndex) {
-      const rowStart = offsetAt(rowOffsets, rowIndex, `row ${rowIndex} offset`, totalFields);
-      const rowEnd = offsetAt(rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+      const rowStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
+      const rowEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
 
       const fieldIndex = rowStart + columnIndex;
       if (fieldIndex < rowStart || fieldIndex >= rowEnd) {
@@ -348,8 +352,8 @@ export class NativeCsvBatch {
 
       callback(
         rowIndex,
-        offsetAt(fieldOffsets, fieldIndex, 'field offset', dataLength),
-        offsetAt(fieldOffsets, fieldIndex + 1, 'field offset', dataLength),
+        offsetAt(fieldOffsetWords, fieldIndex, 'field offset', dataLength),
+        offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength),
       );
     }
   }
@@ -379,15 +383,15 @@ export class NativeCsvBatch {
   ): void {
     const resolvedEndRow = this.#resolveEndRow(endRow);
     this.#validateRowRange(startRow, resolvedEndRow);
-    const rowOffsets = this.rowOffsets();
-    const fieldOffsets = this.fieldOffsets();
+    const rowOffsetWords = this.#rowOffsetWordsView();
+    const fieldOffsetWords = this.#fieldOffsetWordsView();
     const data = this.data();
     const totalFields = this.totalFields;
     const ranges = new Float64Array(columns.length * 2);
 
     for (let rowIndex = startRow; rowIndex < resolvedEndRow; ++rowIndex) {
-      const rowStart = offsetAt(rowOffsets, rowIndex, `row ${rowIndex} offset`, totalFields);
-      const rowEnd = offsetAt(rowOffsets, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+      const rowStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
+      const rowEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
 
       for (let columnOffset = 0; columnOffset < columns.length; ++columnOffset) {
         const columnIndex = columns[columnOffset] ?? 0;
@@ -399,8 +403,8 @@ export class NativeCsvBatch {
           continue;
         }
 
-        ranges[rangeIndex] = offsetAt(fieldOffsets, fieldIndex, 'field offset', data.byteLength);
-        ranges[rangeIndex + 1] = offsetAt(fieldOffsets, fieldIndex + 1, 'field offset', data.byteLength);
+        ranges[rangeIndex] = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
+        ranges[rangeIndex + 1] = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
       }
 
       callback(rowIndex, ranges, data);
@@ -429,7 +433,9 @@ export class NativeCsvBatch {
       this.#data = undefined;
       this.#dataView = undefined;
       this.#rowOffsets = undefined;
+      this.#rowOffsetWords = undefined;
       this.#fieldOffsets = undefined;
+      this.#fieldOffsetWords = undefined;
     }
   }
 
@@ -446,6 +452,22 @@ export class NativeCsvBatch {
       throw new Error('native CSV batch is closed');
     }
     return this.#handle;
+  }
+
+  #rowOffsetWordsView(): Uint32Array {
+    const rowOffsets = this.rowOffsets();
+    if (this.#rowOffsetWords === undefined) {
+      this.#rowOffsetWords = offsetWords(rowOffsets);
+    }
+    return this.#rowOffsetWords;
+  }
+
+  #fieldOffsetWordsView(): Uint32Array {
+    const fieldOffsets = this.fieldOffsets();
+    if (this.#fieldOffsetWords === undefined) {
+      this.#fieldOffsetWords = offsetWords(fieldOffsets);
+    }
+    return this.#fieldOffsetWords;
   }
 
   #resolveEndRow(endRow: number): number {
@@ -466,17 +488,29 @@ export class NativeCsvBatch {
   }
 }
 
-function offsetAt(offsets: BigUint64Array, index: number, label: string, upperBound: number): number {
-  const value = offsets[index];
-  if (value === undefined) {
+const UINT32_BASE = 0x1_0000_0000;
+const UINT32_BASE_BIGINT = 0x1_0000_0000n;
+const MAX_SAFE_OFFSET_HIGH_WORD = 0x1f_ffff;
+
+function offsetWords(offsets: BigUint64Array): Uint32Array {
+  // Native offsets are little-endian on every supported target.
+  return new Uint32Array(offsets.buffer, offsets.byteOffset, offsets.length * 2);
+}
+
+function offsetAt(offsets: Uint32Array, index: number, label: string, upperBound: number): number {
+  const wordIndex = index * 2;
+  const low = offsets[wordIndex];
+  const high = offsets[wordIndex + 1];
+  if (low === undefined || high === undefined || wordIndex % 2 !== 0) {
     throw new RangeError(`${label} index out of range: ${index}`);
   }
-  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+  if (high > MAX_SAFE_OFFSET_HIGH_WORD) {
+    const value = BigInt(high) * UINT32_BASE_BIGINT + BigInt(low);
     throw new RangeError(`${label} exceeds Number.MAX_SAFE_INTEGER: ${value}`);
   }
-  const offset = Number(value);
+  const offset = low + high * UINT32_BASE;
   if (offset > upperBound) {
-    throw new RangeError(`${label} exceeds backing storage: ${value}`);
+    throw new RangeError(`${label} exceeds backing storage: ${offset}`);
   }
   return offset;
 }

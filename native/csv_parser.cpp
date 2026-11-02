@@ -390,14 +390,21 @@ std::unique_ptr<csv_split_offsets_batch> find_csv_safe_split_offsets(const char*
 }
 
 void append_latin1_scalar(std::string& out, const uint8_t* data, size_t len) {
+  size_t ascii_start = 0;
   for (size_t i = 0; i < len; ++i) {
     const uint8_t byte = data[i];
     if (byte < 0x80) {
-      out.push_back(static_cast<char>(byte));
-    } else {
-      out.push_back(static_cast<char>(0xC0 | (byte >> 6)));
-      out.push_back(static_cast<char>(0x80 | (byte & 0x3F)));
+      continue;
     }
+    if (i > ascii_start) {
+      out.append(reinterpret_cast<const char*>(data + ascii_start), i - ascii_start);
+    }
+    out.push_back(static_cast<char>(0xC0 | (byte >> 6)));
+    out.push_back(static_cast<char>(0x80 | (byte & 0x3F)));
+    ascii_start = i + 1;
+  }
+  if (ascii_start < len) {
+    out.append(reinterpret_cast<const char*>(data + ascii_start), len - ascii_start);
   }
 }
 
@@ -734,7 +741,9 @@ public:
     row_filter_seen_.clear();
     row_filter_matched_.clear();
     filter_truth_stack_.clear();
-    has_boolean_operators_ = false;
+    filter_program_truth_ = filter_truth::unknown;
+    flat_filter_rejected_ = false;
+    conjunctive_filters_ = true;
     emitted_rows_ = 0;
     field_in_arena_ = false;
     complete_quoted_field_has_escape_ = false;
@@ -825,19 +834,34 @@ private:
     if (filter_count != 0) {
       filters_.assign(filters, filters + filter_count);
     }
-    has_boolean_operators_ = std::any_of(filters_.begin(), filters_.end(),
-                                         [](const row_filter& filter) { return is_boolean_operator(filter.kind); });
+    // Nested ALL groups are still a conjunction. Check each leaf once instead of
+    // re-evaluating the whole program after every column in wide filtered rows.
+    conjunctive_filters_ = std::none_of(filters_.begin(), filters_.end(), [](const row_filter& filter) {
+      return filter.kind == row_filter_kind::any_of || filter.kind == row_filter_kind::negate;
+    });
     prepare_in_filters();
     if (!prepare_regex_filters()) {
       return false;
     }
     prepare_filter_lookup();
+    if (filter_truth_stack_.size() < filter_count) {
+      filter_truth_stack_.resize(filter_count);
+    }
     if (row_filter_seen_.size() != filter_count) {
       row_filter_seen_.assign(filter_count, false);
       row_filter_matched_.assign(filter_count, false);
+      filter_program_truth_ = filter_truth::unknown;
     }
-    if (filter_truth_stack_.size() < filter_count) {
-      filter_truth_stack_.resize(filter_count);
+    flat_filter_rejected_ = false;
+    if (!conjunctive_filters_) {
+      filter_program_truth_ = evaluate_filter_program();
+    } else {
+      for (size_t index = 0; index < filter_count; ++index) {
+        if (row_filter_seen_[index] && !row_filter_matched_[index]) {
+          flat_filter_rejected_ = true;
+          break;
+        }
+      }
     }
     selected_column_counts_.clear();
     selected_column_outputs_.clear();
@@ -1347,7 +1371,8 @@ private:
   }
 
   bool can_append_direct_projection_to_arena() const {
-    return direct_projection_ && should_store_current_field() && !is_filter_column(current_column_);
+    return direct_projection_ && !row_filter_rejected() && should_store_current_field() &&
+           !is_filter_column(current_column_);
   }
 
   void append_utf8_span_to_arena(const uint8_t* data, size_t len) {
@@ -1528,6 +1553,10 @@ private:
   }
 
   bool should_capture_current_field() const {
+    if (row_filter_rejected()) {
+      return false;
+    }
+
     if (mode_ == output_mode::count) {
       return is_filter_column(current_column_);
     }
@@ -1546,9 +1575,20 @@ private:
 
   bool should_store_current_field() const { return !projection_enabled_ || selected_output_count(current_column_) > 0; }
 
+  bool row_filter_rejected() const {
+    return conjunctive_filters_ ? flat_filter_rejected_ : filter_program_truth_ == filter_truth::false_value;
+  }
+
   bool can_use_direct_projection() const {
-    if (!allow_direct_projection_ || mode_ != output_mode::batch || !projection_enabled_ ||
-        selected_columns_len_ == 0) {
+    if (!allow_direct_projection_ || mode_ != output_mode::batch) {
+      return false;
+    }
+
+    if (!projection_enabled_) {
+      return !filters_.empty();
+    }
+
+    if (selected_columns_len_ == 0) {
       return false;
     }
 
@@ -1579,6 +1619,10 @@ private:
       return;
     }
 
+    if (row_filter_rejected()) {
+      return;
+    }
+
     if (!projection_enabled_) {
       row_fields_.push_back(field_);
       return;
@@ -1596,7 +1640,7 @@ private:
   void finish_direct_projection_field() {
     evaluate_current_field_filters();
 
-    if (batch_ == nullptr || !should_store_current_field()) {
+    if (batch_ == nullptr || row_filter_rejected() || !should_store_current_field()) {
       return;
     }
 
@@ -1643,28 +1687,50 @@ private:
     direct_projection_data_start_ = batch_->data.size();
     direct_projection_field_offsets_start_ = batch_->field_offsets.size();
     for (size_t index = 0; index < direct_projection_carry_count_; ++index) {
-      batch_->data.append(projected_fields_[index]);
+      if (projection_enabled_) {
+        batch_->data.append(projected_fields_[index]);
+      } else {
+        batch_->data.append(row_fields_[index]);
+      }
       batch_->field_offsets.push_back(batch_->data.size());
     }
   }
 
   void evaluate_current_field_filters() {
+    if (row_filter_rejected()) {
+      return;
+    }
     if (current_column_ >= first_filter_by_column_.size()) {
       return;
     }
 
+    bool changed = false;
     for (uint32_t filter_index = first_filter_by_column_[current_column_];
          filter_index != std::numeric_limits<uint32_t>::max(); filter_index = next_filter_[filter_index]) {
+      const bool matched = field_matches_filter(filter_index);
+      changed = changed || !row_filter_seen_[filter_index] || row_filter_matched_[filter_index] != matched;
       row_filter_seen_[filter_index] = true;
-      row_filter_matched_[filter_index] = field_matches_filter(filter_index);
+      row_filter_matched_[filter_index] = matched;
+      if (conjunctive_filters_ && !matched) {
+        flat_filter_rejected_ = true;
+      }
+    }
+    if (changed && !conjunctive_filters_ && filter_program_truth_ == filter_truth::unknown) {
+      filter_program_truth_ = evaluate_filter_program();
     }
   }
 
   bool row_matches_filters() {
-    if (has_boolean_operators_) {
-      return evaluate_filter_program() == filter_truth::true_value;
+    if (!conjunctive_filters_) {
+      if (filter_program_truth_ == filter_truth::unknown) {
+        filter_program_truth_ = evaluate_filter_program();
+      }
+      return filter_program_truth_ == filter_truth::true_value;
     }
     for (size_t index = 0; index < filters_.size(); ++index) {
+      if (is_boolean_operator(filters_[index].kind)) {
+        continue;
+      }
       if (!row_filter_seen_[index] || !row_filter_matched_[index]) {
         return false;
       }
@@ -1826,6 +1892,8 @@ private:
     direct_projection_data_start_ = 0;
     direct_projection_field_offsets_start_ = 0;
     direct_projection_carry_count_ = 0;
+    filter_program_truth_ = filter_truth::unknown;
+    flat_filter_rejected_ = false;
   }
 
   void spill_unfinished_direct_projection_row() {
@@ -1838,7 +1906,11 @@ private:
       const size_t offset_index = direct_projection_field_offsets_start_ + index;
       const size_t start = batch_->field_offsets[offset_index - 1];
       const size_t end = batch_->field_offsets[offset_index];
-      projected_fields_[index].assign(batch_->data.data() + start, end - start);
+      if (projection_enabled_) {
+        projected_fields_[index].assign(batch_->data.data() + start, end - start);
+      } else {
+        row_fields_.emplace_back(batch_->data.data() + start, end - start);
+      }
     }
     direct_projection_carry_count_ = field_count;
     rollback_direct_projection_row();
@@ -1977,7 +2049,9 @@ private:
   std::vector<bool> row_filter_seen_;
   std::vector<bool> row_filter_matched_;
   std::vector<filter_truth> filter_truth_stack_;
-  bool has_boolean_operators_ = false;
+  filter_truth filter_program_truth_ = filter_truth::unknown;
+  bool flat_filter_rejected_ = false;
+  bool conjunctive_filters_ = true;
   bool field_in_arena_ = false;
   mutable bool complete_quoted_field_has_escape_ = false;
   bool allow_direct_projection_ = false;

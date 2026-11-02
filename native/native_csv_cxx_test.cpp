@@ -698,6 +698,156 @@ TEST_CASE("native C ABI evaluates AND filters across columns and chunks") {
   csv_parser_destroy(parser);
 }
 
+TEST_CASE("native C ABI materializes filtered unprojected rows directly across chunks") {
+  const std::string first_chunk = "a,keep,tail\nb,drop,ign";
+  const std::string second_chunk = "ored\nc,keep\n";
+  const std::string values = "keep";
+  const uint32_t value_offsets[] = {0, 4};
+  const uint32_t filters[] = {
+      1,
+      1,
+      0,
+      1, // column 1 equals "keep"
+  };
+
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  void* first = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(first_chunk.data()), first_chunk.size(), false, false, nullptr, 0,
+      filters, 1, reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 1);
+  REQUIRE(first != nullptr);
+  REQUIRE(csv_batch_row_count(first) == 1);
+  REQUIRE(csv_batch_total_fields(first) == 3);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(first)), csv_batch_data_len(first)) ==
+          "akeeptail");
+  csv_batch_destroy(first);
+
+  void* second = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(second_chunk.data()), second_chunk.size(), true, false, nullptr, 0,
+      filters, 1, reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 1);
+  REQUIRE(second != nullptr);
+  REQUIRE(csv_batch_row_count(second) == 1);
+  REQUIRE(csv_batch_total_fields(second) == 2);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(second)), csv_batch_data_len(second)) ==
+          "ckeep");
+  csv_batch_destroy(second);
+  csv_parser_destroy(parser);
+
+  parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  const std::string split_first = "a,ke";
+  const std::string split_second = "ep,tail\n";
+  first = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(split_first.data()), split_first.size(), false, false, nullptr, 0,
+      filters, 1, reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 1);
+  REQUIRE(first != nullptr);
+  REQUIRE(csv_batch_row_count(first) == 0);
+  REQUIRE(csv_batch_total_fields(first) == 0);
+  csv_batch_destroy(first);
+
+  second = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(split_second.data()), split_second.size(), true, false, nullptr, 0,
+      filters, 1, reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 1);
+  REQUIRE(second != nullptr);
+  REQUIRE(csv_batch_row_count(second) == 1);
+  REQUIRE(csv_batch_total_fields(second) == 3);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(second)), csv_batch_data_len(second)) ==
+          "akeeptail");
+  csv_batch_destroy(second);
+  csv_parser_destroy(parser);
+}
+
+TEST_CASE("native C ABI stops after definitive Boolean rejection but keeps CSV structure") {
+  const std::string input = "drop,yes,\"quoted\nnewline\",ignored\nkeep,no,ok\n";
+  const std::string values = "keepyesblocked";
+  const uint32_t value_offsets[] = {0, 4, 7, 14};
+  const uint32_t filters[] = {
+      1, 0, 0,
+      1, // column 0 equals "keep"
+      1, 1, 1,
+      1, // column 1 equals "yes"
+      1, 2, 2,
+      1, // column 2 equals "blocked"
+      9, 1, 0,
+      0, // not the previous result
+      8, 2, 0,
+      0, // any of column 1 and not column 2
+      7, 2, 0,
+      0, // all of column 0 and the any result
+  };
+
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  void* batch = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true, false, nullptr, 0, filters, 6,
+      reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 3);
+  REQUIRE(batch != nullptr);
+  REQUIRE(csv_batch_row_count(batch) == 1);
+  REQUIRE(csv_batch_total_fields(batch) == 3);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(batch)), csv_batch_data_len(batch)) ==
+          "keepnook");
+  csv_batch_destroy(batch);
+  csv_parser_destroy(parser);
+}
+
+TEST_CASE("native C ABI keeps unknown Boolean predicates until a later field resolves them") {
+  const std::string input = "drop,\"quoted\nnewline\",ok\n";
+  const std::string values = "keepok";
+  const uint32_t value_offsets[] = {0, 4, 6};
+  const uint32_t filters[] = {
+      1, 0, 0,
+      1, // column 0 equals "keep"
+      1, 2, 1,
+      1, // column 2 equals "ok"
+      8, 2, 0,
+      0, // any of the previous results
+  };
+
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  void* batch = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true, false, nullptr, 0, filters, 3,
+      reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 2);
+  REQUIRE(batch != nullptr);
+  REQUIRE(csv_batch_row_count(batch) == 1);
+  REQUIRE(csv_batch_total_fields(batch) == 3);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(batch)), csv_batch_data_len(batch)) ==
+          "dropquoted\nnewlineok");
+  csv_batch_destroy(batch);
+  csv_parser_destroy(parser);
+}
+
+TEST_CASE("native C ABI handles nested all-of programs with many leaves and missing fields") {
+  std::vector<uint32_t> filters;
+  filters.reserve(40 * 4 + 5 * 4);
+  auto add_leaf = [&filters](uint32_t column) { filters.insert(filters.end(), {1, column, 0, 1}); };
+  auto add_all = [&filters](uint32_t count) { filters.insert(filters.end(), {7, count, 0, 0}); };
+
+  for (uint32_t index = 0; index < 32; ++index) {
+    add_leaf(index == 31 ? 1 : 0);
+  }
+  add_all(8);
+  add_all(8);
+  add_all(8);
+  add_all(8);
+  add_all(4);
+  const std::string values = "ok";
+  const uint32_t value_offsets[] = {0, 2};
+
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  const std::string input = "ok\nok,ok\n";
+  void* batch = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true, false, nullptr, 0, filters.data(),
+      filters.size() / 4, reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 1);
+  REQUIRE(batch != nullptr);
+  REQUIRE(csv_batch_row_count(batch) == 1);
+  REQUIRE(csv_batch_total_fields(batch) == 2);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(batch)), csv_batch_data_len(batch)) == "okok");
+  csv_batch_destroy(batch);
+  csv_parser_destroy(parser);
+}
+
 TEST_CASE("native C ABI evaluates multiple filters on one column") {
   const std::string input = "alpha,1\nalpine,2\nalpha,3\n";
   const std::string values = "alalpha";
@@ -763,6 +913,18 @@ TEST_CASE("native C ABI evaluates nested Boolean filter programs") {
                                            not_any_filters, 4, reinterpret_cast<const uint8_t*>(values.data()),
                                            values.size(), value_offsets, 2) == 1);
   REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
+  csv_parser_destroy(parser);
+
+  parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  void* batch = csv_parser_write_projected_batch_where_all(
+      parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true, false, nullptr, 0, any_filters, 3,
+      reinterpret_cast<const uint8_t*>(values.data()), values.size(), value_offsets, 2);
+  REQUIRE(batch != nullptr);
+  REQUIRE(csv_batch_row_count(batch) == 2);
+  REQUIRE(csv_batch_total_fields(batch) == 4);
+  REQUIRE(std::string(reinterpret_cast<const char*>(csv_batch_data_ptr(batch)), csv_batch_data_len(batch)) == "aSPbRJ");
+  csv_batch_destroy(batch);
   csv_parser_destroy(parser);
 }
 
