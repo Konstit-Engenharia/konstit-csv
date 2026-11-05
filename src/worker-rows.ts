@@ -53,10 +53,38 @@ interface WorkerErrorMessage {
 }
 
 /**
- * Stream materialized rows through Bun workers.
+ * Stream materialized projected rows through Bun workers.
  *
- * Use this when the main cost is parsing/materialization and you want explicit
- * worker fan-out. `workerCount` is required here by design.
+ * The file is split at CSV record boundaries before workers start. Each
+ * yielded batch comes from whichever shard reports next, so batches and rows
+ * are not globally ordered by file position. Within a shard, row order is
+ * preserved. The worker path evaluates native `where` filters before
+ * materializing the selected columns.
+ *
+ * `workerCount` must be greater than one. Compressed input and automatic
+ * delimiter detection are not supported because byte offsets are resolved
+ * before workers open the file. Strict validation is also unsupported by the
+ * worker parser. Options are snapshotted at invocation, including
+ * selected-column and filter arrays.
+ *
+ * @param path Path to an uncompressed CSV file.
+ * @param options Parallel row options. Set `columns` or `selectedColumns` to project physical columns.
+ * @returns An async generator of non-empty row batches, delivered as workers finish.
+ * @throws {RangeError} When `workerCount` is not an integer greater than one.
+ * @throws If compressed/automatic-delimiter input, strict mode, conflicting projections, worker startup, file I/O, or CSV parsing fails during iteration.
+ *
+ * @example
+ * ```ts
+ * import { parallelRows } from '@konstit/csv';
+ *
+ * for await (const rows of parallelRows('data.csv', {
+ *   columns: [0, 2],
+ *   delimiter: ';',
+ *   workerCount: 4,
+ * })) {
+ *   console.log(rows);
+ * }
+ * ```
  */
 export function parallelRows<TColumns extends CsvColumns | undefined = undefined>(
   path: string,

@@ -34,12 +34,27 @@ export const MAX_REGEX_FILTER_COUNT = 32;
 export const MAX_FILTER_PROGRAM_LENGTH = 4_096;
 const MAX_REGEX_PATTERN_BYTES = 4_096;
 
-// Boolean entries form a postfix program. Their descriptor is [kind, operand count, 0, 0].
+/**
+ * Boolean operation in a postfix filter program accepted by `NativeCsvParser`.
+ *
+ * Predicates push results onto a stack. An operator consumes the most recent
+ * results and pushes one combined result. Missing columns produce an unknown
+ * result, which remains unknown under `not` and does not select a row by itself.
+ */
 export interface CsvNativeFilterOperator {
+  /** Number of preceding stack results to consume; positive, and exactly one for `not`. */
   readonly operandCount: number;
+  /** Combine operands with AND, OR, or unary negation. */
   readonly operator: 'all' | 'any' | 'not';
 }
 
+/**
+ * Predicate or boolean operator in a low-level postfix filter program.
+ *
+ * Place predicates before the operators that consume them. A complete program
+ * must leave exactly one result on the stack and contain at most 4096 entries.
+ * Most applications can use `csv.column()` and its boolean combinators instead.
+ */
 export type CsvNativeFilterProgramEntry = CsvNativeFilter | CsvNativeFilterOperator;
 
 export function projectionFilterProgram(

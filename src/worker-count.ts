@@ -41,6 +41,38 @@ interface WorkerErrorMessage {
   type: 'error';
 }
 
+/**
+ * Count CSV records across record-safe byte shards in Bun workers.
+ *
+ * Each worker parses one uncompressed file range and the main thread sums the
+ * shard-local counts. The operation preserves count semantics for quoted
+ * records and can evaluate an immutable native `where` filter, but it does
+ * not materialize rows. Worker startup and message overhead make this most
+ * useful for files large enough to amortize fan-out.
+ *
+ * `workerCount` must be greater than one. Compressed input and automatic
+ * delimiter detection are not supported because byte offsets are resolved
+ * before workers open the file. Strict validation is also unsupported by the
+ * worker parser. Options are snapshotted at invocation, including filter
+ * values and arrays.
+ *
+ * @param path Path to an uncompressed CSV file.
+ * @param suppliedOptions Parallel count options, including the required worker count.
+ * @returns A promise for the total logical record count.
+ * @throws {RangeError} If `workerCount` is not an integer greater than one or the total exceeds `Number.MAX_SAFE_INTEGER`.
+ * @throws If compressed/automatic-delimiter input, strict mode, worker startup, file I/O, or CSV parsing fails.
+ *
+ * @example
+ * ```ts
+ * import { parallelCount, csv } from '@konstit/csv';
+ *
+ * const activeRows = await parallelCount('data.csv', {
+ *   delimiter: ';',
+ *   workerCount: 4,
+ *   where: csv.column(2).equals('active'),
+ * });
+ * ```
+ */
 export async function parallelCount(path: string, suppliedOptions: CsvParallelCountOptions): Promise<number> {
   const options = snapshotCsvOptions(suppliedOptions);
   const workerCount = options.workerCount ?? 1;

@@ -69,6 +69,33 @@ type CsvSelectedColumnsFromOptions<TOptions extends CsvApiFileOptions> = TOption
   : TOptions extends { selectedColumns: infer TColumns extends CsvColumns; } ? TColumns
   : undefined;
 
+/**
+ * Reusable worker pool for repeated parallel scans of one CSV file.
+ *
+ * The path and options are captured when the pool is constructed. Record-safe
+ * shards and the count/row workers are then reused across calls, avoiding
+ * repeated worker startup. Operations are serialized: calling `count()` or
+ * `rows()` while another operation is active throws instead of racing shared
+ * workers.
+ *
+ * Keep the source file unchanged while reusing a pool; its record-safe shard
+ * boundaries are cached after the first operation.
+ *
+ * Use `close()` or a `using` declaration when the pool is no longer needed.
+ * Closing an active pool cancels its operation and terminates its workers.
+ * Compressed input and automatic delimiter detection are not supported by
+ * byte-offset sharding; strict validation is unsupported by parallel workers.
+ *
+ * @typeParam TColumns Tuple of selected physical columns used to type projected rows.
+ *
+ * @example
+ * ```ts
+ * import { CsvWorkerPool } from '@konstit/csv';
+ *
+ * using pool = new CsvWorkerPool('data.csv', { workerCount: 4 });
+ * console.log(await pool.count());
+ * ```
+ */
 export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> {
   readonly #path: string;
   readonly #options: CsvApiFileOptions;
@@ -79,6 +106,14 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
   #closed = false;
   #busy = false;
 
+  /**
+   * Create a pool configured for one uncompressed CSV file.
+   *
+   * @param path Path to the CSV file.
+   * @param suppliedOptions Parallel row options, including `workerCount` greater than one.
+   * @throws {RangeError} If `workerCount` is not an integer greater than one.
+   * @throws If compressed input or automatic delimiter detection is requested.
+   */
   constructor(path: string, suppliedOptions: CsvWorkerPoolOptions<TColumns>) {
     const options = snapshotCsvOptions(suppliedOptions);
     const workerCount = options.workerCount ?? 1;
@@ -91,10 +126,22 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
     this.#options = options;
   }
 
+  /** Whether `close()` has been called and the pool can no longer start work. */
   get closed(): boolean {
     return this.#closed;
   }
 
+  /**
+   * Count logical CSV records across the pool's record-safe shards.
+   *
+   * Native `where` filters are evaluated in the workers and shard counts are
+   * summed on the main thread. Strict validation is not supported. The pool
+   * must be open and idle when this method is called.
+   *
+   * @returns A promise for the total logical record count.
+   * @throws {RangeError} If the total cannot be represented as a safe integer.
+   * @throws If the pool is closed or busy, strict mode was configured, or a worker, file, or parser error occurs.
+   */
   async count(): Promise<number> {
     this.#assertOpen();
     if (this.#options.strict === true) {
@@ -186,6 +233,17 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
     }
   }
 
+  /**
+   * Stream projected row batches from the pool's workers.
+   *
+   * Batches are yielded as workers report them and therefore are not globally
+   * ordered by file position; each shard retains its own row order. The pool
+   * must be open and idle when iteration starts. Stopping iteration early
+   * terminates the active row workers.
+   *
+   * @returns An async generator of non-empty projected row batches.
+   * @throws If the pool is closed or busy, strict mode was configured, or a worker, file, or parser error occurs.
+   */
   async *rows(): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
     this.#assertOpen();
     rejectWorkerRowsUnsupported(this.#options);
@@ -311,6 +369,11 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
     }
   }
 
+  /**
+   * Cancel active work and terminate all workers owned by this pool.
+   *
+   * This method is idempotent. A closed pool cannot be used again.
+   */
   close(): void {
     if (this.#closed) {
       return;
@@ -321,6 +384,7 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
     this.#invalidateRowsWorkers();
   }
 
+  /** Dispose the pool for use with a `using` declaration. */
   [Symbol.dispose](): void {
     this.close();
   }
@@ -403,6 +467,18 @@ function terminateShardWorkers(workers: readonly ShardWorker[]): void {
   }
 }
 
+/**
+ * Construct a reusable {@link CsvWorkerPool} with tuple-aware row types.
+ *
+ * This factory is the implementation behind the package-level `workerPool`
+ * helper. It captures the supplied options when called.
+ *
+ * @param path Path to the uncompressed CSV file.
+ * @param options Parallel row options, including `workerCount` greater than one.
+ * @returns A reusable worker pool. Dispose it with `close()` or `using`.
+ * @throws {RangeError} If `workerCount` is not an integer greater than one.
+ * @throws If compressed input or automatic delimiter detection is requested.
+ */
 export function createWorkerPool<TOptions extends CsvWorkerPoolOptions>(
   path: string,
   options: TOptions,

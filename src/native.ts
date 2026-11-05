@@ -19,6 +19,13 @@ import { fileURLToPath } from 'node:url';
 export type { Pointer } from 'bun:ffi';
 export { toArrayBuffer } from 'bun:ffi';
 
+/**
+ * Address of a native CSV resource, represented by Bun FFI as a pointer or bigint.
+ *
+ * A handle must originate from the matching native CSV ABI and remain valid for
+ * the operation using it. Wrapping a batch handle in `NativeCsvBatch` transfers
+ * responsibility for releasing that resource to the batch.
+ */
 export type NativePointer = Pointer | bigint;
 
 // Keep storage behind the zero-length view so FFI receives a stable buffer object while buffer_length reports zero.

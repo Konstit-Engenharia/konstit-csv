@@ -61,10 +61,20 @@ import {
 import { parallelRows } from './worker-rows.js';
 
 /**
- * Parse one in-memory chunk into materialized rows.
+ * Parse one in-memory CSV buffer into materialized rows.
  *
- * Use this when you already own buffering and still want the high-level row API.
- * Accepts only single-thread row options, so `workerCount` is intentionally unavailable.
+ * Use this when the input is already buffered and a single promise containing all rows is suitable.
+ * The buffer is parsed as one complete input, so a record may not be split across calls. Use
+ * {@link rows} for file streaming and worker fan-out. `columns`/`selectedColumns` projects the
+ * returned rows, while strict validation (when enabled) still validates the complete row.
+ *
+ * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
+ * @param buffer - CSV bytes in a typed array or `DataView`.
+ * @param suppliedOptions - Parser options. Compression, automatic delimiter detection, and workers
+ * are not supported for in-memory parsing.
+ * @returns A promise that resolves to the materialized rows in input order.
+ * @throws {Error} If the options request compression, automatic delimiter detection, or an
+ * unsupported filtered strict-validation combination.
  */
 export async function parse<TColumns extends CsvColumns | undefined = undefined>(
   buffer: NodeJS.TypedArray | DataView,
@@ -96,8 +106,19 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
 /**
  * Stream materialized rows from a CSV file.
  *
- * Use this for the most direct high-level API. With `workerCount > 1`, the work
- * fans out across Bun workers.
+ * Each yielded value is one parser batch represented as ordinary string arrays. Options are
+ * captured when this function is called, before iteration starts, so mutating the caller-owned
+ * options object later does not change the stream. Set `workerCount` above one to use record-safe
+ * Bun worker shards; serial streams additionally support compression and automatic delimiter
+ * detection.
+ *
+ * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
+ * @param path - Path to the CSV file.
+ * @param options - File, projection, filter, validation, and optional worker settings.
+ * @returns An async generator of row batches. Serial parsing yields batches in file order; worker
+ * parsing yields batches as worker shards report them, so global file order is not guaranteed.
+ * @throws {Error} During iteration when the file cannot be read or the selected options are
+ * incompatible, such as strict filtered rows or compressed/auto-delimiter worker input.
  */
 export function rows<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
@@ -170,14 +191,36 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
   }
 }
 
+/**
+ * Stream materialized rows through record-safe worker shards.
+ *
+ * `workerCount` must be greater than one. Workers require uncompressed input, an explicit
+ * delimiter, and non-strict validation; use {@link rows} for serial parsing or strict validation.
+ *
+ * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
+ * @param path - Path to the CSV file.
+ * @param options - Parallel row options, including the required worker count.
+ * @returns An async generator of materialized row batches.
+ * @throws {RangeError} If `workerCount` is not an integer greater than one.
+ * @throws {Error} If compression, automatic delimiter detection, or strict validation is enabled.
+ */
 export { parallelRows };
 export { CsvWorkerPool };
 
 /**
  * Stream native batches with explicit lifetime control.
  *
- * Use this when you want low-allocation access to row views or byte ranges and
- * are comfortable closing each batch yourself.
+ * Use this when you want low-allocation access to row views, byte ranges, and native-backed
+ * column data. Every yielded batch owns native memory and must be closed after use; prefer
+ * `for await (using batch of csv.batches(...))` or {@link withBatches} when possible.
+ * Options are captured at invocation time. Accessor indexes refer to fields stored in the batch;
+ * when filtering is combined with a projection, those stored fields are the projected output.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Serial file and parser options.
+ * @returns An async generator of disposable native batches.
+ * @throws {Error} During iteration when the file or validation fails, or when filtered strict
+ * validation is requested.
  */
 export function batches(path: string, options: CsvBatchesOptions = {}): AsyncGenerator<NativeCsvBatch, void> {
   return iterateBatches(path, snapshotCsvOptions(options));
@@ -221,6 +264,18 @@ async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncG
   }
 }
 
+/**
+ * Process native CSV batches while managing each batch's lifetime.
+ *
+ * The callback may be asynchronous. Its batch remains valid until the callback settles and is
+ * closed in a `finally` block afterward, including when the callback throws.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Serial file and parser options.
+ * @param callback - Function invoked once per non-empty batch.
+ * @returns A promise that resolves after all batches have been processed.
+ * @throws {Error} The callback error, file error, or parser/validation error.
+ */
 export async function withBatches(
   path: string,
   options: CsvBatchesOptions,
@@ -236,16 +291,35 @@ export async function withBatches(
 }
 
 /**
- * Stream reusable columnar batch views without materializing one JS string per field.
+ * Visit reusable columnar batch views without materializing one JavaScript string per field.
  *
- * When `columns` is defined, batch column indexes are relative to the projected
- * output order. This API is synchronous by design so the view can be safely reused.
+ * The callback must be synchronous. A single view object is rebound for each batch and becomes
+ * invalid as soon as the callback returns, so copy any data that must outlive the callback. When
+ * `columns` is defined, batch column indexes are relative to the projected output order. Worker
+ * parsing and strict validation with selected columns are not supported by this API.
+ *
+ * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
+ * @param path - Path to the CSV file.
+ * @param options - Serial file and columnar projection options.
+ * @param callback - Synchronous function invoked with a reusable view and batch index.
+ * @returns A promise that resolves after all batches have been visited.
+ * @throws {TypeError} If the callback returns a promise.
+ * @throws {Error} If worker parsing or an unsupported strict selected projection is requested.
  */
 export function forEachColumnarBatches<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
   options: CsvColumnarBatchOptions<TColumns>,
   callback: CsvColumnarBatchCallback<TColumns>,
 ): Promise<void>;
+/**
+ * Visit columnar batches when the selected-column tuple is not statically known.
+ * The callback must be synchronous and the reusable view is valid only during the callback.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Serial columnar options, or `undefined` for defaults.
+ * @param callback - Synchronous batch handler.
+ * @returns A promise that resolves after all batches are visited.
+ */
 export function forEachColumnarBatches(
   path: string,
   options: CsvColumnarBatchOptions | undefined,
@@ -311,11 +385,31 @@ export async function forEachColumnarBatches<TColumns extends CsvColumns | undef
   }
 }
 
+/**
+ * Visit reusable columnar batch views with the same lifetime guarantees as
+ * {@link forEachColumnarBatches}. The callback is synchronous and the view is invalid after it
+ * returns.
+ *
+ * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
+ * @param path - Path to the CSV file.
+ * @param options - Serial file and columnar projection options.
+ * @param callback - Synchronous function invoked for each batch.
+ * @returns A promise that resolves after all batches have been visited.
+ */
 export function withColumnarBatches<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
   options: CsvColumnarBatchOptions<TColumns>,
   callback: CsvColumnarBatchCallback<TColumns>,
 ): Promise<void>;
+/**
+ * Visit columnar batches with runtime-selected columns and managed view lifetime.
+ * The callback must be synchronous.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Serial columnar options, or `undefined` for defaults.
+ * @param callback - Synchronous batch handler.
+ * @returns A promise that resolves after all batches are visited.
+ */
 export function withColumnarBatches(
   path: string,
   options: CsvColumnarBatchOptions | undefined,
@@ -325,17 +419,37 @@ export function withColumnarBatches(
 }
 
 /**
- * Stream reusable row views without materializing row arrays.
+ * Visit reusable row views without materializing row arrays.
  *
- * `selectedColumns` on the row view is metadata only. Row accessors still use
- * physical CSV column indexes; use `row.getPhysical()` for explicit call sites.
- * This API is synchronous by design so the view can be safely reused.
+ * The callback must be synchronous. A single view object is rebound for each row and becomes
+ * invalid when the callback returns, so copy strings or bytes that must be retained. The
+ * `selectedColumns` property records the requested source columns. Without `where`, accessors
+ * use physical CSV indexes. With both `where` and a projection, only projected fields may be
+ * stored, so accessor indexes are projected positions; use the metadata to map them back to
+ * source indexes. Worker parsing is not supported.
+ *
+ * @typeParam TColumns - Literal projected column indexes recorded in `selectedColumns`.
+ * @param path - Path to the CSV file.
+ * @param options - Serial file, projection, filter, and validation options.
+ * @param callback - Synchronous function invoked once per row.
+ * @returns A promise that resolves after all rows have been visited.
+ * @throws {TypeError} If the callback returns a promise.
+ * @throws {Error} If worker parsing is requested or the file/parser fails.
  */
 export function forEachRowViews<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
   options: CsvRowViewsOptions<TColumns>,
   callback: CsvRowViewCallback<TColumns>,
 ): Promise<void>;
+/**
+ * Visit row views when the selected-column tuple is not statically known.
+ * The callback must be synchronous and the reusable view is valid only during the callback.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Serial row-view options, or `undefined` for defaults.
+ * @param callback - Synchronous row handler.
+ * @returns A promise that resolves after all rows are visited.
+ */
 export function forEachRowViews(
   path: string,
   options: CsvRowViewsOptions | undefined,
@@ -373,11 +487,31 @@ export async function forEachRowViews<TColumns extends CsvColumns | undefined = 
   }
 }
 
+/**
+ * Visit reusable row views with the same lifetime guarantees as {@link forEachRowViews}.
+ *
+ * The callback is synchronous and the view is invalid after it returns.
+ *
+ * @typeParam TColumns - Literal projected column indexes recorded in `selectedColumns`.
+ * @param path - Path to the CSV file.
+ * @param options - Serial file, projection, filter, and validation options.
+ * @param callback - Synchronous function invoked once per row.
+ * @returns A promise that resolves after all rows have been visited.
+ */
 export function withRowViews<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
   options: CsvRowViewsOptions<TColumns>,
   callback: CsvRowViewCallback<TColumns>,
 ): Promise<void>;
+/**
+ * Visit row views with runtime-selected columns and managed view lifetime.
+ * The callback must be synchronous.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Serial row-view options, or `undefined` for defaults.
+ * @param callback - Synchronous row handler.
+ * @returns A promise that resolves after all rows are visited.
+ */
 export function withRowViews(
   path: string,
   options: CsvRowViewsOptions | undefined,
@@ -387,10 +521,18 @@ export function withRowViews(
 }
 
 /**
- * Count rows without materializing them.
+ * Count CSV records without materializing them.
  *
- * Full filter support exists here because count has native fast paths for
- * filters created with `csv.column()` and grouped with `csv.all()`, `csv.any()`, and `csv.not()`.
+ * Filters created with `csv.column()` and composed with `csv.all()`, `csv.any()`, or `csv.not()`
+ * are evaluated by native fast paths. Set `workerCount` above one for parallel counting; workers
+ * require uncompressed input, an explicit delimiter, and non-strict validation. Serial counting
+ * supports compression and automatic delimiter detection.
+ *
+ * @param path - Path to the CSV file.
+ * @param suppliedOptions - Count, filter, validation, and optional worker settings.
+ * @returns A promise containing the record count.
+ * @throws {Error} If strict validation is combined with a filter, or if worker restrictions or
+ * file/parser errors are encountered.
  */
 export async function count(path: string, suppliedOptions: CsvCountOptions = {}): Promise<number> {
   const options = snapshotCsvOptions(suppliedOptions);
@@ -436,8 +578,34 @@ export async function count(path: string, suppliedOptions: CsvCountOptions = {})
   return total;
 }
 
+/**
+ * Count records through record-safe worker shards.
+ *
+ * `workerCount` must be greater than one. Workers require uncompressed input, an explicit
+ * delimiter, and non-strict validation; use {@link count} for serial counting or strict checks.
+ *
+ * @param path - Path to the CSV file.
+ * @param options - Parallel count options, including the required worker count.
+ * @returns A promise containing the total record count.
+ * @throws {RangeError} If `workerCount` is not an integer greater than one.
+ * @throws {Error} If compression, automatic delimiter detection, or strict validation is enabled.
+ */
 export { parallelCount };
 
+/**
+ * Find byte offsets that divide a CSV file only at record boundaries.
+ *
+ * The returned array contains shard start offsets followed by the terminal file boundary. Quoted
+ * fields and embedded newlines are respected. The operation reads the file directly, so compressed
+ * input and automatic delimiter detection are not supported.
+ *
+ * @param path - Path to the uncompressed CSV file.
+ * @param shardCount - Desired number of partitions; the result may contain fewer non-empty shards.
+ * @param suppliedOptions - Explicit delimiter and file parser options. Compression is unavailable.
+ * @returns Monotonically increasing byte offsets, including `0` and the file-length boundary.
+ * @throws {RangeError} If `shardCount` is not a positive integer.
+ * @throws {Error} If the delimiter is automatic, compressed, or invalid for native scanning.
+ */
 export function findCsvSafeSplitOffsets(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): number[] {
   const options = snapshotCsvOptions(suppliedOptions);
   rejectCompressedSharding(options, 'CSV split offset scanning');
@@ -445,6 +613,20 @@ export function findCsvSafeSplitOffsets(path: string, shardCount: number, suppli
   return findCsvSafeSplitOffsetsNative(path, shardCount, options.delimiter ?? ',');
 }
 
+/**
+ * Find non-empty CSV byte ranges that begin and end at record boundaries.
+ *
+ * Shards use inclusive `start` and `end` offsets and never split quoted fields or embedded
+ * newlines. A small file can produce fewer non-empty shards than requested. The operation does
+ * not support compressed input or automatic delimiter detection.
+ *
+ * @param path - Path to the uncompressed CSV file.
+ * @param shardCount - Desired number of partitions; the result may contain fewer shards.
+ * @param suppliedOptions - Explicit delimiter and file parser options. Compression is unavailable.
+ * @returns Non-empty, ordered byte ranges suitable for independent worker processing.
+ * @throws {RangeError} If `shardCount` is not a positive integer.
+ * @throws {Error} If the delimiter is automatic, compressed, or invalid for native scanning.
+ */
 export function findCsvSafeShards(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): CsvShard[] {
   const options = snapshotCsvOptions(suppliedOptions);
   rejectCompressedSharding(options, 'CSV shard scanning');
@@ -452,6 +634,21 @@ export function findCsvSafeShards(path: string, shardCount: number, suppliedOpti
   return findCsvSafeShardsNative(path, shardCount, options.delimiter ?? ',');
 }
 
+/**
+ * Create a reusable pool for repeated parallel row and count operations.
+ *
+ * The pool captures its file options when created. `workerCount` must be greater than one, and
+ * pooled operations require uncompressed input, an explicit delimiter, and non-strict validation.
+ * Call `close()` (or use `using`) when the pool is no longer needed.
+ *
+ * @typeParam TColumns - Literal projected column indexes for pooled row operations.
+ * @param path - Path to the uncompressed CSV file.
+ * @param options - Parallel worker-pool options, including `workerCount`.
+ * @returns A reusable worker pool. Its `rows()` and `count()` methods are asynchronous.
+ * @throws {RangeError} If `workerCount` is not an integer greater than one.
+ * @throws {Error} If compression or automatic delimiter detection is enabled. Strict validation
+ * is rejected when `count()` or `rows()` is called on the returned pool.
+ */
 export function workerPool<TColumns extends CsvColumns | undefined = undefined>(
   path: string,
   options: CsvWorkerPoolOptions<TColumns>,
@@ -465,25 +662,181 @@ export function workerPool(path: string, options: CsvWorkerPoolOptions): CsvWork
   return createWorkerPool(path, options);
 }
 
+/**
+ * The package's file-oriented API namespace.
+ *
+ * The namespace combines materialization, counting, filtering, worker, batch, row-view, and
+ * record-safe sharding helpers in one discoverable object.
+ */
 export const csv = {
+  /**
+   * Combine one or more filters with logical AND semantics.
+   * @param first - First filter in the group.
+   * @param rest - Additional filters that must match.
+   * @returns An immutable conjunction filter.
+   */
   all,
+  /**
+   * Combine one or more filters with logical OR semantics.
+   * @param first - First filter in the group.
+   * @param rest - Additional filters, any one of which may match.
+   * @returns An immutable disjunction filter.
+   */
   any,
+  /**
+   * Select a zero-based physical CSV column for building reusable filters.
+   * @param columnIndex - Column index from 0 through 2024.
+   * @returns An immutable column predicate builder.
+   */
   column,
+  /**
+   * Negate a filter while preserving missing-column unknown semantics.
+   * @param filter - Filter created by this API.
+   * @returns An immutable negation filter.
+   */
   not,
+  /**
+   * Validate and brand a JavaScript regular expression for native matching.
+   * @param pattern - Expression using the supported RE2-compatible syntax and flags.
+   * @returns An immutable `CsvRegex` descriptor for low-level filter values.
+   */
   re,
+  /**
+   * Create a reusable pool for parallel row and count operations.
+   * The pool captures its options at construction; close it when finished, and note that strict
+   * validation is rejected when `rows()` or `count()` starts.
+   * @param path - Path to an uncompressed CSV file.
+   * @param options - Parallel options with `workerCount` greater than one.
+   * @returns A reusable `CsvWorkerPool`.
+   */
   workerPool,
+  /**
+   * Parse one in-memory buffer into materialized rows.
+   * Compression, automatic delimiter detection, and workers are unavailable.
+   * @param buffer - CSV bytes in a typed array or `DataView`.
+   * @param suppliedOptions - In-memory parser and projection options.
+   * @returns A promise containing materialized rows in input order.
+   * @example
+   * ```ts
+   * import { csv } from '@konstit/csv';
+   * const rows = await csv.parse(Buffer.from('1,Ada\n2,Grace\n'), { columns: [1] });
+   * // [['Ada'], ['Grace']]
+   * ```
+   */
   parse,
+  /**
+   * Stream materialized row batches from a CSV file.
+   * Options are captured at invocation. Serial batches preserve file order; worker batches arrive
+   * as each shard reports them, without a global file-order guarantee.
+   * @param path - Path to the CSV file.
+   * @param options - File, projection, filter, validation, and worker settings.
+   * @returns An async generator of row batches.
+   * @example
+   * ```ts
+   * import { csv } from '@konstit/csv';
+   * for await (const rows of csv.rows('data.csv', { columns: [0, 2], delimiter: ';' })) {
+   *   for (const row of rows) console.log(row);
+   * }
+   * ```
+   */
   rows,
+  /**
+   * Count records through record-safe worker shards.
+   * Workers require an explicit delimiter, uncompressed input, and non-strict validation.
+   * @param path - Path to the CSV file.
+   * @param options - Parallel count options with `workerCount` greater than one.
+   * @returns A promise containing the total record count.
+   */
   parallelCount,
+  /**
+   * Stream materialized rows through record-safe worker shards.
+   * Worker batches are yielded as shards report them and are not globally ordered.
+   * @param path - Path to the CSV file.
+   * @param options - Parallel row options with `workerCount` greater than one.
+   * @returns An async generator of projected row batches.
+   */
   parallelRows,
+  /**
+   * Stream disposable native-backed batches.
+   * Close every yielded batch, or use `for await (using batch of ...)`.
+   * @param path - Path to the CSV file.
+   * @param options - Serial file and parser options.
+   * @returns An async generator of `NativeCsvBatch` objects.
+   */
   batches,
+  /**
+   * Process native batches and close each one after the callback settles.
+   * @param path - Path to the CSV file.
+   * @param options - Serial file and parser options.
+   * @param callback - Synchronous or asynchronous batch handler.
+   * @returns A promise that resolves after all batches are processed.
+   */
   withBatches,
+  /**
+   * Visit reusable columnar batch views with a synchronous callback.
+   * The view is invalid after the callback returns; selected indexes are relative to projection.
+   * @param path - Path to the CSV file.
+   * @param options - Serial columnar options; workers are unsupported.
+   * @param callback - Synchronous batch handler.
+   * @returns A promise that resolves after all batches are visited.
+   */
   forEachColumnarBatches,
+  /**
+   * Visit reusable columnar batch views, closing native storage after each callback.
+   * The callback is synchronous and the view cannot be retained.
+   * @param path - Path to the CSV file.
+   * @param options - Serial columnar options.
+   * @param callback - Synchronous batch handler.
+   * @returns A promise that resolves after all batches are visited.
+   */
   withColumnarBatches,
+  /**
+   * Visit reusable row views with a synchronous callback.
+   * The view is invalid after the callback returns; workers are unsupported.
+   * @param path - Path to the CSV file.
+   * @param options - Serial row-view options.
+   * @param callback - Synchronous row handler.
+   * @returns A promise that resolves after all rows are visited.
+   */
   forEachRowViews,
+  /**
+   * Visit reusable row views with the same lifetime rules as `forEachRowViews`.
+   * @param path - Path to the CSV file.
+   * @param options - Serial row-view options.
+   * @param callback - Synchronous row handler.
+   * @returns A promise that resolves after all rows are visited.
+   */
   withRowViews,
+  /**
+   * Count CSV records without materializing them.
+   * Serial counting supports compression and automatic delimiter detection; filtered strict mode is unsupported.
+   * @param path - Path to the CSV file.
+   * @param suppliedOptions - Count, filter, validation, and worker settings.
+   * @returns A promise containing the record count.
+   * @example
+   * ```ts
+   * import { csv } from '@konstit/csv';
+   * const activeRows = await csv.count('data.csv', { where: csv.column(2).equals('active') });
+   * ```
+   */
   count,
+  /**
+   * Find record-safe byte offsets, including the terminal file boundary.
+   * Compressed input and automatic delimiter detection are unsupported.
+   * @param path - Path to an uncompressed CSV file.
+   * @param shardCount - Desired number of partitions.
+   * @param suppliedOptions - Explicit delimiter and sharding options.
+   * @returns Monotonically increasing byte offsets.
+   */
   findCsvSafeSplitOffsets,
+  /**
+   * Find non-empty record-safe byte ranges for independent processing.
+   * Ranges use inclusive `start` and `end` offsets and may be fewer than requested.
+   * @param path - Path to an uncompressed CSV file.
+   * @param shardCount - Desired number of partitions.
+   * @param suppliedOptions - Explicit delimiter and sharding options.
+   * @returns Ordered, non-empty CSV byte ranges.
+   */
   findCsvSafeShards,
 };
 

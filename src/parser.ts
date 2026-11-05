@@ -35,6 +35,13 @@ function destroyNativeCsvParser(handle: NativePointer): void {
 
 const nativeCsvParserFinalizer = new FinalizationRegistry<NativePointer>(destroyNativeCsvParser);
 
+/**
+ * The fixed-configuration parser surface used by high-level streaming APIs.
+ *
+ * A prepared parser captures projection and filter state once, so each chunk
+ * is processed with the same configuration. The parser owns its native handle
+ * and must be closed or disposed after use.
+ */
 export type PreparedCsvParser = Pick<
   NativeCsvParser,
   'writeBatch' | 'endBatch' | 'writeCount' | 'endCount' | 'close' | typeof Symbol.dispose
@@ -42,6 +49,25 @@ export type PreparedCsvParser = Pick<
 
 // High-level operations own a fixed configuration. Explicit per-write options on
 // NativeCsvParser remain independent and continue to support reconfiguration.
+/**
+ * Creates a parser with projection and filter configuration prepared once.
+ *
+ * This helper is used by the high-level APIs; direct callers that need to
+ * change projection or filters between writes should use `NativeCsvParser`
+ * and its explicit per-write methods instead.
+ *
+ * @param options Base parser settings such as encoding, delimiter, strictness,
+ * and fixed column count.
+ * @param selectedColumns Optional zero-based columns to emit in each batch.
+ * @param program Optional postfix sequence of filter predicates and boolean
+ * operators. The parser validates and normalizes it before preparation.
+ * @param projected Whether the caller is explicitly requesting a projected
+ * path. This is an internal distinction used by the high-level API.
+ * @returns A parser with `writeBatch`/`writeCount` operations bound to the
+ * supplied configuration.
+ * @throws {Error} If strict validation is requested for a projected or
+ * filtered operation, or native parser setup fails.
+ */
 export function createPreparedParser(
   options: CsvParserOptions,
   selectedColumns?: CsvColumns,
@@ -68,6 +94,20 @@ interface PreparedNativeWriter {
 
 // The fallback closures retain all normalized buffers for the parser's lifetime.
 // New native libraries additionally copy the configuration into native storage.
+/**
+ * Prepares native projection and filter buffers for an existing parser handle.
+ *
+ * This low-level helper is intended for the parser implementation. The
+ * returned closures retain the normalized configuration for the lifetime of
+ * the handle, and the caller remains responsible for closing that handle.
+ *
+ * @param handle Open native parser handle.
+ * @param selectedColumns Optional zero-based output columns.
+ * @param program Optional postfix sequence of filter predicates and boolean
+ * operators. It is validated and normalized before preparation.
+ * @returns Prepared write functions for batches and counts.
+ * @throws {Error} If the native library rejects the configuration.
+ */
 export function prepareNativeParser(
   handle: NativePointer,
   selectedColumns: CsvColumns | undefined,
@@ -228,11 +268,48 @@ function createNativeCsvParser(options: CsvParserOptions): NativePointer {
   return handle;
 }
 
+/**
+ * Incrementally parses caller-owned CSV chunks through the native parser.
+ *
+ * Use this class when the application controls buffering. A write may return a
+ * `NativeCsvBatch` containing complete rows while retaining an incomplete row
+ * for the next write. Every returned batch owns native memory and must be
+ * closed or disposed. `write()` and `end()` are convenience methods that
+ * materialize rows and close their temporary batches automatically.
+ *
+ * Projection and filter options passed to the explicit projected/count methods
+ * apply to the current stream position. Keep them consistent while a row is
+ * split across chunks; complete that row or call `reset()` before changing them.
+ *
+ * @example
+ * ```ts
+ * using parser = new NativeCsvParser({ delimiter: ';' });
+ * using first = parser.writeBatch(Buffer.from('1;Ada\n2;Bob'), false);
+ * console.log(first.rows()); // [['1', 'Ada']]
+ * using final = parser.endBatch();
+ * console.log(final.rows()); // [['2', 'Bob']]
+ * ```
+ */
 export class NativeCsvParser {
   #handle: NativePointer | null;
   readonly #strict: boolean;
   readonly #fixedColumns: number | undefined;
 
+  /**
+   * Creates an open parser.
+   *
+   * @param options Base parser settings. `encoding`, `delimiter`, `strict`, and
+   * `fixedColumns` are captured by this parser; the delimiter defaults to `,`.
+   * Automatic delimiter detection (`"auto"`) is available through file APIs,
+   * not this manual parser. `selectedColumns` is validated for compatibility
+   * but does not configure `writeBatch()`; apply projection with one of the
+   * explicit projected methods instead. `expectedHeaders`, `requireHeader`,
+   * and `minDataRows` are schema metadata for higher-level APIs and have no
+   * effect on this low-level parser.
+   * @throws {Error} If the delimiter is not one character or native parser
+   * creation fails.
+   * @throws {RangeError} If selected or fixed column settings are out of range.
+   */
   constructor(options: CsvParserOptions = {}) {
     this.#strict = options.strict === true;
     normalizeColumns(options.selectedColumns);
@@ -243,10 +320,24 @@ export class NativeCsvParser {
     nativeCsvParserFinalizer.register(this, handle, this);
   }
 
+  /** Whether the native parser handle has been released. */
   get closed(): boolean {
     return this.#handle === null;
   }
 
+  /**
+   * Parses a chunk and materializes all complete rows emitted by that call.
+   *
+   * The temporary native batch is closed before this method returns. Use
+   * `writeBatch()` when byte views or low-allocation access are required.
+   *
+   * @param chunk Input bytes. The parser may retain an incomplete final row for
+   * a later call.
+   * @param final Set to `true` when this is the last input chunk; buffered row
+   * state is flushed before returning.
+   * @returns Materialized UTF-8 rows emitted by this call.
+   * @throws {Error} If the parser is closed or native parsing fails.
+   */
   write(chunk: NodeJS.TypedArray | DataView, final = false): CsvRow[] {
     const batch = this.writeBatch(chunk, final);
     try {
@@ -256,6 +347,18 @@ export class NativeCsvParser {
     }
   }
 
+  /**
+   * Parses a chunk and returns an owned batch of complete rows.
+   *
+   * Call `batch.close()` or use `using` for the returned batch. The parser may
+   * retain an incomplete row between calls. `final: true` marks the input end
+   * and flushes that row.
+   *
+   * @param chunk Input bytes.
+   * @param final Whether this is the final input chunk.
+   * @returns A native batch that the caller owns.
+   * @throws {Error} If the parser is closed or native parsing fails.
+   */
   writeBatch(chunk: NodeJS.TypedArray | DataView, final = false): NativeCsvBatch {
     if (chunk.byteLength === 0 && final) {
       return this.endBatch();
@@ -288,6 +391,21 @@ export class NativeCsvParser {
     return new NativeCsvBatch(batch);
   }
 
+  /**
+   * Parses a chunk with explicit projection and optional native filters.
+   *
+   * Returned fields follow `selectedColumns` order. `equalsFilter` and
+   * `filters` are mutually exclusive. Keep the same projection and filter
+   * configuration for chunks that may belong to one logical row.
+   *
+   * @param chunk Input bytes.
+   * @param options Projection and filter settings for this stream position.
+   * @param final Whether this is the final input chunk.
+   * @returns An owned projected batch; close or dispose it after use.
+   * @throws {Error} If strict mode is enabled, both filter forms are supplied,
+   * the parser is closed, or native parsing fails.
+   * @throws {RangeError} If projection or filter values are invalid.
+   */
   writeProjectedBatch(
     chunk: NodeJS.TypedArray | DataView,
     options: CsvNativeProjectionOptions = {},
@@ -339,6 +457,15 @@ export class NativeCsvParser {
     return new NativeCsvBatch(batch);
   }
 
+  /**
+   * Flushes the parser and materializes its final rows.
+   *
+   * The temporary final batch is closed before this method returns. Use
+   * `endBatch()` when the native batch representation is needed.
+   *
+   * @returns Materialized UTF-8 rows pending at end of input.
+   * @throws {Error} If the parser is closed or the final row is invalid.
+   */
   end(): CsvRow[] {
     const batch = this.endBatch();
     try {
@@ -348,6 +475,12 @@ export class NativeCsvParser {
     }
   }
 
+  /**
+   * Flushes buffered parser state and returns the final owned batch.
+   *
+   * @returns A native batch that the caller owns and must close.
+   * @throws {Error} If the parser is closed or the final row is invalid.
+   */
   endBatch(): NativeCsvBatch {
     const batch = this.#strict && this.#fixedColumns !== undefined
       ? native.symbols.csv_parser_finish_strict_fixed_batch(this.#requireHandle(), this.#fixedColumns)
@@ -362,6 +495,17 @@ export class NativeCsvParser {
     return new NativeCsvBatch(batch);
   }
 
+  /**
+   * Flushes buffered state using explicit projection and filter settings.
+   *
+   * The options must match the configuration used for chunks contributing to
+   * the final logical row. `equalsFilter` and `filters` cannot be combined.
+   *
+   * @param options Projection and filter settings.
+   * @returns An owned projected batch; close or dispose it after use.
+   * @throws {Error} If strict mode is enabled, filter forms conflict, the
+   * parser is closed, or the final row is invalid.
+   */
   endProjectedBatch(options: CsvNativeProjectionOptions = {}): NativeCsvBatch {
     this.#rejectStrictUnsupported('projected batches');
     this.#rejectProjectionFilterConflict(options);
@@ -397,6 +541,21 @@ export class NativeCsvParser {
     return new NativeCsvBatch(batch);
   }
 
+  /**
+   * Parses a chunk with a postfix native filter program.
+   *
+   * This is the lower-level counterpart to `writeProjectedBatch()` for callers
+   * that want to provide predicate and boolean-operator entries directly.
+   *
+   * @param chunk Input bytes.
+   * @param selectedColumns Optional zero-based output columns.
+   * @param program Filter predicates and boolean operators in postfix order.
+   * The method validates and normalizes the entries before the native call.
+   * @param final Whether this is the final input chunk.
+   * @returns An owned projected batch; close or dispose it after use.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing rejects the program or input.
+   */
   writeProjectedBatchWhere(
     chunk: NodeJS.TypedArray | DataView,
     selectedColumns: readonly number[] | undefined,
@@ -433,6 +592,16 @@ export class NativeCsvParser {
     return new NativeCsvBatch(batch);
   }
 
+  /**
+   * Flushes buffered state with a postfix native filter program.
+   *
+   * @param selectedColumns Optional zero-based output columns.
+   * @param program Filter predicates and boolean operators in postfix order.
+   * The method validates and normalizes the entries before the native call.
+   * @returns An owned projected batch; close or dispose it after use.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing rejects the program or final row.
+   */
   endProjectedBatchWhere(
     selectedColumns: readonly number[] | undefined,
     program: readonly CsvNativeFilterProgramEntry[],
@@ -458,6 +627,18 @@ export class NativeCsvParser {
     return new NativeCsvBatch(batch);
   }
 
+  /**
+   * Counts complete rows emitted by a chunk without materializing fields.
+   *
+   * Sum the results from each write and call `endCount()` for the final
+   * buffered row when processing split input.
+   *
+   * @param chunk Input bytes.
+   * @param final Whether this is the final input chunk.
+   * @returns The number of rows emitted by this call.
+   * @throws {Error} In strict mode, because count mode has no strict validator,
+   * or if the parser is closed/native parsing fails.
+   */
   writeCount(chunk: NodeJS.TypedArray | DataView, final = false): number {
     this.#rejectStrictUnsupported('count');
     if (chunk.byteLength === 0 && final) {
@@ -472,11 +653,29 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Flushes buffered state and returns the final unfiltered row count.
+   *
+   * @returns The number of rows emitted while finishing the stream.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   endCount(): number {
     this.#rejectStrictUnsupported('count');
     return u64ToSafeNumber(native.symbols.csv_parser_finish_count(this.#requireHandle()), 'CSV parsed row count');
   }
 
+  /**
+   * Counts rows matching an equality filter while parsing a chunk.
+   *
+   * @param chunk Input bytes.
+   * @param filter Column and value to compare.
+   * @param final Whether this is the final input chunk.
+   * @returns Matching rows emitted by this call.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   * @throws {RangeError} If the filter column or value is invalid.
+   */
   writeCountWhereEquals(chunk: NodeJS.TypedArray | DataView, filter: CsvEqualsFilter, final = false): number {
     this.#rejectStrictUnsupported('count filters');
     if (chunk.byteLength === 0 && final) {
@@ -500,6 +699,14 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Flushes buffered state and counts rows matching an equality filter.
+   *
+   * @param filter Column and value to compare.
+   * @returns Matching rows emitted while finishing the stream.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   endCountWhereEquals(filter: CsvEqualsFilter): number {
     this.#rejectStrictUnsupported('count filters');
     const normalized = normalizeEqualsFilter(filter);
@@ -514,6 +721,16 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Counts rows whose field belongs to an inclusion set while parsing a chunk.
+   *
+   * @param chunk Input bytes.
+   * @param filter Column and accepted values.
+   * @param final Whether this is the final input chunk.
+   * @returns Matching rows emitted by this call.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   writeCountWhereIn(chunk: NodeJS.TypedArray | DataView, filter: CsvInFilter, final = false): number {
     this.#rejectStrictUnsupported('count filters');
     if (chunk.byteLength === 0 && final) {
@@ -539,6 +756,14 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Flushes buffered state and counts rows matching an inclusion set.
+   *
+   * @param filter Column and accepted values.
+   * @returns Matching rows emitted while finishing the stream.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   endCountWhereIn(filter: CsvInFilter): number {
     this.#rejectStrictUnsupported('count filters');
     const normalized = normalizeInFilter(filter);
@@ -555,6 +780,16 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Counts rows whose field starts with a prefix while parsing a chunk.
+   *
+   * @param chunk Input bytes.
+   * @param filter Column and prefix to compare.
+   * @param final Whether this is the final input chunk.
+   * @returns Matching rows emitted by this call.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   writeCountWhereStartsWith(chunk: NodeJS.TypedArray | DataView, filter: CsvStartsWithFilter, final = false): number {
     this.#rejectStrictUnsupported('count filters');
     if (chunk.byteLength === 0 && final) {
@@ -578,6 +813,14 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Flushes buffered state and counts rows matching a prefix.
+   *
+   * @param filter Column and prefix to compare.
+   * @returns Matching rows emitted while finishing the stream.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   endCountWhereStartsWith(filter: CsvStartsWithFilter): number {
     this.#rejectStrictUnsupported('count filters');
     const normalized = normalizeStartsWithFilter(filter);
@@ -592,6 +835,16 @@ export class NativeCsvParser {
     );
   }
 
+  /**
+   * Counts rows satisfying all filters while parsing a chunk.
+   *
+   * @param chunk Input bytes.
+   * @param filters Native filter predicates combined with logical AND.
+   * @param final Whether this is the final input chunk.
+   * @returns Matching rows emitted by this call.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   writeCountWhereAll(
     chunk: NodeJS.TypedArray | DataView,
     filters: readonly CsvNativeFilter[],
@@ -621,6 +874,14 @@ export class NativeCsvParser {
     return u64ToSafeNumber(count, 'CSV filtered row count');
   }
 
+  /**
+   * Flushes buffered state and counts rows satisfying all filters.
+   *
+   * @param filters Native filter predicates combined with logical AND.
+   * @returns Matching rows emitted while finishing the stream.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing fails.
+   */
   endCountWhereAll(filters: readonly CsvNativeFilter[]): number {
     this.#rejectStrictUnsupported('count filters');
     const normalized = normalizeNativeFilters(filters);
@@ -637,6 +898,17 @@ export class NativeCsvParser {
     return u64ToSafeNumber(count, 'CSV filtered row count');
   }
 
+  /**
+   * Counts rows using a postfix native filter program while parsing a chunk.
+   *
+   * @param chunk Input bytes.
+   * @param program Filter predicates and boolean operators in postfix order.
+   * The method validates and normalizes the entries before the native call.
+   * @param final Whether this is the final input chunk.
+   * @returns Matching rows emitted by this call.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing rejects the program or input.
+   */
   writeCountWhere(
     chunk: NodeJS.TypedArray | DataView,
     program: readonly CsvNativeFilterProgramEntry[],
@@ -666,6 +938,15 @@ export class NativeCsvParser {
     return u64ToSafeNumber(count, 'CSV filtered row count');
   }
 
+  /**
+   * Flushes buffered state and counts rows using a postfix filter program.
+   *
+   * @param program Filter predicates and boolean operators in postfix order.
+   * The method validates and normalizes the entries before the native call.
+   * @returns Matching rows emitted while finishing the stream.
+   * @throws {Error} If strict mode is enabled, the parser is closed, or native
+   * parsing rejects the program or final row.
+   */
   endCountWhere(program: readonly CsvNativeFilterProgramEntry[]): number {
     this.#rejectStrictUnsupported('count filters');
     const normalized = normalizeNativeFilterProgram(program);
@@ -682,10 +963,24 @@ export class NativeCsvParser {
     return u64ToSafeNumber(count, 'CSV filtered row count');
   }
 
+  /**
+   * Discards buffered row state and parser errors while keeping this parser open.
+   *
+   * Callers must supply projection or filter settings again after a reset.
+   *
+   * @throws {Error} If the parser is already closed.
+   */
   reset(): void {
     native.symbols.csv_parser_reset(this.#requireHandle());
   }
 
+  /**
+   * Releases the native parser handle.
+   *
+   * Closing is idempotent. Subsequent parsing calls throw; batches already
+   * returned by the parser retain their own lifetime and must be closed
+   * separately.
+   */
   close(): void {
     const handle = this.#handle;
     if (handle === null) {
@@ -697,10 +992,12 @@ export class NativeCsvParser {
     destroyNativeCsvParser(handle);
   }
 
+  /** Alias for {@link close}, suitable for explicit resource management. */
   dispose(): void {
     this.close();
   }
 
+  /** Implements `using` / explicit resource management. */
   [Symbol.dispose](): void {
     this.close();
   }

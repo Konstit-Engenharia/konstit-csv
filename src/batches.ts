@@ -21,6 +21,15 @@ import type {
   NativeCsvRowCallback,
 } from './types.js';
 
+/**
+ * A reusable, low-allocation view over one row in a {@link NativeCsvBatch}.
+ *
+ * `NativeCsvBatch.forEachRow()` moves one instance across the batch instead of
+ * allocating a new view for every row. Read the row during the callback; the
+ * same object is moved before the next callback. Byte and buffer results are
+ * views over the batch's backing storage and must not be retained after the
+ * batch is closed.
+ */
 export class NativeCsvRowView {
   #data: Buffer;
   #rowOffsetWords: Uint32Array;
@@ -28,6 +37,21 @@ export class NativeCsvRowView {
   #fieldOffsetWords: Uint32Array;
   #rowIndex: number;
 
+  /**
+   * Creates a row view over packed batch storage.
+   *
+   * Most callers should obtain a view from `NativeCsvBatch.forEachRow()`.
+   * Direct construction is useful when integrating with a compatible native
+   * batch representation.
+   *
+   * @param data Concatenated field bytes for the batch.
+   * @param rowOffsets Row boundaries expressed as indexes into `fieldOffsets`.
+   * The array must contain one entry per row plus a final end offset.
+   * @param fieldOffsets Field boundaries expressed as byte offsets into `data`.
+   * The array must contain one entry per field plus a final end offset.
+   * @param rowIndex Initial zero-based row index. The index is checked when a
+   * row property or accessor is first read.
+   */
   constructor(data: Buffer, rowOffsets: BigUint64Array, fieldOffsets: BigUint64Array, rowIndex = 0) {
     this.#data = data;
     this.#rowOffsetWords = offsetWords(rowOffsets);
@@ -36,21 +60,40 @@ export class NativeCsvRowView {
     this.#rowIndex = rowIndex;
   }
 
+  /** Zero-based index of the row currently selected by this view. */
   get rowIndex(): number {
     return this.#rowIndex;
   }
 
+  /** Number of fields in the currently selected row. */
   get fieldCount(): number {
     const [rowStart, rowEnd,] = this.#rowRange(this.#rowIndex);
     return rowEnd - rowStart;
   }
 
+  /**
+   * Moves this view to another row in the same batch.
+   *
+   * @param rowIndex Zero-based row index.
+   * @returns This view, so callers can chain the move with a read.
+   * @throws {RangeError} If `rowIndex` is outside the row-offset table.
+   */
   moveTo(rowIndex: number): this {
     this.#rowRange(rowIndex);
     this.#rowIndex = rowIndex;
     return this;
   }
 
+  /**
+   * Returns the byte range for a field in the current row.
+   *
+   * Column indexes are zero-based and relative to the fields stored in the
+   * row. The returned offsets address `data` directly.
+   *
+   * @param columnIndex Zero-based field index.
+   * @returns A half-open byte range, or `null` when the row has no such field.
+   * @throws {RangeError} If the row or offset table is malformed.
+   */
   fieldRange(columnIndex: number): CsvFieldRange | null {
     const [rowStart, rowEnd,] = this.#rowRange(this.#rowIndex);
 
@@ -65,10 +108,25 @@ export class NativeCsvRowView {
     };
   }
 
+  /**
+   * Returns the current row's field range as a half-open byte interval.
+   *
+   * @param columnIndex Zero-based field index in the current row.
+   * @returns Offsets into the backing data, or `null` when the field is absent.
+   */
   range(columnIndex: number): CsvFieldRange | null {
     return this.fieldRange(columnIndex);
   }
 
+  /**
+   * Returns a borrowed byte view for a field in the current row.
+   *
+   * The returned view shares the batch backing storage; consume it before the
+   * originating batch is closed.
+   *
+   * @param columnIndex Zero-based field index.
+   * @returns A borrowed byte view, or `null` when the field is absent.
+   */
   fieldBytes(columnIndex: number): Uint8Array | null {
     const range = this.fieldRange(columnIndex);
     if (range === null) {
@@ -77,10 +135,26 @@ export class NativeCsvRowView {
     return this.#data.subarray(range.start, range.end);
   }
 
+  /**
+   * Returns borrowed bytes for a field in the current row.
+   *
+   * @param columnIndex Zero-based field index in the current row.
+   * @returns A view sharing the batch storage, or `null` when the field is absent.
+   * The view is valid only while the originating batch remains open.
+   */
   bytes(columnIndex: number): Uint8Array | null {
     return this.fieldBytes(columnIndex);
   }
 
+  /**
+   * Returns a borrowed `Buffer` view for a field in the current row.
+   *
+   * The returned buffer shares the batch backing storage and is invalid once
+   * the originating batch is closed.
+   *
+   * @param columnIndex Zero-based field index.
+   * @returns A borrowed buffer, or `null` when the field is absent.
+   */
   fieldBuffer(columnIndex: number): Buffer | null {
     const range = this.fieldRange(columnIndex);
     if (range === null) {
@@ -89,10 +163,23 @@ export class NativeCsvRowView {
     return this.#data.subarray(range.start, range.end);
   }
 
+  /**
+   * Returns a borrowed `Buffer` for a field in the current row.
+   *
+   * @param columnIndex Zero-based field index in the current row.
+   * @returns A buffer sharing the batch storage, or `null` when the field is absent.
+   * The buffer is valid only while the originating batch remains open.
+   */
   buffer(columnIndex: number): Buffer | null {
     return this.fieldBuffer(columnIndex);
   }
 
+  /**
+   * Decodes a field as UTF-8 text.
+   *
+   * @param columnIndex Zero-based field index.
+   * @returns The decoded field, or `null` when the field is absent.
+   */
   fieldString(columnIndex: number): string | null {
     const range = this.fieldRange(columnIndex);
     if (range === null) {
@@ -101,14 +188,38 @@ export class NativeCsvRowView {
     return this.#data.toString('utf8', range.start, range.end);
   }
 
+  /**
+   * Reads a field from the current row as UTF-8 text.
+   *
+   * @param columnIndex Zero-based field index in the current row.
+   * @returns Decoded text, or `null` when the field is absent.
+   */
   getPhysical(columnIndex: number): string | null {
     return this.fieldString(columnIndex);
   }
 
+  /**
+   * Reads a field from the current row as UTF-8 text.
+   *
+   * This is the concise accessor; use `getPhysical()` when the source-column
+   * interpretation should be explicit at the call site.
+   *
+   * @param columnIndex Zero-based field index in the current row.
+   * @returns Decoded text, or `null` when the field is absent.
+   */
   get(columnIndex: number): string | null {
     return this.getPhysical(columnIndex);
   }
 
+  /**
+   * Materializes selected fields from the current row in the requested order.
+   *
+   * Missing fields are represented by empty strings, matching `rowsInto()`.
+   *
+   * @param columns Zero-based field indexes. Duplicate indexes are allowed for
+   * this low-level accessor.
+   * @returns A newly allocated array of decoded UTF-8 strings.
+   */
   pickPhysical(columns: CsvColumns): string[] {
     const values: string[] = [];
     values.length = columns.length;
@@ -118,6 +229,13 @@ export class NativeCsvRowView {
     return values;
   }
 
+  /**
+   * Materializes selected fields from the current row in the requested order.
+   *
+   * @param columns Zero-based field indexes in the current row. Duplicate
+   * indexes are allowed for this low-level accessor.
+   * @returns A new array of decoded UTF-8 strings. Missing fields are `''`.
+   */
   pick(columns: CsvColumns): string[] {
     return this.pickPhysical(columns);
   }
@@ -133,6 +251,18 @@ export class NativeCsvRowView {
   }
 }
 
+/**
+ * Owns one native parser output batch and exposes low-allocation field views.
+ *
+ * Batches returned by `NativeCsvParser` own native memory until `close()` or
+ * disposal. `dataView()`, offset arrays, and field byte views borrow that
+ * memory; release or consume them before closing the batch. Use `using` when
+ * iterating batches to make this lifetime explicit.
+ *
+ * A batch contains the fields emitted by the parser for that operation. When a
+ * projected operation was used, column indexes refer to the projected fields
+ * in their emitted order.
+ */
 export class NativeCsvBatch {
   #handle: NativePointer | null;
   #data: Buffer | undefined;
@@ -142,30 +272,59 @@ export class NativeCsvBatch {
   #fieldOffsets: BigUint64Array | undefined;
   #fieldOffsetWords: Uint32Array | undefined;
 
+  /**
+   * Wraps a native batch handle.
+   *
+   * Callers normally receive instances from `NativeCsvParser`; this constructor
+   * is exposed for integrations that already own a compatible native handle.
+   *
+   * @param handle Native batch pointer returned by the parser ABI. Ownership of
+   * the handle transfers to this wrapper; do not wrap the same handle in a
+   * second `NativeCsvBatch` instance.
+   */
   constructor(handle: NativePointer) {
     this.#handle = handle;
   }
 
+  /** Whether this batch has released its native handle. */
   get closed(): boolean {
     return this.#handle === null;
   }
 
+  /** Number of complete rows stored in this batch. */
   get rowCount(): number {
     return u64ToSafeNumber(native.symbols.csv_batch_row_count(this.#requireHandle()), 'CSV batch row count');
   }
 
+  /** Total number of fields across all rows in this batch. */
   get totalFields(): number {
     return u64ToSafeNumber(native.symbols.csv_batch_total_fields(this.#requireHandle()), 'CSV batch field count');
   }
 
+  /** Number of bytes in the concatenated field-data buffer. */
   get dataLength(): number {
     return u64ToSafeNumber(native.symbols.csv_batch_data_len(this.#requireHandle()), 'CSV batch data length');
   }
 
+  /**
+   * Materializes every field as a UTF-8 string.
+   *
+   * @returns A newly allocated array containing one string array per row.
+   * Missing fields are not padded because this overload returns all stored fields.
+   */
   rows(): CsvRow[] {
     return this.rowsInto([]);
   }
 
+  /**
+   * Visits each row through one reusable {@link NativeCsvRowView}.
+   *
+   * The callback is invoked synchronously. The view object and its borrowed
+   * byte results must not be retained for use after the callback or batch
+   * lifetime.
+   *
+   * @param callback Function invoked with the reusable row view and its row index.
+   */
   forEachRow(callback: NativeCsvRowCallback): void {
     const rowCount = this.rowCount;
     const rowView = new NativeCsvRowView(this.data(), this.rowOffsets(), this.fieldOffsets());
@@ -174,6 +333,21 @@ export class NativeCsvBatch {
     }
   }
 
+  /**
+   * Materializes rows into a caller-owned reusable result array.
+   *
+   * `target` and its existing row arrays are resized and overwritten in place;
+   * this avoids allocating a new outer or inner array for every batch. If
+   * `columns` is supplied, each row is emitted in that requested order and a
+   * missing field is represented by `''`.
+   *
+   * @param target Array to fill. It is truncated or extended to `rowCount`.
+   * @param columns Optional zero-based field indexes relative to this batch.
+   * Duplicate indexes are rejected.
+   * @returns The same `target` array passed by the caller.
+   * @throws {RangeError} If a column index is invalid, repeated, or an offset
+   * exceeds the batch backing storage.
+   */
   rowsInto(target: CsvRow[], columns?: CsvColumns): CsvRow[] {
     normalizeColumns(columns);
     const rowCount = this.rowCount;
@@ -227,6 +401,12 @@ export class NativeCsvBatch {
     return target;
   }
 
+  /**
+   * Returns the concatenated field bytes as a borrowed `Buffer`.
+   *
+   * The buffer is backed by native batch storage and must not be used after
+   * `close()`.
+   */
   data(): Buffer {
     if (this.#data !== undefined) {
       return this.#data;
@@ -237,6 +417,12 @@ export class NativeCsvBatch {
     return this.#data;
   }
 
+  /**
+   * Returns the concatenated field bytes as a borrowed `Uint8Array`.
+   *
+   * This view shares storage with `data()` and remains valid only while the
+   * batch is open.
+   */
   dataView(): Uint8Array {
     if (this.#dataView !== undefined) {
       return this.#dataView;
@@ -249,6 +435,13 @@ export class NativeCsvBatch {
     return this.#dataView;
   }
 
+  /**
+   * Returns borrowed row boundaries as a `BigUint64Array`.
+   *
+   * Each value is a field index into `fieldOffsets`; the array has
+   * `rowCount + 1` entries. Offsets may exceed `Number.MAX_SAFE_INTEGER`, so
+   * keep them as `bigint` unless a checked conversion is appropriate.
+   */
   rowOffsets(): BigUint64Array {
     if (this.#rowOffsets !== undefined) {
       return this.#rowOffsets;
@@ -263,6 +456,13 @@ export class NativeCsvBatch {
     return this.#rowOffsets;
   }
 
+  /**
+   * Returns borrowed field byte boundaries as a `BigUint64Array`.
+   *
+   * Each value is a byte offset into `data()`; the array has
+   * `totalFields + 1` entries. Offsets may exceed `Number.MAX_SAFE_INTEGER`,
+   * so keep them as `bigint` unless a checked conversion is appropriate.
+   */
   fieldOffsets(): BigUint64Array {
     if (this.#fieldOffsets !== undefined) {
       return this.#fieldOffsets;
@@ -279,6 +479,12 @@ export class NativeCsvBatch {
     return this.#fieldOffsets;
   }
 
+  /**
+   * Returns the number of fields in one row.
+   *
+   * @param rowIndex Zero-based row index.
+   * @throws {RangeError} If `rowIndex` is outside the batch.
+   */
   rowFieldCount(rowIndex: number): number {
     const rowOffsetWords = this.#rowOffsetWordsView();
     const start = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, this.totalFields);
@@ -286,6 +492,14 @@ export class NativeCsvBatch {
     return end - start;
   }
 
+  /**
+   * Returns a field's byte range within the concatenated batch data.
+   *
+   * @param rowIndex Zero-based row index.
+   * @param columnIndex Zero-based field index relative to that row.
+   * @returns A half-open byte range, or `null` when the row has no such field.
+   * @throws {RangeError} If the row or offset tables are invalid.
+   */
   fieldRange(rowIndex: number, columnIndex: number): CsvFieldRange | null {
     const rowOffsetWords = this.#rowOffsetWordsView();
     const fieldOffsetWords = this.#fieldOffsetWordsView();
@@ -305,6 +519,13 @@ export class NativeCsvBatch {
     };
   }
 
+  /**
+   * Returns a borrowed `Buffer` view for one field.
+   *
+   * @param rowIndex Zero-based row index.
+   * @param columnIndex Zero-based field index relative to that row.
+   * @returns A view backed by the batch data, or `null` when the field is absent.
+   */
   fieldBuffer(rowIndex: number, columnIndex: number): Buffer | null {
     const bytes = this.fieldBytes(rowIndex, columnIndex);
     if (bytes === null) {
@@ -313,6 +534,13 @@ export class NativeCsvBatch {
     return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
 
+  /**
+   * Returns a borrowed `Uint8Array` view for one field.
+   *
+   * @param rowIndex Zero-based row index.
+   * @param columnIndex Zero-based field index relative to that row.
+   * @returns A view backed by the batch data, or `null` when the field is absent.
+   */
   fieldBytes(rowIndex: number, columnIndex: number): Uint8Array | null {
     const range = this.fieldRange(rowIndex, columnIndex);
     if (range === null) {
@@ -321,6 +549,13 @@ export class NativeCsvBatch {
     return this.dataView().subarray(range.start, range.end);
   }
 
+  /**
+   * Decodes one field as UTF-8 text.
+   *
+   * @param rowIndex Zero-based row index.
+   * @param columnIndex Zero-based field index relative to that row.
+   * @returns The decoded text, or `null` when the field is absent.
+   */
   fieldString(rowIndex: number, columnIndex: number): string | null {
     const range = this.fieldRange(rowIndex, columnIndex);
     if (range === null) {
@@ -329,6 +564,19 @@ export class NativeCsvBatch {
     return this.data().toString('utf8', range.start, range.end);
   }
 
+  /**
+   * Visits the byte range of one column for a contiguous row interval.
+   *
+   * Rows that do not contain `columnIndex` are skipped. The callback receives
+   * offsets into `data()` and is invoked synchronously.
+   *
+   * @param columnIndex Zero-based field index relative to each row.
+   * @param callback Receives `(rowIndex, start, end)` for each present field.
+   * @param startRow Inclusive first row; defaults to `0`.
+   * @param endRow Exclusive end row; defaults to `rowCount`.
+   * @throws {RangeError} If the row interval is invalid or an offset exceeds
+   * the batch backing storage.
+   */
   forEachColumnRange(
     columnIndex: number,
     callback: CsvColumnRangeCallback,
@@ -359,6 +607,17 @@ export class NativeCsvBatch {
     }
   }
 
+  /**
+   * Visits one column's borrowed bytes for a contiguous row interval.
+   *
+   * Missing fields are skipped. Each `Uint8Array` shares the batch backing
+   * storage and must be consumed during the callback.
+   *
+   * @param columnIndex Zero-based field index relative to each row.
+   * @param callback Receives `(rowIndex, bytes)` for each present field.
+   * @param startRow Inclusive first row; defaults to `0`.
+   * @param endRow Exclusive end row; defaults to `rowCount`.
+   */
   forEachColumnBytes(
     columnIndex: number,
     callback: CsvColumnBytesCallback,
@@ -376,6 +635,20 @@ export class NativeCsvBatch {
     );
   }
 
+  /**
+   * Scans several columns while reusing one range array per row.
+   *
+   * `ranges` contains two numeric offsets per requested column in the same
+   * order as `columns`: `[start0, end0, start1, end1, ...]`. A missing field is
+   * reported as `[-1, -1]`. Both `ranges` and `data` are reused/borrowed and
+   * must be consumed synchronously by the callback.
+   *
+   * @param columns Zero-based field indexes relative to each row.
+   * @param callback Receives `(rowIndex, ranges, data)` for each row.
+   * @param startRow Inclusive first row; defaults to `0`.
+   * @param endRow Exclusive end row; defaults to `rowCount`.
+   * @throws {RangeError} If the row interval or an offset is invalid.
+   */
   scanColumns(
     columns: CsvColumns,
     callback: CsvScanColumnsCallback,
@@ -412,6 +685,17 @@ export class NativeCsvBatch {
     }
   }
 
+  /**
+   * Counts rows whose field equals a supplied byte value.
+   *
+   * A string value is encoded as UTF-8; `Buffer` and `Uint8Array` values are
+   * compared as supplied.
+   *
+   * @param columnIndex Zero-based field index relative to each row.
+   * @param value String or bytes to compare.
+   * @returns The number of matching rows.
+   * @throws {RangeError} If `columnIndex` is invalid.
+   */
   countWhereEquals(columnIndex: number, value: string | Buffer | Uint8Array): number {
     normalizeFilterColumn(columnIndex);
     const encoded = typeof value === 'string' ? Buffer.from(value) : value;
@@ -427,6 +711,11 @@ export class NativeCsvBatch {
     );
   }
 
+  /**
+   * Releases the native batch and invalidates borrowed data and offset views.
+   *
+   * Calling `close()` more than once is safe.
+   */
   close(): void {
     if (this.#handle !== null) {
       native.symbols.csv_batch_destroy(this.#handle);
@@ -440,10 +729,12 @@ export class NativeCsvBatch {
     }
   }
 
+  /** Alias for {@link close}, suitable for explicit resource management. */
   dispose(): void {
     this.close();
   }
 
+  /** Implements `using` / explicit resource management. */
   [Symbol.dispose](): void {
     this.close();
   }
