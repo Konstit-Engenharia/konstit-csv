@@ -4,7 +4,10 @@ import {
 } from './file-stream.js';
 import { findCsvSafeShards } from './files.js';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
-import { normalizeColumns } from './normalize.js';
+import {
+  normalizeColumns,
+  normalizeFixedColumnsCount,
+} from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvApiFileOptions,
@@ -25,6 +28,7 @@ interface WorkerRowsMessage {
   chunkSize: number;
   delimiter?: string;
   encoding?: CsvEncoding;
+  fixedColumns?: number;
   path: string;
   selectedColumns?: CsvColumns;
   shard: {
@@ -104,6 +108,7 @@ async function* iterateParallelRows<TColumns extends CsvColumns | undefined>(
   rejectCompressedSharding(options, 'parallel row parsing');
   rejectAutoDelimiterSharding(options, 'parallel row parsing');
   rejectWorkerRowsUnsupported(options);
+  normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
 
   const selected = selectedColumns(options);
   const filterProgram = toWorkerFilterProgram(options.where);
@@ -182,6 +187,7 @@ async function* iterateParallelRows<TColumns extends CsvColumns | undefined>(
           chunkSize: options.chunkSize ?? DEFAULT_CHUNK_SIZE,
           delimiter: options.delimiter,
           encoding: options.encoding,
+          fixedColumns: options.fixedColumns,
           path,
           selectedColumns: selected,
           shard,

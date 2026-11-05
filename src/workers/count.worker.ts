@@ -8,6 +8,7 @@ interface WorkerCountMessage {
   chunkSize?: number;
   delimiter?: string;
   encoding?: CsvEncoding;
+  fixedColumns?: number;
   path: string;
   shard: {
     start: number;
@@ -40,6 +41,7 @@ async function countShard(message: WorkerCountMessage): Promise<number> {
     {
       delimiter: message.delimiter,
       encoding: message.encoding,
+      fixedColumns: message.fixedColumns,
     },
     undefined,
     message.filterProgram,

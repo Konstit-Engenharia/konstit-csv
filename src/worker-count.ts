@@ -4,6 +4,7 @@ import {
 } from './file-stream.js';
 import { findCsvSafeShards } from './files.js';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
+import { normalizeFixedColumnsCount } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvParallelCountOptions,
@@ -20,6 +21,7 @@ interface WorkerCountMessage {
   chunkSize?: number;
   delimiter?: string;
   encoding?: CsvParallelCountOptions['encoding'];
+  fixedColumns?: number;
   path: string;
   shard: {
     start: number;
@@ -81,6 +83,7 @@ export async function parallelCount(path: string, suppliedOptions: CsvParallelCo
   }
   rejectCompressedSharding(options, 'parallel counting');
   rejectAutoDelimiterSharding(options, 'parallel counting');
+  normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
   if ((options as { strict?: boolean; }).strict === true) {
     throw new Error('parallel count does not support strict CSV validation; use count() without workers for strict schema checks');
   }
@@ -165,6 +168,7 @@ export async function parallelCount(path: string, suppliedOptions: CsvParallelCo
             chunkSize: options.chunkSize ?? DEFAULT_CHUNK_SIZE,
             delimiter: options.delimiter,
             encoding: options.encoding,
+            fixedColumns: options.fixedColumns,
             path,
             shard,
             shardIndex,

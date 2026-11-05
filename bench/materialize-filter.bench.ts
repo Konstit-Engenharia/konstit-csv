@@ -56,6 +56,17 @@ summary(() => {
     });
     assertStats('native filtered Latin-1 materialization (projected)', consumeRows(rows), largeFixture.projected);
   });
+  // Compare fixed-width validation against the same projected, filtered operation without validation.
+  bench('native fixed-column filtered Latin-1 materialization (projected)', async () => {
+    const rows = await csv.parse(largeFixture.input, {
+      columns: PROJECTED_COLUMNS,
+      delimiter: ';',
+      encoding: 'iso88591',
+      fixedColumns: COLUMN_COUNT,
+      where: nativeFilter,
+    });
+    assertStats('native fixed-column filtered Latin-1 materialization (projected)', consumeRows(rows), largeFixture.projected);
+  });
   bench('JavaScript post-filter after full materialization (projected)', () => {
     const rows = parseCsvBuffer(largeFixture.input, { delimiter: ';', encoding: 'iso88591' });
     assertStats(

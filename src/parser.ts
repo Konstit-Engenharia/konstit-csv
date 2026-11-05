@@ -191,6 +191,7 @@ export function prepareNativeParser(
 class PreparedNativeCsvParser implements PreparedCsvParser {
   #handle: NativePointer | null;
   readonly #writer: PreparedNativeWriter;
+  readonly #fixedValidator: NativeCsvParser | undefined;
 
   constructor(
     options: CsvParserOptions,
@@ -200,6 +201,7 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
     const handle = createNativeCsvParser(options);
     try {
       this.#writer = prepareNativeParser(handle, selectedColumns, program);
+      this.#fixedValidator = options.fixedColumns === undefined ? undefined : new NativeCsvParser(options);
     } catch (error) {
       destroyNativeCsvParser(handle);
       throw error;
@@ -210,6 +212,10 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
 
   writeBatch(chunk: NodeJS.TypedArray | DataView, final = false): NativeCsvBatch {
     const handle = this.#requireHandle();
+    if (this.#fixedValidator !== undefined) {
+      // Validate physical rows, including those rejected by the filter.
+      this.#fixedValidator.writeBatch(chunk, final).close();
+    }
     const batch = this.#writer.writeBatch(normalizeChunk(chunk), final);
     if (batch === null) {
       throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
@@ -223,6 +229,9 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
 
   writeCount(chunk: NodeJS.TypedArray | DataView, final = false): number {
     this.#requireHandle();
+    if (this.#fixedValidator !== undefined) {
+      this.#fixedValidator.writeBatch(chunk, final).close();
+    }
     const count = this.#writer.writeCount(normalizeChunk(chunk), final);
     return u64ToSafeNumber(count, 'CSV filtered row count');
   }
@@ -238,6 +247,7 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
     }
     this.#handle = null;
     nativeCsvParserFinalizer.unregister(this);
+    this.#fixedValidator?.close();
     destroyNativeCsvParser(handle);
   }
 
@@ -641,6 +651,10 @@ export class NativeCsvParser {
    */
   writeCount(chunk: NodeJS.TypedArray | DataView, final = false): number {
     this.#rejectStrictUnsupported('count');
+    if (this.#fixedColumns !== undefined) {
+      using batch = this.writeBatch(chunk, final);
+      return batch.rowCount;
+    }
     if (chunk.byteLength === 0 && final) {
       return this.endCount();
     }
@@ -662,6 +676,10 @@ export class NativeCsvParser {
    */
   endCount(): number {
     this.#rejectStrictUnsupported('count');
+    if (this.#fixedColumns !== undefined) {
+      using batch = this.endBatch();
+      return batch.rowCount;
+    }
     return u64ToSafeNumber(native.symbols.csv_parser_finish_count(this.#requireHandle()), 'CSV parsed row count');
   }
 

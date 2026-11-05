@@ -10,6 +10,7 @@ interface WorkerRowsMessage {
   chunkSize: number;
   delimiter?: string;
   encoding?: CsvEncoding;
+  fixedColumns?: number;
   selectedColumns?: CsvColumns;
   shard: {
     start: number;
@@ -63,6 +64,7 @@ async function streamShardRows(message: WorkerRowsMessage): Promise<void> {
     {
       delimiter: message.delimiter,
       encoding: message.encoding,
+      fixedColumns: message.fixedColumns,
     },
     message.selectedColumns,
     message.filterProgram,

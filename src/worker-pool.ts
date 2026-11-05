@@ -4,7 +4,10 @@ import {
 } from './file-stream.js';
 import { findCsvSafeShards } from './files.js';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
-import { normalizeColumns } from './normalize.js';
+import {
+  normalizeColumns,
+  normalizeFixedColumnsCount,
+} from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvApiFileOptions,
@@ -24,6 +27,7 @@ interface WorkerCountMessage {
   chunkSize?: number;
   delimiter?: string;
   encoding?: CsvApiFileOptions['encoding'];
+  fixedColumns?: number;
   path: string;
   shard: CsvShard;
   shardIndex: number;
@@ -34,6 +38,7 @@ interface WorkerRowsMessage {
   chunkSize: number;
   delimiter?: string;
   encoding?: CsvApiFileOptions['encoding'];
+  fixedColumns?: number;
   path: string;
   selectedColumns?: CsvColumns;
   shard: CsvShard;
@@ -122,6 +127,7 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
     }
     rejectCompressedSharding(options, 'worker pool');
     rejectAutoDelimiterSharding(options, 'worker pool');
+    normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
     this.#path = path;
     this.#options = options;
   }
@@ -214,6 +220,7 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
                 chunkSize: this.#options.chunkSize ?? DEFAULT_CHUNK_SIZE,
                 delimiter: this.#options.delimiter,
                 encoding: this.#options.encoding,
+                fixedColumns: this.#options.fixedColumns,
                 path: this.#path,
                 shard,
                 shardIndex,
@@ -322,6 +329,7 @@ export class CsvWorkerPool<TColumns extends CsvColumns | undefined = undefined> 
               chunkSize: this.#options.chunkSize ?? DEFAULT_CHUNK_SIZE,
               delimiter: this.#options.delimiter,
               encoding: this.#options.encoding,
+              fixedColumns: this.#options.fixedColumns,
               path: this.#path,
               selectedColumns: selected,
               shard,
