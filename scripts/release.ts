@@ -7,9 +7,9 @@ import {
 import { join } from 'node:path';
 import { repoRoot } from './native-target.ts';
 
-await (import.meta.main ? main() : Promise.resolve());
-
 const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u;
+
+await (import.meta.main ? main() : Promise.resolve());
 
 export interface ReleaseOptions {
   readonly updatePrebuilds: boolean;

@@ -43,6 +43,15 @@ describe('release automation', () => {
     expect(() => parseArguments(['0.4.2', '--unknown'])).toThrow('unknown option');
   });
 
+  test('validates versions through the CLI entry point', () => {
+    const result = Bun.spawnSync([process.execPath, 'scripts/release.ts', 'invalid'], {
+      stderr: 'pipe',
+      stdout: 'pipe',
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain('invalid release version');
+  });
+
   test('orders stable and prerelease versions', () => {
     expect(compareVersions('0.4.2', '0.4.1')).toBe(1);
     expect(compareVersions('0.4.2-beta.2', '0.4.2-beta.1')).toBe(1);
