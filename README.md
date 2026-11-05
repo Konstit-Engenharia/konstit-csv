@@ -463,14 +463,16 @@ bun run bench:csv-parser:example
 In the recorded `hyperfine -r 2` result, both commands produced 11,516,955 rows, 345,508,650 cells, and 1,808,786,228
 characters from the 6,780,467,695-byte corpus:
 
-| Implementation                   | Mean time |  Throughput |  Relative result |
-| -------------------------------- | --------: | ----------: | ---------------: |
-| `@konstit/csv` with `csv.rows()` |  45.223 s | 143.0 MiB/s | **2.32× faster** |
-| `iconv-lite` + `csv-parser`      | 104.835 s |  61.7 MiB/s |         Baseline |
+| Implementation                   |     Mean time ± σ |  Throughput |  Mean memory ± σ |  Relative result |
+| -------------------------------- | ----------------: | ----------: | ---------------: | ---------------: |
+| `@konstit/csv` with `csv.rows()` |  16.446 ± 0.095 s | 393.2 MiB/s | 480.8 ± 15.8 MiB | **6.12× faster** |
+| `iconv-lite` + `csv-parser`      | 100.665 ± 1.037 s |  64.2 MiB/s | 369.1 ± 10.9 MiB |         Baseline |
 
-For this workload, `@konstit/csv` was 2.32× faster and completed in 56.9% less time. This result contains only two runs
-on one machine, so use it as a measured workload result, not a universal performance guarantee. Full-file benchmarks
-are long CPU-bound runs. Run them separately when comparing numbers. `hyperfine` must be available on `PATH`.
+Throughput is calculated from the corpus size and mean wall time; σ is the standard deviation across runs.
+For this workload, `@konstit/csv` was 6.12× faster and completed in 83.7% less time, with 30.3% higher mean memory usage.
+This result contains only two runs on one machine, so use it as a measured workload result, not a universal performance
+guarantee. Full-file benchmarks are long CPU-bound runs. Run them separately when comparing numbers. `hyperfine` must
+be available on `PATH`.
 
 Small correctness/performance smoke:
 

@@ -41,8 +41,6 @@
     "**/config",
     "**/*-lock.json",
     "**/tsconfig.json",
-    "**/package.json",
-    "./package.json",
     "./dprint.json",
     "./tsconfig.json",
     "./cspell.json",

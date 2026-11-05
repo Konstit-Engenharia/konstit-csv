@@ -38,6 +38,18 @@
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
+  "keywords": [
+    "csv",
+    "parser",
+    "streaming",
+    "compressed",
+    "filters",
+    "bun",
+    "native",
+    "cli",
+    "AVX2",
+    "NEON"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -106,14 +118,14 @@
     "test": "bun test --parallel"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.9",
-    "@types/bun": "^1.4.0",
+    "@biomejs/biome": "^2.6.5",
+    "@types/bun": "^1.4.4",
     "csv-parser": "^3.2.1",
     "csv-spectrum": "^2.0.0",
     "dprint": "^0.55.2",
     "iconv-lite": "^0.7.3",
     "mitata": "^1.0.34",
-    "oxlint": "^1.79.0",
+    "oxlint": "^1.91.0",
     "oxlint-tsgolint": "^0.25.0",
     "typescript": "^5.9.3"
   },
