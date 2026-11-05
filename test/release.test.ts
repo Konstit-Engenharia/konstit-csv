@@ -9,6 +9,7 @@ import {
   parseArguments,
   parseWorkflowRunId,
   release,
+  run,
   updatePackageVersion,
 } from '../scripts/release.ts';
 
@@ -63,6 +64,14 @@ describe('release automation', () => {
       '32922391540',
     );
     expect(() => parseWorkflowRunId('')).toThrow('could not read workflow run ID');
+  });
+
+  test('preserves leading whitespace in captured command output', async () => {
+    const status = await run([process.execPath, '-e', 'process.stdout.write(" M package.json\\n")'], {
+      capture: true,
+      label: 'Capture porcelain status',
+    });
+    expect(status).toBe(' M package.json');
   });
 
   test('runs the verified release sequence', async () => {

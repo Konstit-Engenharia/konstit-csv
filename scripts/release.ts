@@ -204,7 +204,7 @@ export async function run(command: readonly string[], options: CommandOptions): 
   if (exitCode !== 0) {
     throw new Error(`${options.label} failed with exit code ${String(exitCode)}`);
   }
-  return stdout.trim();
+  return stdout.trimEnd();
 }
 
 async function updateTrackedPrebuilds(runCommand: CommandRunner): Promise<void> {
