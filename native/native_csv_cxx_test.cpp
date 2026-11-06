@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -29,6 +30,8 @@ void* csv_parser_write_strict_batch(void* parser, const uint8_t* data, uint64_t 
 void* csv_parser_finish_strict_batch(void* parser);
 void* csv_parser_write_fixed_batch(void* parser, const uint8_t* data, uint64_t len, bool final, uint32_t fixed_columns);
 void* csv_parser_finish_fixed_batch(void* parser, uint32_t fixed_columns);
+void* csv_parser_write_strict_fixed_batch(void* parser, const uint8_t* data, uint64_t len, bool final,
+                                          uint32_t columns);
 void* csv_parser_write_projected_batch(void* parser, const uint8_t* data, uint64_t len, bool final, bool has_projection,
                                        const uint32_t* selected_columns, uint64_t selected_columns_len, bool has_filter,
                                        uint32_t filter_column, const uint8_t* filter_value, uint64_t filter_value_len);
@@ -1363,5 +1366,127 @@ TEST_CASE("native C ABI fuzzes deterministic byte streams across parser modes") 
     fuzz_batch_mode(input, true);
     fuzz_fixed_mode(input);
     fuzz_count_mode(input);
+  }
+}
+
+TEST_CASE("native C ABI batch modes preserve quoted fields across every chunk split") {
+  const std::string latin1_input = "\"1\";\"Jo\xE3o \"\"ol\xE1\"\"\r\nx\";SP\r\n2;;RJ\r\n3;a\xE7\xE3o;MG";
+  for (const int encoding : {0, 1}) {
+    const std::string input =
+        encoding == 1
+            ? latin1_input
+            : decode_latin1_reference(reinterpret_cast<const uint8_t*>(latin1_input.data()), latin1_input.size());
+    const std::string first = "Jo\xC3\xA3o \"ol\xC3\xA1\"\r\nx";
+    const std::string last = "a\xC3\xA7\xC3\xA3o";
+    const std::vector<std::vector<std::string>> expected = {{"1", first, "SP"}, {"2", "", "RJ"}, {"3", last, "MG"}};
+    for (const bool fixed : {false, true}) {
+      for (const bool strict : {false, true}) {
+        for (size_t split = 0; split <= input.size(); ++split) {
+          void* parser = csv_parser_create(encoding, ';');
+          REQUIRE(parser != nullptr);
+          std::vector<std::vector<std::string>> rows;
+          const size_t cuts[] = {0, split, input.size(), input.size()};
+          for (size_t part = 0; part < 3; ++part) {
+            const auto* data = reinterpret_cast<const uint8_t*>(input.data() + cuts[part]);
+            const size_t len = cuts[part + 1] - cuts[part];
+            void* batch = fixed ? (strict ? csv_parser_write_strict_fixed_batch(parser, data, len, part == 2, 3)
+                                          : csv_parser_write_fixed_batch(parser, data, len, part == 2, 3))
+                                : write_batch_mode(parser, strict, data, len, part == 2);
+            REQUIRE(batch != nullptr);
+            const auto* row_offsets = csv_batch_row_offsets_ptr(batch);
+            const auto* field_offsets = csv_batch_field_offsets_ptr(batch);
+            const auto* bytes = reinterpret_cast<const char*>(csv_batch_data_ptr(batch));
+            for (size_t row = 0; row < csv_batch_row_count(batch); ++row) {
+              std::vector<std::string> fields;
+              for (size_t field = row_offsets[row]; field < row_offsets[row + 1]; ++field) {
+                fields.emplace_back(bytes + field_offsets[field], field_offsets[field + 1] - field_offsets[field]);
+              }
+              rows.push_back(std::move(fields));
+            }
+            csv_batch_destroy(batch);
+          }
+          csv_parser_destroy(parser);
+          REQUIRE(rows == expected);
+        }
+      }
+    }
+  }
+}
+
+TEST_CASE("native C ABI projection preserves skipped fields and EOF across chunks") {
+  for (const int encoding : {0, 1}) {
+    const std::string value = encoding == 1 ? "a\xE7\xE3o" : "a\xC3\xA7\xC3\xA3o";
+    const std::string input = "1;ignored plain value;" + value + "\r\n2;discarded;RJ\r\n1;tail";
+    for (const bool ordered : {false, true}) {
+      const std::vector<uint32_t> selected = ordered ? std::vector<uint32_t>{0, 2} : std::vector<uint32_t>{2, 0};
+      const std::vector<std::vector<std::string>> expected =
+          ordered ? std::vector<std::vector<std::string>>{{"1", "a\xC3\xA7\xC3\xA3o"}, {"1", ""}}
+                  : std::vector<std::vector<std::string>>{{"a\xC3\xA7\xC3\xA3o", "1"}, {"", "1"}};
+      for (size_t split = 0; split <= input.size(); ++split) {
+        void* parser = csv_parser_create(encoding, ';');
+        REQUIRE(parser != nullptr);
+        std::vector<std::vector<std::string>> rows;
+        const size_t cuts[] = {0, split, input.size(), input.size()};
+        const uint8_t filter[] = {'1'};
+        for (size_t part = 0; part < 3; ++part) {
+          const auto* data = reinterpret_cast<const uint8_t*>(input.data() + cuts[part]);
+          void* batch =
+              csv_parser_write_projected_batch(parser, data, cuts[part + 1] - cuts[part], part == 2, true,
+                                               selected.data(), selected.size(), true, 0, filter, sizeof(filter));
+          REQUIRE(batch != nullptr);
+          const auto* row_offsets = csv_batch_row_offsets_ptr(batch);
+          const auto* field_offsets = csv_batch_field_offsets_ptr(batch);
+          const auto* bytes = reinterpret_cast<const char*>(csv_batch_data_ptr(batch));
+          for (size_t row = 0; row < csv_batch_row_count(batch); ++row) {
+            std::vector<std::string> fields;
+            for (size_t field = row_offsets[row]; field < row_offsets[row + 1]; ++field) {
+              fields.emplace_back(bytes + field_offsets[field], field_offsets[field + 1] - field_offsets[field]);
+            }
+            rows.push_back(std::move(fields));
+          }
+          csv_batch_destroy(batch);
+        }
+        csv_parser_destroy(parser);
+        REQUIRE(rows == expected);
+      }
+    }
+  }
+}
+
+TEST_CASE("native latin1 fixed specialization preserves strict errors across chunks") {
+  struct invalid_case {
+    std::string input;
+    bool strict;
+    std::string error;
+  };
+  const std::vector<invalid_case> cases = {
+      {"1;ol\xE1\n", false, "fixed row column count mismatch"},
+      {"1;ol\xE1\n", true, "fixed row column count mismatch"},
+      {"1;ol\xE1;SP;x\r\n", false, "fixed row column count mismatch"},
+      {"1;ol\xE1;SP;x\r\n", true, "fixed row column count mismatch"},
+      {"1;\"ol\xE1", true, "strict CSV quote syntax error"},
+      {"1;bad\"quote;SP\n", true, "strict CSV quote syntax error"},
+      {"1;\"ol\xE1\"x;SP\n", true, "strict CSV quote syntax error"},
+  };
+  for (const auto& example : cases) {
+    for (size_t split = 0; split <= example.input.size(); ++split) {
+      void* parser = csv_parser_create(1, ';');
+      REQUIRE(parser != nullptr);
+      std::string error;
+      const size_t cuts[] = {0, split, example.input.size()};
+      for (size_t part = 0; part < 2; ++part) {
+        const auto* data = reinterpret_cast<const uint8_t*>(example.input.data() + cuts[part]);
+        void* batch = example.strict
+                          ? csv_parser_write_strict_fixed_batch(parser, data, cuts[part + 1] - cuts[part], part == 1, 3)
+                          : csv_parser_write_fixed_batch(parser, data, cuts[part + 1] - cuts[part], part == 1, 3);
+        if (batch == nullptr) {
+          error = csv_parser_last_error(parser);
+          break;
+        }
+        csv_batch_destroy(batch);
+      }
+      csv_parser_destroy(parser);
+      REQUIRE(error.find(example.error) != std::string::npos);
+    }
   }
 }

@@ -684,9 +684,18 @@ public:
     strict_quote_syntax_ = strict;
     parse_failed_ = false;
     emitted_rows_ = 0;
-    parse(data, len);
-    if (!parse_failed_ && final) {
-      finish_stream();
+    if (encoding_ == csv_encoding::latin1) {
+      parse_latin1_batch(data, len, strict);
+      if (!parse_failed_ && final) {
+        finish_latin1_batch_stream(strict);
+      } else if (!parse_failed_) {
+        spill_unfinished_batch_row(true);
+      }
+    } else {
+      parse(data, len);
+      if (!parse_failed_ && final) {
+        finish_stream();
+      }
     }
     fixed_columns_enabled_ = false;
     fixed_columns_ = 0;
@@ -1427,19 +1436,28 @@ private:
     return npos;
   }
 
+  // Unfinished rows are spilled to owned buffers before the batch is returned.
+  std::string& latin1_batch_destination() {
+    if (deferred_batch_row_) {
+      return field_;
+    }
+    field_in_arena_ = true;
+    return batch_->data;
+  }
+
   void append_latin1_batch_span(const uint8_t* data, size_t len) {
     if (len == 0) {
       return;
     }
     saw_row_data_ = true;
     at_field_start_ = false;
-    append_latin1(field_, data, len);
+    append_latin1(latin1_batch_destination(), data, len);
   }
 
   void append_latin1_batch_byte(uint8_t byte) {
     saw_row_data_ = true;
     at_field_start_ = false;
-    field_.push_back(static_cast<char>(byte));
+    latin1_batch_destination().push_back(static_cast<char>(byte));
   }
 
   void append_latin1_batch_quoted_field(const uint8_t* data, size_t close_quote) {
@@ -1447,20 +1465,20 @@ private:
     at_field_start_ = false;
 
     if (!complete_quoted_field_has_escape_) {
-      append_latin1(field_, data + 1, close_quote - 1);
+      append_latin1(latin1_batch_destination(), data + 1, close_quote - 1);
       return;
     }
 
     size_t segment_start = 1;
     for (size_t i = 1; i < close_quote; ++i) {
       if (data[i] == '"' && i + 1 < close_quote && data[i + 1] == '"') {
-        append_latin1(field_, data + segment_start, i - segment_start);
-        field_.push_back('"');
+        append_latin1(latin1_batch_destination(), data + segment_start, i - segment_start);
+        latin1_batch_destination().push_back('"');
         ++i;
         segment_start = i + 1;
       }
     }
-    append_latin1(field_, data + segment_start, close_quote - segment_start);
+    append_latin1(latin1_batch_destination(), data + segment_start, close_quote - segment_start);
   }
 
   void append_decoded_byte(uint8_t byte) { append_decoded_span(&byte, 1); }
@@ -1573,7 +1591,9 @@ private:
     if (deferred_batch_row_) {
       row_fields_.push_back(field_);
     } else {
-      batch_->data.append(field_);
+      if (!field_in_arena_) {
+        batch_->data.append(field_);
+      }
       batch_->field_offsets.push_back(batch_->data.size());
     }
     field_.clear();
@@ -1583,7 +1603,14 @@ private:
   }
 
   void finish_latin1_batch_offsets(bool strict) {
-    if (strict) {
+    if (fixed_columns_enabled_) {
+      const uint64_t row_start = batch_->row_offsets.back();
+      const size_t row_end = batch_->field_offsets.size() - 1;
+      if (row_end - row_start != fixed_columns_) {
+        fail_parse("fixed row column count mismatch");
+        return;
+      }
+    } else if (strict) {
       const uint64_t row_start = batch_->row_offsets.back();
       const size_t row_end = batch_->field_offsets.size() - 1;
       const uint32_t field_count = checked_u32(row_end - row_start);
@@ -2051,9 +2078,9 @@ private:
     rollback_direct_projection_row();
   }
 
-  void spill_unfinished_batch_row() {
-    if (batch_ == nullptr || !saw_row_data_ || projection_enabled_ || !filters_.empty() || fixed_columns_enabled_ ||
-        deferred_batch_row_) {
+  void spill_unfinished_batch_row(bool fixed_batch = false) {
+    if (batch_ == nullptr || !saw_row_data_ || projection_enabled_ || !filters_.empty() ||
+        (fixed_columns_enabled_ && !fixed_batch) || deferred_batch_row_) {
       return;
     }
 
