@@ -1,4 +1,4 @@
-const ASCII_SINGLE = Array.from({ length: 128 }, (_, byte) => String.fromCharCode(byte));
+const LATIN1_SINGLE: readonly string[] = Array.from({ length: 256 }, (_, byte) => String.fromCharCode(byte));
 // The module owns at most 16,384 immutable two-byte strings. Keys are the bytes,
 // not batch offsets, so mutations and batch disposal never invalidate an entry.
 // ASCII entries have the same value for both supported encodings.
@@ -11,10 +11,9 @@ export function decodeMaterializedField(data: Buffer, start: number, end: number
     return '';
   }
   if (length === 1) {
-    const first = data[start] ?? 128;
-    if (first < 128) {
-      return ASCII_SINGLE[first] ?? '';
-    }
+    const first = data[start] as number;
+    // A non-ASCII byte alone is invalid UTF-8. Latin-1 maps every byte directly.
+    return first < 128 || encoding === 'latin1' ? (LATIN1_SINGLE[first] as string) : '\uFFFD';
   }
   if (length === 2) {
     const first = data[start] ?? 128;
