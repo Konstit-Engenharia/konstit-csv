@@ -129,7 +129,7 @@ struct csv_structural_state {
 
 struct csv_row_counter {
   uint64_t& emitted_rows;
-  uint32_t& current_column;
+  size_t& current_column;
 
   bool operator()(uint64_t) const {
     ++emitted_rows;
@@ -561,8 +561,8 @@ uint64_t clear_mask_bits_through(uint64_t bits, size_t lane) {
 
 class csv_parser {
 public:
-  csv_parser(csv_encoding encoding, uint8_t delimiter, bool preserve_latin1 = false)
-      : encoding_(encoding), delimiter_(delimiter), preserve_latin1_(preserve_latin1) {}
+  csv_parser(csv_encoding encoding, uint8_t delimiter, bool preserve_latin1 = false, uint32_t fixed_columns = 0)
+      : encoding_(encoding), delimiter_(delimiter), preserve_latin1_(preserve_latin1), fixed_columns_(fixed_columns) {}
 
   bool prepare_configuration(const uint32_t* selected_columns, size_t selected_columns_len,
                              std::vector<row_filter> filters, const uint8_t* values_data, size_t values_data_len,
@@ -619,16 +619,9 @@ public:
     batch_ = batch.get();
     direct_projection_ = prepared_direct_projection_;
     restore_direct_projection_row();
-    emitted_rows_ = 0;
-    parse(data, len);
-    if (final) {
-      finish_stream();
-    } else {
-      spill_unfinished_direct_projection_row();
-      spill_unfinished_batch_row();
-    }
+    parse_projected_batch(data, len, final);
     batch_ = nullptr;
-    return batch.release();
+    return parse_failed_ ? nullptr : batch.release();
   }
 
   uint64_t write_prepared_count(const uint8_t* data, size_t len, bool final) {
@@ -679,7 +672,6 @@ public:
     mode_ = output_mode::batch;
     batch_ = batch.get();
     configure(nullptr, 0, row_filter{});
-    fixed_columns_enabled_ = true;
     fixed_columns_ = fixed_columns;
     strict_quote_syntax_ = strict;
     parse_failed_ = false;
@@ -687,8 +679,9 @@ public:
     parse(data, len);
     if (!parse_failed_ && final) {
       finish_stream();
+    } else if (!parse_failed_) {
+      spill_unfinished_batch_row();
     }
-    fixed_columns_enabled_ = false;
     fixed_columns_ = 0;
     strict_quote_syntax_ = false;
     batch_ = nullptr;
@@ -716,16 +709,9 @@ public:
       batch_ = nullptr;
       return nullptr;
     }
-    emitted_rows_ = 0;
-    parse(data, len);
-    if (final) {
-      finish_stream();
-    } else {
-      spill_unfinished_direct_projection_row();
-      spill_unfinished_batch_row();
-    }
+    parse_projected_batch(data, len, final);
     batch_ = nullptr;
-    return batch.release();
+    return parse_failed_ ? nullptr : batch.release();
   }
 
   csv_batch* finish_batch() { return write_batch(nullptr, 0, true); }
@@ -814,8 +800,6 @@ public:
     selected_columns_ = nullptr;
     selected_columns_len_ = 0;
     projection_enabled_ = false;
-    fixed_columns_enabled_ = false;
-    fixed_columns_ = 0;
     parse_failed_ = false;
     strict_expected_columns_ = 0;
     strict_expected_columns_seen_ = false;
@@ -853,6 +837,21 @@ public:
   void set_error(const char* value) { error_ = value; }
 
 private:
+  void parse_projected_batch(const uint8_t* data, size_t len, bool final) {
+    parse_failed_ = false;
+    emitted_rows_ = 0;
+    parse(data, len);
+    if (parse_failed_) {
+      return;
+    }
+    if (final) {
+      finish_stream();
+    } else {
+      spill_unfinished_direct_projection_row();
+      spill_unfinished_batch_row();
+    }
+  }
+
   csv_batch* write_latin1_batch_impl(const uint8_t* data, size_t len, bool final, bool strict) {
     auto batch = std::make_unique<csv_batch>();
     batch->reserve(len, csv_encoding::latin1);
@@ -1199,13 +1198,15 @@ private:
       return;
     }
 
-    if (mode_ == output_mode::count && filters_.empty()) {
+    if (mode_ == output_mode::count && filters_.empty() && fixed_columns_ == 0) {
       parse_count_only(data, len);
       return;
     }
 
     size_t i = 0;
-    if (!strict_quote_syntax_ && row_filter_rejected()) {
+    // Skipping a rejected tail ignores delimiters, which fixed-width validation needs to count.
+    const bool can_skip_rejected_tail = !strict_quote_syntax_ && fixed_columns_ == 0;
+    if (can_skip_rejected_tail && row_filter_rejected()) {
       i = skip_rejected_row_tail(data, len);
     }
     while (i < len) {
@@ -1253,7 +1254,7 @@ private:
         finish_field();
         saw_row_data_ = true;
         ++i;
-        if (!strict_quote_syntax_ && row_filter_rejected()) {
+        if (can_skip_rejected_tail && row_filter_rejected()) {
           i += skip_rejected_row_tail(data + i, len - i);
         }
         continue;
@@ -1261,6 +1262,9 @@ private:
 
       if (byte == '\n' || byte == '\r') {
         finish_row();
+        if (parse_failed_) {
+          return;
+        }
         previous_was_cr_ = byte == '\r';
         ++i;
         continue;
@@ -1276,13 +1280,16 @@ private:
             finish_field();
             saw_row_data_ = true;
             i = terminator_index + 1;
-            if (!strict_quote_syntax_ && row_filter_rejected()) {
+            if (can_skip_rejected_tail && row_filter_rejected()) {
               i += skip_rejected_row_tail(data + i, len - i);
             }
             continue;
           }
           if (terminator == '\n' || terminator == '\r') {
             finish_row();
+            if (parse_failed_) {
+              return;
+            }
             previous_was_cr_ = terminator == '\r';
             i = terminator_index + 1;
             continue;
@@ -1657,6 +1664,18 @@ private:
     }
 
     finish_field();
+    // Count every physical field before deciding whether to emit the row.
+    if (fixed_columns_ != 0 && current_column_ != fixed_columns_) {
+      fail_parse("fixed row column count mismatch");
+    } else {
+      emit_matching_row();
+    }
+    reset_row_state();
+    saw_row_data_ = false;
+    at_field_start_ = true;
+  }
+
+  void emit_matching_row() {
     const bool emit_row = row_matches_filters();
     if (mode_ == output_mode::batch && emit_row) {
       if (direct_projection_) {
@@ -1672,14 +1691,9 @@ private:
     if (emit_row) {
       ++emitted_rows_;
     }
-    reset_row_state();
-    saw_row_data_ = false;
-    at_field_start_ = true;
   }
 
-  bool use_deferred_rows() const {
-    return projection_enabled_ || !filters_.empty() || fixed_columns_enabled_ || deferred_batch_row_;
-  }
+  bool use_deferred_rows() const { return projection_enabled_ || !filters_.empty() || deferred_batch_row_; }
 
   bool should_capture_current_field() const {
     if (row_filter_rejected()) {
@@ -1697,7 +1711,7 @@ private:
     return should_store_current_field() || is_filter_column(current_column_);
   }
 
-  bool is_filter_column(uint32_t column) const {
+  bool is_filter_column(size_t column) const {
     return column < first_filter_by_column_.size() &&
            first_filter_by_column_[column] != std::numeric_limits<uint32_t>::max();
   }
@@ -1732,7 +1746,7 @@ private:
     return true;
   }
 
-  size_t selected_output_count(uint32_t column) const {
+  size_t selected_output_count(size_t column) const {
     return column < selected_column_counts_.size() ? selected_column_counts_[column] : 0;
   }
 
@@ -2052,8 +2066,7 @@ private:
   }
 
   void spill_unfinished_batch_row() {
-    if (batch_ == nullptr || !saw_row_data_ || projection_enabled_ || !filters_.empty() || fixed_columns_enabled_ ||
-        deferred_batch_row_) {
+    if (batch_ == nullptr || !saw_row_data_ || projection_enabled_ || !filters_.empty() || deferred_batch_row_) {
       return;
     }
 
@@ -2089,18 +2102,7 @@ private:
       return;
     }
 
-    if (fixed_columns_enabled_) {
-      const uint64_t row_start = batch_->row_offsets.back();
-      const size_t row_end = batch_->field_offsets.size() - 1;
-      const size_t field_count = row_end - row_start;
-      if (field_count != fixed_columns_) {
-        set_error("fixed row column count mismatch");
-        parse_failed_ = true;
-        return;
-      }
-    }
-
-    if (strict_quote_syntax_ && !fixed_columns_enabled_) {
+    if (strict_quote_syntax_ && fixed_columns_ == 0) {
       const uint64_t row_start = batch_->row_offsets.back();
       const size_t row_end = batch_->field_offsets.size() - 1;
       const uint32_t field_count = checked_u32(row_end - row_start);
@@ -2164,7 +2166,6 @@ private:
   std::vector<std::vector<uint32_t>> selected_column_outputs_;
   bool projection_enabled_ = false;
   bool direct_projection_ = false;
-  bool fixed_columns_enabled_ = false;
   bool strict_quote_syntax_ = false;
   uint32_t fixed_columns_ = 0;
   uint32_t strict_expected_columns_ = 0;
@@ -2188,7 +2189,7 @@ private:
   bool at_field_start_ = true;
   bool saw_row_data_ = false;
   bool previous_was_cr_ = false;
-  uint32_t current_column_ = 0;
+  size_t current_column_ = 0;
   std::vector<bool> row_filter_seen_;
   std::vector<bool> row_filter_matched_;
   std::vector<filter_truth> filter_truth_stack_;
@@ -2438,11 +2439,15 @@ CSV_EXPORT void* csv_parser_create(int encoding, uint8_t delimiter) {
 }
 
 // Internal materialization entry point. Its batches contain Latin1 and must never escape as public UTF-8 batches.
-CSV_EXPORT void* csv_parser_create_latin1_rows(uint8_t delimiter) {
+CSV_EXPORT void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns) {
   if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
     return nullptr;
   }
-  return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter, true);
+  return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter, true, fixed_columns);
+}
+
+CSV_EXPORT void* csv_parser_create_latin1_rows(uint8_t delimiter) {
+  return csv_parser_create_latin1_rows_with_fixed_columns(delimiter, 0);
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }

@@ -239,8 +239,8 @@ await csv.parse(
 Strict row parsing can still project columns: the parser validates each complete row first, then materializes the
 requested columns.
 
-Use `fixedColumns` when every row must contain exactly the same number of fields. The field-count check also applies to
-rows rejected by a filter.
+Use `fixedColumns` to require a specific number of fields in every input row, including rows rejected by a filter.
+For example, `fixedColumns: 3` with `columns: [0]` requires three input fields and returns the first field.
 
 ```ts
 const strictProjection = await csv.parse(source, {

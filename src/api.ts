@@ -18,10 +18,11 @@ import {
   re,
 } from './filter.js';
 import { latin1Rows } from './latin1-rows.js';
-import { optionalLatin1RowsNative } from './native.js';
+import { optionalLatin1RowsParser } from './native.js';
 import {
   encodingCode,
   normalizeColumns,
+  normalizeFixedColumnsCount,
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
@@ -145,15 +146,16 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
   await using input = await prepareCsvFileInput(path, options);
   const parserOptions = toParserOptions(options, input.delimiter);
   const validator = strictSchemaValidator(options);
-  if (
-    options.strict !== true && options.fixedColumns === undefined && validator === undefined
-    && encodingCode(options.encoding) === 1 && optionalLatin1RowsNative() !== null
-  ) {
-    yield* latin1Rows(input.chunks(), input.delimiter, columns, filters) as AsyncGenerator<
-      CsvProjectedRow<TColumns>[],
-      void
-    >;
-    return;
+  if (options.strict !== true && validator === undefined && encodingCode(options.encoding) === 1) {
+    const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
+    const createParser = optionalLatin1RowsParser(fixedColumns);
+    if (createParser !== undefined) {
+      yield* latin1Rows(input.chunks(), input.delimiter, columns, filters, createParser) as AsyncGenerator<
+        CsvProjectedRow<TColumns>[],
+        void
+      >;
+      return;
+    }
   }
   using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters);
   for await (const chunk of input.chunks()) {

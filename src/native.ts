@@ -415,7 +415,29 @@ const LATIN1_ROWS_SYMBOLS = {
 
 let latin1RowsNative: Library<typeof LATIN1_ROWS_SYMBOLS> | null | undefined;
 
-export function optionalLatin1RowsNative(): Library<typeof LATIN1_ROWS_SYMBOLS> | null {
+const FIXED_LATIN1_ROWS_SYMBOLS = {
+  // C signature:
+  // void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
+  csv_parser_create_latin1_rows_with_fixed_columns: {
+    args: ['u8', 'u32'],
+    returns: 'ptr',
+  },
+} as const;
+
+let fixedLatin1RowsNative: Library<typeof FIXED_LATIN1_ROWS_SYMBOLS> | null | undefined;
+
+export function optionalLatin1RowsParser(fixedColumns: number | undefined): ((delimiter: number) => NativePointer | null) | undefined {
+  if (fixedColumns !== undefined) {
+    if (fixedLatin1RowsNative === undefined) {
+      try {
+        fixedLatin1RowsNative = dlopen(nativeLibraryPath, FIXED_LATIN1_ROWS_SYMBOLS);
+      } catch {
+        fixedLatin1RowsNative = null;
+      }
+    }
+    const create = fixedLatin1RowsNative?.symbols.csv_parser_create_latin1_rows_with_fixed_columns;
+    return create === undefined ? undefined : (delimiter) => create(delimiter, fixedColumns);
+  }
   if (latin1RowsNative === undefined) {
     try {
       latin1RowsNative = dlopen(nativeLibraryPath, LATIN1_ROWS_SYMBOLS);
@@ -424,7 +446,7 @@ export function optionalLatin1RowsNative(): Library<typeof LATIN1_ROWS_SYMBOLS> 
       latin1RowsNative = null;
     }
   }
-  return latin1RowsNative;
+  return latin1RowsNative?.symbols.csv_parser_create_latin1_rows;
 }
 
 function resolveNativeLibraryPath(): string {

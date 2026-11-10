@@ -15,6 +15,7 @@ extern "C" {
 int csv_runtime_supports_avx2();
 void* csv_parser_create(int encoding, uint8_t delimiter);
 void* csv_parser_create_latin1_rows(uint8_t delimiter);
+void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
 void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
 bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
@@ -1021,6 +1022,29 @@ TEST_CASE("private Latin-1 rows preserve raw bytes and UTF-8 filters across chun
       REQUIRE(emitted_rows == expected.size());
       csv_parser_destroy(parser);
     }
+  }
+}
+
+TEST_CASE("fixed Latin-1 rows reject bad physical widths after early filter rejection") {
+  const uint32_t projection[] = {0};
+  const uint32_t filters[] = {1, 0, 0, 1}; // column 0 equals "keep"
+  const uint32_t offsets[] = {0, 4};
+  const uint8_t value[] = "keep";
+  const std::string_view prefix = "drop,\"split,\n";
+
+  for (const std::string_view tail : {"field\"", "field\",x,y\r\n"}) {
+    void* parser = csv_parser_create_latin1_rows_with_fixed_columns(',', 3);
+    REQUIRE(parser != nullptr);
+    REQUIRE(csv_parser_prepare(parser, true, projection, 1, filters, 1, value, 4, offsets, 1));
+    void* partial =
+        csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(prefix.data()), prefix.size(), false);
+    REQUIRE(partial != nullptr);
+    REQUIRE(csv_batch_row_count(partial) == 0);
+    csv_batch_destroy(partial);
+    REQUIRE(csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(tail.data()), tail.size(), true) ==
+            nullptr);
+    REQUIRE(std::string_view(csv_parser_last_error(parser)) == "fixed row column count mismatch");
+    csv_parser_destroy(parser);
   }
 }
 

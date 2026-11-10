@@ -3,7 +3,6 @@ import {
   EMPTY_BUFFER,
   native,
   type NativePointer,
-  optionalLatin1RowsNative,
   requirePtr,
   toArrayBuffer,
   u64ToSafeNumber,
@@ -27,6 +26,7 @@ export async function* latin1Rows(
   delimiter: CsvDelimiter,
   columns: CsvColumns | undefined,
   filters: readonly CsvNativeFilterProgramEntry[] | undefined,
+  createParser: (delimiter: number) => NativePointer | null,
 ): AsyncGenerator<CsvRow[], void> {
   if (delimiter === 'auto') {
     throw new Error('automatic delimiter detection is only supported by file APIs');
@@ -34,8 +34,8 @@ export async function* latin1Rows(
   if (delimiter.length !== 1) {
     throw new Error('delimiter must be one character');
   }
-  const parser = optionalLatin1RowsNative()?.symbols.csv_parser_create_latin1_rows(delimiter.charCodeAt(0));
-  if (parser === null || parser === undefined) {
+  const parser = createParser(delimiter.charCodeAt(0));
+  if (parser === null) {
     throw new Error('failed to create native CSV parser');
   }
   // Preserve the public parser's GC fallback when a suspended iterator is abandoned.

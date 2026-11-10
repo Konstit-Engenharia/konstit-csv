@@ -5,6 +5,7 @@ import {
   expect,
   test,
 } from 'bun:test';
+import { rejects } from 'node:assert/strict';
 import {
   mkdtemp,
   rm,
@@ -134,10 +135,38 @@ describe('private Latin1 row materialization compatibility', () => {
   test('retains every Latin1 code point across quoted chunk boundaries and batch destruction', async () => {
     for (const chunkSize of [1, 2, 7, 64, 1024]) {
       expect(await collect(bytesPath, { chunkSize })).toEqual(byteRows);
+      expect(await collect(bytesPath, { chunkSize, fixedColumns: 3 })).toEqual(byteRows);
       expect(await collect(bytesPath, { chunkSize, columns: [2, 0, 1, 9] })).toEqual(
         byteRows.map((row) => [row[2] ?? '', row[0] ?? '', row[1] ?? '', '']),
       );
       expect(await collect(bytesPath, { chunkSize, columns: [] })).toEqual([[], []]);
+    }
+  });
+
+  test('validates physical Latin1 rows before projection and filtering', async () => {
+    const path = join(directory, 'fixed.csv');
+    const where = csv.column(0).equals('café');
+    const data = 'drop;"a;""b\r\nc";x\r\ncafé;ÿ;\r\ncafé;"é;à";z';
+    await Bun.write(path, Buffer.from(data, 'latin1'));
+    for (const chunkSize of [1, 1024]) {
+      const options = { chunkSize, fixedColumns: 3, where };
+      expect(await collect(path, options)).toEqual([['café', 'ÿ', ''], ['café', 'é;à', 'z']]);
+      expect(await collect(path, { ...options, columns: [1] })).toEqual([['ÿ'], ['é;à']]);
+      expect(await collect(path, { ...options, columns: [2, 0] })).toEqual([['', 'café'], ['z', 'café']]);
+      expect(await collect(path, { ...options, columns: [] })).toEqual([[], []]);
+    }
+
+    for (const invalid of ['drop;"too;short"', '"drop";x;y;"z"\r\n', 'café;x', 'café;x;y;z\n']) {
+      await Bun.write(path, Buffer.from(`${data}\r\n${invalid}`, 'latin1'));
+      for (const chunkSize of [1, 1024]) {
+        await rejects(collect(path, { chunkSize, fixedColumns: 3, columns: [0], where }), /fixed row column count mismatch/);
+      }
+    }
+  });
+
+  test('rejects invalid Latin1 fixed column counts before native conversion', async () => {
+    for (const fixedColumns of [0, 1.5, 0x1_0000_0001]) {
+      await rejects(collect(bytesPath, { fixedColumns }), /fixed column count out of range/);
     }
   });
 
