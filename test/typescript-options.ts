@@ -5,6 +5,7 @@ import {
   type CsvDelimiter,
   type CsvRowsOptions,
   type CsvRowViewsOptions,
+  type CsvSingleThreadRowsOptions,
   defineRowsOptions,
 } from '../src/index.ts';
 
@@ -30,6 +31,7 @@ const projectedTopLevelRows: AsyncGenerator<[string, string][], void> = csv.rows
 void projectedTopLevelRows;
 
 const selectedColumnsOptions = defineRowsOptions({
+  reuseArrays: true,
   selectedColumns: [0, 2] as const,
 });
 const selectedColumnsRows: AsyncGenerator<[string, string][], void> = csv.rows(path, selectedColumnsOptions);
@@ -44,8 +46,9 @@ const strictSchema = {
 const strictRowsOptions = {
   chunkSize: 64 * 1024,
   delimiter: ';',
+  reuseArrays: true,
   ...strictSchema,
-} satisfies CsvRowsOptions;
+} satisfies CsvSingleThreadRowsOptions;
 
 const strictCountOptions = {
   chunkSize: 64 * 1024,

@@ -8,7 +8,7 @@ import {
 type BenchmarkTarget = 'csv-parser' | 'konstit-csv';
 
 const FILE = Bun.env['CSV_BENCH_FILE'] ?? 'corpus/large/example.csv';
-const CHUNK_SIZE = Number(Bun.env['CSV_BENCH_CHUNK_SIZE'] ?? 8 * 1024 * 1024);
+const CHUNK_SIZE = Number(Bun.env['CSV_BENCH_CHUNK_SIZE'] ?? 2 * 1024 * 1024);
 const DELIMITER = Bun.env['CSV_BENCH_DELIMITER'] ?? ';';
 const bytes = statSync(FILE).size;
 
@@ -25,12 +25,12 @@ if (result.rows === 0) {
 }
 
 console.log({
-  bytes,
-  cells: result.cells,
-  chars: result.chars,
   file: FILE,
-  rows: result.rows,
   target,
+  bytes,
+  cells: result.cells.toLocaleString(),
+  chars: result.chars.toLocaleString(),
+  rows: result.rows.toLocaleString(),
 });
 
 async function materializeWithKonstitCsv(): Promise<CsvParserMaterializeStats> {
@@ -42,11 +42,12 @@ async function materializeWithKonstitCsv(): Promise<CsvParserMaterializeStats> {
     const batch of csv.rows(FILE, {
       chunkSize: CHUNK_SIZE,
       delimiter: DELIMITER,
-      encoding: 'iso88591',
+      encoding: 'latin1',
       where: csv.all(
         csv.column(5).equals('02'),
         csv.column(19).doesNotEqual('EX'),
       ),
+      reuseArrays: true,
     })
   ) {
     rows += batch.length;

@@ -64,6 +64,10 @@ for await (const batch of csv.rows('data.csv')) {
 }
 ```
 
+By default, you can retain batches and individual rows. Set `reuseArrays: true` on a serial stream to let the iterator
+refill the batch and its row arrays. Treat both as read-only and finish using them before requesting the next batch.
+Use `row.slice()` to keep a row or retain individual field strings directly.
+
 Serial streams preserve file order. The `count()` helper counts records without returning row arrays, including the
 header when one is present:
 

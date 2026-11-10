@@ -27,6 +27,7 @@ export async function* latin1Rows(
   columns: CsvColumns | undefined,
   filters: readonly CsvNativeFilterProgramEntry[] | undefined,
   createParser: (delimiter: number) => NativePointer | null,
+  reusableRows?: CsvRow[],
 ): AsyncGenerator<CsvRow[], void> {
   if (delimiter === 'auto') {
     throw new Error('automatic delimiter detection is only supported by file APIs');
@@ -46,13 +47,13 @@ export async function* latin1Rows(
     for await (const chunk of chunks) {
       const input = normalizeChunk(chunk);
       const batch = prepared.writeBatch(input, false);
-      const rows = consumeLatin1Batch(parser, batch);
+      const rows = consumeLatin1Batch(parser, batch, reusableRows);
       if (rows.length > 0) {
         yield rows;
       }
     }
     const batch = prepared.writeBatch(EMPTY_BUFFER, true);
-    const rows = consumeLatin1Batch(parser, batch);
+    const rows = consumeLatin1Batch(parser, batch, reusableRows);
     if (rows.length > 0) {
       yield rows;
     }
@@ -62,7 +63,7 @@ export async function* latin1Rows(
   }
 }
 
-function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null): CsvRow[] {
+function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, reusableRows?: CsvRow[]): CsvRow[] {
   if (batch === null) {
     throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(parser) ?? 'native parser error unavailable'}`);
   }
@@ -83,12 +84,12 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null):
     const fieldOffsets = new Uint32Array(
       toArrayBuffer(requirePtr(native.symbols.csv_batch_field_offsets_ptr(batch)), 0, (totalFields + 1) * 8),
     );
-    const rows: CsvRow[] = [];
+    const rows: CsvRow[] = reusableRows ?? [];
     rows.length = rowCount;
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldStart = checkedOffset(rowOffsets, rowIndex, totalFields);
       const fieldEnd = checkedOffset(rowOffsets, rowIndex + 1, totalFields);
-      const row: CsvRow = [];
+      const row = reusableRows?.[rowIndex] ?? [];
       row.length = fieldEnd - fieldStart;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
         const start = checkedOffset(fieldOffsets, fieldIndex, dataLength);

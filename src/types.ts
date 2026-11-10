@@ -392,7 +392,7 @@ type CsvOptionsWithoutWhereWorkerCount<TColumns extends CsvColumns | undefined> 
  * `workerCount` is restricted to `1` for this serial shape. The generic keeps a
  * literal projection tuple when supplied.
  */
-export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
+type CsvSerialFileOptions<TColumns extends CsvColumns | undefined> =
   | (CsvDistributiveOmit<CsvOptionsWithoutWhereWorkerCount<TColumns>, 'strict'> & {
     /** Disable strict quote/schema validation (the default serial mode). */
     readonly strict?: false | undefined;
@@ -409,6 +409,12 @@ export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined =
     /** Strict parsing remains single-threaded. */
     readonly workerCount?: 1 | undefined;
   });
+
+/** Options for streaming materialized rows in one process. */
+export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvSerialFileOptions<TColumns> & {
+  /** Refill the batch and its row arrays across iterations. Treat them as read-only and copy any row you want to keep. Defaults to false. */
+  readonly reuseArrays?: boolean;
+};
 
 /**
  * Options for sharded row parsing with multiple workers.
@@ -435,20 +441,20 @@ export type CsvParallelRowsOptions<TColumns extends CsvColumns | undefined = und
 
 /** Options for parsing an in-memory buffer into materialized rows. */
 export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> = CsvDistributiveOmit<
-  CsvSingleThreadRowsOptions<TColumns>,
+  CsvSerialFileOptions<TColumns>,
   'compression'
 >;
 
 /** Options accepted by `csv.rows()`, serial or parallel. */
 export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
   | CsvSingleThreadRowsOptions<TColumns>
-  | CsvParallelRowsOptions<TColumns>;
+  | (CsvParallelRowsOptions<TColumns> & { readonly reuseArrays?: never; });
 
 /** Options accepted by `csv.batches()` and `csv.withBatches()`. */
-export type CsvBatchesOptions = CsvSingleThreadRowsOptions<CsvColumns | undefined>;
+export type CsvBatchesOptions = CsvSerialFileOptions<CsvColumns | undefined>;
 
 /** Options accepted by reusable row-view callbacks. */
-export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvSingleThreadRowsOptions<TColumns>;
+export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvSerialFileOptions<TColumns>;
 
 /**
  * Options accepted by columnar-batch callbacks.
@@ -457,8 +463,8 @@ export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefin
  * non-strict parsing when a projection tuple is supplied.
  */
 export type CsvColumnarBatchOptions<TColumns extends CsvColumns | undefined = undefined> = [TColumns] extends [undefined]
-  ? CsvSingleThreadRowsOptions<TColumns>
-  : CsvDistributiveOmit<CsvSingleThreadRowsOptions<TColumns>, 'strict'> & {
+  ? CsvSerialFileOptions<TColumns>
+  : CsvDistributiveOmit<CsvSerialFileOptions<TColumns>, 'strict'> & {
     /** Strict validation is unavailable for projected columnar batches. */
     readonly strict?: false | undefined;
   };

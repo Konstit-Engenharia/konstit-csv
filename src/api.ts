@@ -46,6 +46,7 @@ import type {
   CsvParseOptions,
   CsvParserOptions,
   CsvProjectedRow,
+  CsvRow,
   CsvRowsOptions,
   CsvRowView,
   CsvRowViewCallback,
@@ -111,7 +112,8 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
  * captured when this function is called, before iteration starts, so mutating the caller-owned
  * options object later does not change the stream. Set `workerCount` above one to use record-safe
  * Bun worker shards; serial streams additionally support compression and automatic delimiter
- * detection.
+ * detection. With `reuseArrays: true`, serial batches and their rows are borrowed until the next
+ * iteration. Copy a row with `row.slice()` to retain it.
  *
  * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
  * @param path - Path to the CSV file.
@@ -146,11 +148,12 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
   await using input = await prepareCsvFileInput(path, options);
   const parserOptions = toParserOptions(options, input.delimiter);
   const validator = strictSchemaValidator(options);
+  const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
   if (options.strict !== true && validator === undefined && encodingCode(options.encoding) === 1) {
     const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
     const createParser = optionalLatin1RowsParser(fixedColumns);
     if (createParser !== undefined) {
-      yield* latin1Rows(input.chunks(), input.delimiter, columns, filters, createParser) as AsyncGenerator<
+      yield* latin1Rows(input.chunks(), input.delimiter, columns, filters, createParser, reusableRows) as AsyncGenerator<
         CsvProjectedRow<TColumns>[],
         void
       >;
@@ -163,7 +166,7 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
     if (batch.rowCount > 0) {
       try {
         validator?.validateBatch(batch);
-        const values = materializeRows<TColumns>(batch, columns, projected);
+        const values = materializeRows<TColumns>(batch, columns, projected, reusableRows);
         if (values.length > 0) {
           yield values;
         }
@@ -180,7 +183,7 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
     try {
       validator?.validateBatch(batch);
       validator?.finish();
-      const values = materializeRows<TColumns>(batch, columns, projected);
+      const values = materializeRows<TColumns>(batch, columns, projected, reusableRows);
       if (values.length > 0) {
         yield values;
       }
@@ -874,11 +877,9 @@ function materializeRows<TColumns extends CsvColumns | undefined>(
   batch: NativeCsvBatch,
   columns: CsvColumns | undefined,
   projected: boolean,
+  target: CsvRow[] = [],
 ): CsvProjectedRow<TColumns>[] {
-  if (projected) {
-    return batch.rowsInto([]) as CsvProjectedRow<TColumns>[];
-  }
-  return batch.rowsInto([], columns) as CsvProjectedRow<TColumns>[];
+  return batch.rowsInto(target, projected ? undefined : columns) as CsvProjectedRow<TColumns>[];
 }
 
 function ensureRowViewsSupported(options: CsvApiFileOptions): void {

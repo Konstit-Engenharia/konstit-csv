@@ -36,6 +36,7 @@ beforeAll(async () => {
   filtersPath = join(directory, 'filters.csv');
   for (const encoding of ['utf8', 'latin1'] as const) {
     await Bun.write(join(directory, `mutation-${encoding}.csv`), Buffer.from('é;ÿ\né;ÿ\né;ÿ\né;ÿ', encoding));
+    await Bun.write(join(directory, `reuse-${encoding}.csv`), Buffer.from('é,x,y\nß\nc\nd,e,f\nñ', encoding));
   }
   for (const [path, rows,] of [[bytesPath, byteRows], [filtersPath, filterRows]] as const) {
     const text = rows.map((row) => row.map((field) => `"${field.replaceAll('"', '""')}"`).join(';')).join('\r\n');
@@ -45,6 +46,60 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await rm(directory, { force: true, recursive: true });
+});
+
+describe('serial csv.rows array ownership', () => {
+  for (const encoding of ['utf8', 'latin1'] as const) {
+    const chunkSize = Buffer.byteLength('é,x,y\nß\n', encoding);
+
+    test(`${encoding} reuses distinct row slots, resizes rows and batches, and includes the final record`, async () => {
+      const options = { chunkSize, encoding, reuseArrays: true };
+      const stream = csv.rows(join(directory, `reuse-${encoding}.csv`), options);
+      options.reuseArrays = false;
+      let previousBatch: string[][] | undefined;
+      let previousFirstRow: string[] | undefined;
+      const snapshots: string[][][] = [];
+      for await (const batch of stream) {
+        if (previousBatch !== undefined) {
+          expect(batch).toBe(previousBatch);
+          expect(batch[0]).toBe(previousFirstRow);
+        }
+        previousBatch = batch;
+        previousFirstRow = batch[0];
+        snapshots.push(batch.map((row) => row.slice()));
+      }
+      expect(snapshots).toEqual([[['é', 'x', 'y'], ['ß']], [['c'], ['d', 'e', 'f']], [['ñ']]]);
+    });
+
+    test(`${encoding} retains independent batches and rows by default`, async () => {
+      const batches = await Array.fromAsync(csv.rows(join(directory, `reuse-${encoding}.csv`), { chunkSize, encoding }));
+      expect(batches).toEqual([[['é', 'x', 'y'], ['ß']], [['c'], ['d', 'e', 'f']], [['ñ']]]);
+    });
+
+    test(`${encoding} refills projected rows after chunks with no filter matches`, async () => {
+      const options = { chunkSize: 1, columns: [1, 0] as const, encoding, reuseArrays: true, where: csv.column(0).isOneOf(['é', 'ñ']) };
+      const snapshots: string[][] = [];
+      for await (const batch of csv.rows(join(directory, `reuse-${encoding}.csv`), options)) {
+        for (const row of batch) {
+          snapshots.push(row.slice());
+        }
+      }
+      expect(snapshots).toEqual([['x', 'é'], ['', 'ñ']]);
+    });
+
+    test(`${encoding} projects reusable rows after strict validation`, async () => {
+      const snapshots: string[][] = [];
+      const options = { chunkSize, columns: [1, 2, 0], delimiter: ';', encoding, reuseArrays: true, strict: true } as const;
+      for await (const batch of csv.rows(join(directory, `mutation-${encoding}.csv`), options)) {
+        for (const row of batch) {
+          snapshots.push(row.slice());
+        }
+      }
+      expect(snapshots).toEqual([['ÿ', '', 'é'], ['ÿ', '', 'é'], ['ÿ', '', 'é'], ['ÿ', '', 'é']]);
+      const ragged = csv.rows(join(directory, `reuse-${encoding}.csv`), { ...options, delimiter: ',' });
+      await rejects(Array.fromAsync(ragged), /strict CSV row column count mismatch/);
+    });
+  }
 });
 
 async function collect(path: string, options: CsvRowsOptions<readonly number[] | undefined> = {}): Promise<string[][]> {
