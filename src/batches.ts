@@ -1,3 +1,4 @@
+import { read } from 'bun:ffi';
 import { decodeMaterializedField } from './materialize-field.js';
 import {
   EMPTY_BUFFER,
@@ -267,6 +268,8 @@ export class NativeCsvBatch {
   #handle: NativePointer | null;
   #data: Buffer | undefined;
   #dataView: Uint8Array | undefined;
+  // rowFieldCount uses the same field-count bound for every lookup in an open batch.
+  #rowOffsetLimit: number | undefined;
   #rowOffsets: BigUint64Array | undefined;
   #rowOffsetWords: Uint32Array | undefined;
   #fieldOffsets: BigUint64Array | undefined;
@@ -448,11 +451,7 @@ export class NativeCsvBatch {
     }
 
     const rowCount = this.rowCount;
-    const ptr = native.symbols.csv_batch_row_offsets_ptr(this.#requireHandle());
-    if (ptr === null) {
-      throw new Error('native CSV batch row offsets are null');
-    }
-    this.#rowOffsets = new BigUint64Array(toArrayBuffer(ptr, 0, (rowCount + 1) * BigUint64Array.BYTES_PER_ELEMENT));
+    this.#rowOffsets = new BigUint64Array(toArrayBuffer(this.#rowOffsetsPointer(), 0, (rowCount + 1) * BigUint64Array.BYTES_PER_ELEMENT));
     return this.#rowOffsets;
   }
 
@@ -486,9 +485,29 @@ export class NativeCsvBatch {
    * @throws {RangeError} If `rowIndex` is outside the batch.
    */
   rowFieldCount(rowIndex: number): number {
-    const rowOffsetWords = this.#rowOffsetWordsView();
-    const start = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, this.totalFields);
-    const end = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, this.totalFields);
+    const firstLookupWithoutView = this.#rowOffsetLimit === undefined && this.#rowOffsets === undefined;
+    this.#rowOffsetLimit ??= this.totalFields;
+    const totalFields = this.#rowOffsetLimit;
+    if (!Number.isInteger(rowIndex) || rowIndex < 0) {
+      throw new RangeError(`row ${rowIndex} offset index out of range: ${rowIndex}`);
+    }
+    // The first lookup can read both boundaries without allocating views. Bun 1.4.0 takes signed 32-bit byte offsets.
+    if (
+      firstLookupWithoutView && rowIndex < MAX_DIRECT_ROW_INDEX_EXCLUSIVE
+      && rowIndex < native.symbols.csv_batch_row_count(this.#requireHandle())
+    ) {
+      const ptr = this.#rowOffsetsPointer();
+      const byteOffset = rowIndex * BigUint64Array.BYTES_PER_ELEMENT;
+      const start = Number(read.u64(ptr, byteOffset));
+      const end = Number(read.u64(ptr, byteOffset + BigUint64Array.BYTES_PER_ELEMENT));
+      if (start <= totalFields && end <= totalFields) {
+        return end - start;
+      }
+      // The offset view reports the exact value if a boundary exceeds the safe field count.
+    }
+    const rowOffsetWords = this.#rowOffsetWords ?? this.#rowOffsetWordsView();
+    const start = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
+    const end = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
     return end - start;
   }
 
@@ -722,6 +741,7 @@ export class NativeCsvBatch {
       this.#handle = null;
       this.#data = undefined;
       this.#dataView = undefined;
+      this.#rowOffsetLimit = undefined;
       this.#rowOffsets = undefined;
       this.#rowOffsetWords = undefined;
       this.#fieldOffsets = undefined;
@@ -754,6 +774,14 @@ export class NativeCsvBatch {
     return this.#rowOffsetWords;
   }
 
+  #rowOffsetsPointer(): NativePointer {
+    const ptr = native.symbols.csv_batch_row_offsets_ptr(this.#requireHandle());
+    if (ptr === null) {
+      throw new Error('native CSV batch row offsets are null');
+    }
+    return ptr;
+  }
+
   #fieldOffsetWordsView(): Uint32Array {
     const fieldOffsets = this.fieldOffsets();
     if (this.#fieldOffsetWords === undefined) {
@@ -783,6 +811,7 @@ export class NativeCsvBatch {
 const UINT32_BASE = 0x1_0000_0000;
 const UINT32_BASE_BIGINT = 0x1_0000_0000n;
 const MAX_SAFE_OFFSET_HIGH_WORD = 0x1f_ffff;
+const MAX_DIRECT_ROW_INDEX_EXCLUSIVE = Math.floor(0x7fff_ffff / BigUint64Array.BYTES_PER_ELEMENT);
 
 function offsetWords(offsets: BigUint64Array): Uint32Array {
   // Native offsets are little-endian on every supported target.

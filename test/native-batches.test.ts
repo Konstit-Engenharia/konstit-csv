@@ -11,6 +11,28 @@ import {
 import { readCsvFixture } from './fixtures.ts';
 
 describe('NativeCsvParser batches and materialization', () => {
+  test('counts fields in ragged rows before and after accessing the offset view', () => {
+    using parser = new NativeCsvParser();
+    using batch = parser.writeBatch(Buffer.from('a\nb,c,d\n'), true);
+    expect(batch.rowFieldCount(1)).toBe(3);
+    expect(batch.rowFieldCount(0)).toBe(1);
+
+    batch.rowOffsets()[1] = 2n;
+    expect(batch.rowFieldCount(0)).toBe(2);
+    expect(batch.rowFieldCount(1)).toBe(2);
+  });
+
+  test('rejects invalid row indexes on the first field count', () => {
+    using parser = new NativeCsvParser();
+    const input = Buffer.from('a,b\n');
+    for (const index of [-1, 0.5, NaN, 1, 2 ** 29]) {
+      using batch = parser.writeBatch(input);
+      expect(() => batch.rowFieldCount(index)).toThrow(RangeError);
+    }
+    using empty = parser.endBatch();
+    expect(() => empty.rowFieldCount(0)).toThrow(RangeError);
+  });
+
   test('exposes lazy field views and selected columns', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     using batch = parser.writeBatch(readCsvFixture('native/quoted-semicolon-people.csv'), true);
@@ -286,6 +308,8 @@ describe('NativeCsvParser batches and materialization', () => {
   test('preserves closed-batch errors', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     const batch = parser.writeBatch(readCsvFixture('native/quoted-semicolon-people.csv'), true);
+    expect(batch.rowFieldCount(0)).toBe(3);
+    expect(batch.rowFieldCount(1)).toBe(3);
     batch.close();
 
     expect(() => batch.rowsInto([])).toThrow('native CSV batch is closed');
