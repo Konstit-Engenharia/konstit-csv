@@ -14,6 +14,10 @@
 #include <string_view>
 #include <vector>
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 #if defined(_WIN32)
 #define CSV_EXPORT extern "C" __declspec(dllexport)
 #else
@@ -1212,9 +1216,29 @@ private:
   HWY_ATTR size_t try_quoted_record(const uint8_t* data, size_t available) {
     const size_t len = std::min<size_t>(available, std::numeric_limits<uint16_t>::max());
     std::array<uint16_t, 64> ends;
+#if defined(__aarch64__)
+    constexpr size_t lanes = 64;
+    auto quote_mask = [](const uint8_t* input) {
+      // The interleaved load groups four consecutive bytes at each lane index.
+      const auto bytes = vld4q_u8(input);
+      const auto quote = vdupq_n_u8('"');
+      const auto bit0 = vandq_u8(vceqq_u8(bytes.val[0], quote), vdupq_n_u8(1));
+      const auto bit1 = vandq_u8(vceqq_u8(bytes.val[1], quote), vdupq_n_u8(2));
+      const auto bit2 = vandq_u8(vceqq_u8(bytes.val[2], quote), vdupq_n_u8(4));
+      const auto bit3 = vandq_u8(vceqq_u8(bytes.val[3], quote), vdupq_n_u8(8));
+      const auto nibbles = vreinterpretq_u16_u8(vorrq_u8(vorrq_u8(bit0, bit1), vorrq_u8(bit2, bit3)));
+      // Pack adjacent nibbles into bytes in input order on little-endian ARM64.
+      const auto packed = vmovn_u16(vorrq_u16(nibbles, vshrq_n_u16(nibbles, 4)));
+      return vget_lane_u64(vreinterpret_u64_u8(packed), 0);
+    };
+#else
     const hn::CappedTag<uint8_t, 64> du8;
     const size_t lanes = hn::Lanes(du8);
-    const auto quote = hn::Set(du8, static_cast<uint8_t>('"'));
+    auto quote_mask = [du8](const uint8_t* input) HWY_ATTR {
+      const auto quote = hn::Set(du8, static_cast<uint8_t>('"'));
+      return hn::BitsFromMask(du8, hn::Eq(hn::LoadU(du8, input), quote));
+    };
+#endif
     size_t block = 0;
     size_t next_block = 0;
     uint64_t bits = 0;
@@ -1230,7 +1254,7 @@ private:
           }
           return len;
         }
-        bits = hn::BitsFromMask(du8, hn::Eq(hn::LoadU(du8, data + block), quote));
+        bits = quote_mask(data + block);
         next_block += lanes;
       }
       const size_t lane = hwy::Num0BitsBelowLS1Bit_Nonzero64(bits);

@@ -1090,6 +1090,34 @@ TEST_CASE("prepared Latin-1 rows match ASCII predicates across quoted records, f
   }
 }
 
+TEST_CASE("prepared Latin-1 quote masks preserve every lane across full blocks and tails") {
+  const uint32_t offsets[] = {0};
+  const std::vector<uint8_t> expected_flags = {1, 0, 1};
+  for (size_t lane = 0; lane < 64; ++lane) {
+    CAPTURE(lane);
+    // The first close lies at 64 + lane. The next open sweeps all lanes as well.
+    const std::string first(63 + lane, 'a');
+    const std::string second(129, 'b');
+    const std::string simple = "\"" + first + "\";\"" + second + "\"\n";
+    const std::string escaped = "\"" + first + "\";\"" + second + "\"\"\"\n";
+    // The last simple record also sweeps all 64 possible scalar-tail lengths.
+    const std::string input = simple + escaped + simple;
+    const std::vector<std::vector<std::string>> expected = {{first, second}, {first, second + "\""}, {first, second}};
+
+    void* parser = csv_parser_create_latin1_rows_with_quoted_spans(';');
+    REQUIRE(parser != nullptr);
+    REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, offsets, 0));
+    std::vector<std::vector<std::string>> actual;
+    std::vector<uint8_t> flags;
+    append_batch_rows(
+        csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true),
+        actual, &flags);
+    csv_parser_destroy(parser);
+    REQUIRE(actual == expected);
+    REQUIRE(flags == expected_flags);
+  }
+}
+
 TEST_CASE("prepared Latin-1 rows preserve every field at quoted record size and width limits") {
   std::string input;
   std::vector<std::vector<std::string>> expected;

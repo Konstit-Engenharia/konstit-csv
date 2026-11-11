@@ -117,13 +117,20 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
 }
 
 function checkedOffset(words: Uint32Array, index: number, upperBound: number): number {
-  // All supported architectures are little-endian; retain full 64-bit offset validation.
+  // Offsets are little-endian. Keep the common single-word read small enough to inline in the field loop.
   const low = words[index * 2];
   const high = words[index * 2 + 1];
+  if (low !== undefined && high === 0 && low <= upperBound) {
+    return low;
+  }
+  return checkedWideOffset(low, high, upperBound);
+}
+
+function checkedWideOffset(low: number | undefined, high: number | undefined, upperBound: number): number {
   if (low === undefined || high === undefined || high > 0x1f_ffff) {
     throw new RangeError('CSV batch offset out of range');
   }
-  const offset = high === 0 ? low : low + high * 0x1_0000_0000;
+  const offset = low + high * 0x1_0000_0000;
   if (offset > upperBound) {
     throw new RangeError('CSV batch offset exceeds backing storage');
   }
