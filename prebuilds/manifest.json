@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "source": {
-    "commit": "c4004e027f42c0812557c15409251c8babd6a92e",
+    "commit": "5746c32dc14074a71673066f53ee24a326cff2b9",
     "files": [
       ".github/workflows/update-prebuilds.yml",
       "CMakeLists.txt",
@@ -20,25 +20,25 @@
       "toolchains/darwin-x64-clang.cmake",
       "toolchains/linux-x64-clang.cmake"
     ],
-    "sha256": "a0130703187d5ca8903debc74a734ffb8a9d33af3d404120ae978d1c8093a339"
+    "sha256": "0f642f4bb46403a61d7fdac7de14ba41be75b714bda201fca56c6ac90e6340e3"
   },
   "targets": [
     {
       "file": "darwin-arm64/libcsv_native.dylib",
-      "sha256": "5fbc82c9889baf0592b4aa2f552796f0f794cf1bec81cba0a743ef8de1f330f4",
-      "size": 606032,
+      "sha256": "673a385ccb92e5ccc5ff1024e564ce06727a08c9ffa0c893003dfba1cee15d26",
+      "size": 623088,
       "target": "darwin-arm64"
     },
     {
       "file": "darwin-x64/libcsv_native.dylib",
-      "sha256": "a0e16a2a279ed5893108e2b3a35ad1279b2a23f062178cb7bc36d138d574b451",
-      "size": 628480,
+      "sha256": "818b045197e25a4854ee5dfbf636cbb04e1bb6d437401912f620ac8b2bb64c31",
+      "size": 633200,
       "target": "darwin-x64"
     },
     {
       "file": "linux-x64/libcsv_native.so",
-      "sha256": "582c9dccfa33b005dbd624a355de74336ecaed5545f29dc9a84cec1e95fc5b39",
-      "size": 1072152,
+      "sha256": "ef7e1c68a49be03c09194cd27f456476431e5bb0a8102697bf155c3a59f6bc2a",
+      "size": 1076952,
       "target": "linux-x64"
     }
   ]
