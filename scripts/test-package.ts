@@ -31,18 +31,20 @@ try {
     '-e',
     'import { csv } from \'@konstit/csv\'; const name = csv.column(1); const where = csv.all(csv.any(name.equals(\'Ada\'), name.equals(\'Bob\')), csv.not(name.startsWith(\'B\'))); const rows = await csv.parse(Buffer.from(\'id,name\\n1,Ada\\n2,Bob\\n\'), { where }); if (rows.length !== 1 || rows[0]?.[1] !== \'Ada\') throw new Error(\'package Boolean filter smoke test failed\');',
   ], directory);
-  console.log('package import and serial filter smoke passed');
+  console.log('package import and filter smoke passed');
 
   const csvPath = join(directory, 'input.csv');
   await Bun.write(csvPath, 'id;name\n1;Ada\n2;Bob\n');
   run([
     'bun',
     '-e',
-    `import { csv } from '@konstit/csv'; const count = await csv.count(${
-      JSON.stringify(csvPath)
-    }, { delimiter: ';', workerCount: 2, where: csv.not(csv.column(1).startsWith('B')) }); if (count !== 2) throw new Error('package worker Boolean filter smoke test failed');`,
+    `import assert from 'node:assert/strict';
+     import { findCsvSafeShards, findCsvSafeSplitOffsets } from '@konstit/csv';
+     const path = 'input.csv';
+     assert.deepEqual(findCsvSafeSplitOffsets(path, 2, { delimiter: ';' }), [0, 14, 20]);
+     assert.deepEqual(findCsvSafeShards(path, 2, { delimiter: ';' }), [{ start: 0, end: 13 }, { start: 14, end: 19 }]);`,
   ], directory);
-  console.log('package worker filter smoke passed');
+  console.log('package byte-boundary helpers smoke passed');
 
   const cliResult = Bun.spawnSync({
     cmd: [
@@ -109,8 +111,6 @@ async function verifyInstalledPackage(directory: string): Promise<void> {
     'dist/index.js',
     'dist/index.d.ts',
     'dist/cli.js',
-    'dist/workers/count.worker.js',
-    'dist/workers/rows.worker.js',
     'prebuilds/manifest.json',
     ...packagedNativeTargets.map((target) => `prebuilds/${target}/${nativeLibraryFileName(target)}`),
   ];

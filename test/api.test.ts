@@ -164,135 +164,37 @@ describe('csv high-level API', () => {
     ]);
   });
 
-  test('rejects invalid worker pool sizes at configuration time', () => {
-    expect(() => csv.workerPool('unused.csv', { workerCount: 1 })).toThrow('worker pool requires workerCount > 1: 1');
-    expect(() => csv.workerPool('unused.csv', { workerCount: 1.5 })).toThrow('worker pool requires workerCount > 1: 1.5');
-  });
-
-  test('rejects invalid projections before parsing or starting workers', async () => {
+  test('rejects invalid projections before parsing', async () => {
     const duplicateError = await rejectedError(csv.parse(readCsvFixture('api/duplicate-projection.csv'), { columns: [2, 2] }));
     expect(duplicateError.message).toContain('selected column repeated: 2');
 
     const path = csvFixturePath('empty.csv');
-    let workerError: unknown;
+    let projectionError: unknown;
     try {
-      for await (const _rows of csv.rows(path, { columns: [2025], workerCount: 2 })) {
+      for await (const _rows of csv.rows(path, { columns: [2025] })) {
         throw new Error('unreachable');
       }
     } catch (error) {
-      workerError = error;
+      projectionError = error;
     }
-    expect(workerError).toBeInstanceOf(RangeError);
-    expect((workerError as Error).message).toContain('selected column out of range: 2025');
+    expect(projectionError).toBeInstanceOf(RangeError);
+    expect((projectionError as Error).message).toContain('selected column out of range: 2025');
 
     expect(() => csv.column(2025)).toThrow('filter column out of range: 2025');
   });
 
-  test('streams rows through workers with shard-safe splitting', async () => {
-    const path = csvFixturePath('api/quoted-people-multiline-state.csv');
-    const rows: string[][] = [];
-
-    for await (
-      const batch of csv.rows(path, {
-        columns: [0, 2] as const,
-        delimiter: ';',
-        workerCount: 2,
-      })
-    ) {
-      rows.push(...batch);
-    }
-
-    expect(rows.map((row) => row.join('|')).sort()).toEqual([
-      '1|SP',
-      '2|RJ',
-      '3|S\nP',
-      '4|SP',
-      'id|uf',
-    ]);
-  });
-
-  test('streams filtered rows through workers with equals filter', async () => {
-    const path = csvFixturePath('api/quoted-people-sp-filter.csv');
-    const rows: string[][] = [];
-
-    for await (
-      const batch of csv.rows(path, {
-        columns: [0, 1] as const,
-        delimiter: ';',
-        workerCount: 2,
-        where: csv.column(2).equals('SP'),
-      })
-    ) {
-      rows.push(...batch);
-    }
-
-    expect(rows.map((row) => row.join('|')).sort()).toEqual([
-      '1|Ana',
-      '3|Bia',
-    ]);
-  });
-
-  test('streams rows through workers with mixed AND filters', async () => {
-    const path = csvFixturePath('api/quoted-people-sp-filter.csv');
-    const rows: string[][] = [];
-
-    for await (
-      const batch of csv.rows(path, {
-        columns: [0, 1] as const,
-        delimiter: ';',
-        workerCount: 2,
-        where: csv.all(
-          csv.column(2).isOneOf(['SP', 'RJ']),
-          csv.column(2).doesNotEqual('RJ'),
-          csv.column(2).isNoneOf(['MG']),
-          csv.column(1).startsWith('B'),
-          csv.column(0).equals('3'),
-        ),
-      })
-    ) {
-      rows.push(...batch);
-    }
-
-    expect(rows).toEqual([['3', 'Bia']]);
-  });
-
-  test('reuses a filtered worker pool for count and rows', async () => {
-    const path = csvFixturePath('api/quoted-people-sp-filter.csv');
-    using pool = csv.workerPool(path, {
-      columns: [0, 1] as const,
-      delimiter: ';',
-      workerCount: 2,
-      where: csv.all(
-        csv.column(2).isOneOf(['SP', 'RJ']),
-        csv.column(2).doesNotEqual('RJ'),
-        csv.column(2).isNoneOf(['MG']),
-        csv.column(1).startsWith('B'),
-      ),
-    });
-
-    expect(await pool.count()).toBe(1);
-    const rows: string[][] = [];
-    for await (const batch of pool.rows()) {
-      rows.push(...batch);
-    }
-    expect(rows).toEqual([['3', 'Bia']]);
-  });
-
-  test('reuses one filter across serial and worker APIs', async () => {
+  test('reuses one filter across serial APIs', async () => {
     const path = csvFixturePath('api/quoted-people-sp-filter.csv');
     const where = csv.column(2).equals('SP');
 
     expect(await csv.count(path, { delimiter: ';', where })).toBe(2);
-    expect(await consumeRows(csv.rows(path, { delimiter: ';', where }))).toEqual([
+    const rows: string[][] = [];
+    for await (const batch of csv.rows(path, { delimiter: ';', where })) {
+      rows.push(...batch);
+    }
+    expect(rows).toEqual([
       ['1', 'Ana', 'SP'],
       ['3', 'Bia', 'SP'],
-    ]);
-
-    using pool = csv.workerPool(path, { delimiter: ';', workerCount: 2, where });
-    expect(await pool.count()).toBe(2);
-    expect((await consumeRows(pool.rows())).map((row) => row.join('|')).sort()).toEqual([
-      '1|Ana|SP',
-      '3|Bia|SP',
     ]);
   });
 
@@ -324,29 +226,6 @@ describe('csv high-level API', () => {
       ['5'],
     ]);
     expect(await csv.parse(input, { delimiter: ';', where: csv.not(csv.column(20).equals('x')) })).toEqual([]);
-  });
-
-  test('evaluates nested any and not groups through workers and reusable pools', async () => {
-    const path = csvFixturePath('api/quoted-people-sp-filter.csv');
-    const where = csv.all(
-      csv.any(csv.column(2).equals('SP'), csv.column(2).equals('RJ')),
-      csv.not(csv.column(1).startsWith('B')),
-    );
-
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where })).toBe(2);
-    expect(
-      (await consumeRows(csv.rows(path, { delimiter: ';', workerCount: 2, where }))).sort(compareRowsByFirstColumn),
-    ).toEqual([
-      ['1', 'Ana', 'SP'],
-      ['2', 'Joao', 'RJ'],
-    ]);
-
-    using pool = csv.workerPool(path, { delimiter: ';', workerCount: 2, where });
-    expect(await pool.count()).toBe(2);
-    expect((await consumeRows(pool.rows())).sort(compareRowsByFirstColumn)).toEqual([
-      ['1', 'Ana', 'SP'],
-      ['2', 'Joao', 'RJ'],
-    ]);
   });
 
   test('counts rows with filters', async () => {
@@ -386,60 +265,6 @@ describe('csv high-level API', () => {
     ).toBe(0);
     expect(await csv.count(path, { delimiter: ';', where: csv.column(20).doesNotEqual('') })).toBe(0);
     expect(await csv.count(path, { delimiter: ';', where: csv.column(20).isNoneOf(['']) })).toBe(0);
-  });
-
-  test('counts rows through workers with native shard splitting', async () => {
-    const path = csvFixturePath('api/quoted-people-multiline-state.csv');
-
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2 })).toBe(5);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(2).equals('SP') })).toBe(2);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(2).isOneOf(['SP', 'RJ']) })).toBe(3);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(2).doesNotEqual('SP') })).toBe(3);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(2).isNoneOf(['SP', 'RJ']) })).toBe(2);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(1).startsWith('A') })).toBe(1);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(20).doesNotEqual('') })).toBe(0);
-    expect(await csv.count(path, { delimiter: ';', workerCount: 2, where: csv.column(20).isNoneOf(['']) })).toBe(0);
-    expect(
-      await csv.count(path, {
-        delimiter: ';',
-        workerCount: 2,
-        where: csv.all(
-          csv.column(2).isOneOf(['SP', 'RJ']),
-          csv.column(1).startsWith('C'),
-          csv.column(0).equals('4'),
-        ),
-      }),
-    ).toBe(1);
-  });
-
-  test('reuses worker pool across repeated count and rows calls', async () => {
-    const path = csvFixturePath('api/quoted-people-sp-filter.csv');
-    using pool = csv.workerPool(path, {
-      columns: [0, 1] as const,
-      delimiter: ';',
-      workerCount: 2,
-    });
-
-    expect(await pool.count()).toBe(4);
-    expect(await pool.count()).toBe(4);
-
-    const seenA: string[][] = [];
-    for await (const rows of pool.rows()) {
-      seenA.push(...rows);
-    }
-
-    const seenB: string[][] = [];
-    for await (const rows of pool.rows()) {
-      seenB.push(...rows);
-    }
-
-    expect(seenA.map((row) => row.join('|')).sort()).toEqual([
-      '1|Ana',
-      '2|Joao',
-      '3|Bia',
-      'id|name',
-    ]);
-    expect(seenB.map((row) => row.join('|')).sort()).toEqual(seenA.map((row) => row.join('|')).sort());
   });
 
   test('runs safe row view callbacks through both aliases', async () => {
@@ -634,36 +459,8 @@ describe('csv high-level API', () => {
     );
   });
 
-  test('keeps unsupported strict worker rows explicit', async () => {
-    const path = csvFixturePath('api/unquoted-one-person-no-header.csv');
-    const invalidStrictOptions = {
-      delimiter: ';',
-      strict: true,
-      workerCount: 2,
-    } as unknown as CsvRowsOptions;
-
-    let strictError: unknown;
-    try {
-      for await (const _rows of csv.rows(path, invalidStrictOptions)) {
-        throw new Error('unreachable');
-      }
-    } catch (caught) {
-      strictError = caught;
-    }
-    expect(strictError).toBeInstanceOf(Error);
-    expect((strictError as Error).message).toContain('parallel rows do not support strict CSV validation');
-  });
-
   test('keeps row view callback limits explicit', async () => {
     const path = csvFixturePath('api/unquoted-one-person-no-header.csv');
-    const invalidOptions = { delimiter: ';', workerCount: 2 } as unknown as Parameters<typeof csv.forEachRowViews>[1];
-
-    const workerError = await rejectedError(
-      csv.forEachRowViews(path, invalidOptions, () => {
-      }),
-    );
-    expect(workerError.message).toContain('row view callbacks do not support workerCount');
-
     const asyncCallback = (async () => {
     }) as unknown as Parameters<typeof csv.withRowViews>[2];
 
@@ -671,29 +468,6 @@ describe('csv high-level API', () => {
       csv.withRowViews(path, { delimiter: ';' }, asyncCallback),
     );
     expect(callbackError.message).toContain('row view callback must be synchronous');
-  });
-
-  test('keeps unsupported worker count modes explicit', async () => {
-    const path = csvFixturePath('api/unquoted-one-person-no-header.csv');
-    const invalidOptions = { delimiter: ';', strict: true, workerCount: 2 } as unknown as CsvCountOptions;
-
-    let strictError: unknown;
-    try {
-      await csv.count(path, invalidOptions);
-    } catch (caught) {
-      strictError = caught;
-    }
-    expect(strictError).toBeInstanceOf(Error);
-    expect((strictError as Error).message).toContain('parallel count does not support strict CSV validation');
-  });
-
-  test('rejects use after worker pool close', async () => {
-    const path = csvFixturePath('api/unquoted-name.csv');
-    const pool = csv.workerPool(path, { delimiter: ';', workerCount: 2 });
-    pool.close();
-
-    const error = await rejectedError(pool.count());
-    expect(error.message).toContain('worker pool is closed');
   });
 
   test('propagates strict mode to high-level row parsing', async () => {
@@ -852,16 +626,4 @@ async function rejectedError(promise: Promise<unknown>): Promise<Error> {
     return error instanceof Error ? error : new Error(String(error));
   }
   throw new Error('expected promise to reject');
-}
-
-function compareRowsByFirstColumn(left: readonly string[], right: readonly string[]): number {
-  return (left[0] ?? '').localeCompare(right[0] ?? '');
-}
-
-async function consumeRows(rows: AsyncIterable<string[][]>): Promise<string[][]> {
-  const collected: string[][] = [];
-  for await (const batch of rows) {
-    collected.push(...batch);
-  }
-  return collected;
 }

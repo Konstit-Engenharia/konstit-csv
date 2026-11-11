@@ -170,33 +170,6 @@ describe('operation options snapshots', () => {
     expect(rows).toEqual([['id'], ['1'], ['2'], ['3']]);
   });
 
-  test('captures parallel row options before the first next call', async () => {
-    const columns = [0];
-    const options = { chunkSize: 2, columns, delimiter: ';', where: csv.column(2).equals('SP'), workerCount: 2 };
-    const stream = csv.parallelRows(path, options);
-    columns[0] = 1;
-    options.where = csv.column(2).equals('RJ');
-    options.delimiter = ',';
-    expect((await collect(stream)).sort(compareRowsByFirstColumn)).toEqual([['1'], ['3']]);
-  });
-
-  test('isolates worker pool projections for repeated operations', async () => {
-    const columns = [0];
-    const where = csv.column(2).equals('SP');
-    const options = { chunkSize: 2, columns, delimiter: ';', where, workerCount: 2 };
-    using pool = csv.workerPool(path, options);
-    expect(options.columns).toBe(columns);
-    expect(options.where).toBe(where);
-    expect(Object.isFrozen(columns)).toBe(false);
-    columns[0] = 1;
-    options.where = csv.column(2).equals('RJ');
-    expect((await collect(pool.rows())).sort(compareRowsByFirstColumn)).toEqual([['1'], ['3']]);
-    columns.length = 0;
-    options.columns = [2];
-    expect((await collect(pool.rows())).sort(compareRowsByFirstColumn)).toEqual([['1'], ['3']]);
-    expect(await pool.count()).toBe(2);
-  });
-
   test('keeps explicit per-write parser reconfiguration between complete records', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     const selectedColumns = [0];
@@ -219,8 +192,4 @@ async function collect(stream: AsyncIterable<string[][]>): Promise<string[][]> {
     rows.push(...batch);
   }
   return rows;
-}
-
-function compareRowsByFirstColumn(left: readonly string[], right: readonly string[]): number {
-  return (left[0] ?? '').localeCompare(right[0] ?? '');
 }

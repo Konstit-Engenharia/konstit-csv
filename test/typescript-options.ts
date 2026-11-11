@@ -107,14 +107,6 @@ void csv.withColumnarBatches(path, columnarBatchOptions, (batch) => {
   void fieldOffsets;
 });
 
-// @ts-expect-error strict rows stay single-threaded
-const invalidStrictRowsOptions = { strict: true, workerCount: 2 } satisfies CsvRowsOptions;
-void invalidStrictRowsOptions;
-
-// @ts-expect-error strict count does not support workers
-const invalidStrictCountWorkers = { strict: true, workerCount: 2 } satisfies CsvCountOptions;
-void invalidStrictCountWorkers;
-
 // @ts-expect-error strict count supports no filters
 const invalidStrictCountWhere = { strict: true, where: csv.column(1).isOneOf(['SP']) } satisfies CsvCountOptions;
 void invalidStrictCountWhere;
@@ -133,10 +125,6 @@ void invalidColumnAliases;
 
 // @ts-expect-error option factories preserve strict/filter constraints
 defineRowsOptions({ strict: true, where: csv.column(1).equals('SP') });
-
-// @ts-expect-error row views do not support workers
-const invalidRowViewOptions = { columns, workerCount: 2 } satisfies CsvRowViewsOptions<typeof columns>;
-void invalidRowViewOptions;
 
 // @ts-expect-error strict columnar batches do not support projected columns
 const invalidStrictColumnarOptions = { columns, strict: true } satisfies CsvColumnarBatchOptions<typeof columns>;

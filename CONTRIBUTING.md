@@ -44,9 +44,6 @@ bun run example:api:count
 bun run example:api:batches
 bun run example:api:typed-options
 bun run example:api:strict-options
-bun run example:api:worker-count
-bun run example:api:worker-rows
-bun run example:api:worker-pool
 bun run example:api:shards
 ```
 

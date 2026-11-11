@@ -7,7 +7,7 @@ A CSV toolkit for Bun with native parsing, streaming file access, filtering, and
 - Stream large files in batches, or parse a buffer you already have in memory.
 - Filter records and select columns before materializing results as JavaScript rows.
 - Read compressed input, detect delimiters, and decode UTF-8 or Latin-1 files.
-- Use native batches and reusable views for low-allocation access, or workers for parallel file processing.
+- Use native batches and reusable views for low-allocation access.
 
 ## Installation
 
@@ -71,8 +71,8 @@ for await (const batch of csv.rows('data.csv')) {
 }
 ```
 
-Each iteration yields a **batch of rows**, so use the inner loop to process individual records. Process batches as
-they arrive to avoid collecting the complete file in memory. The header is returned as the first row.
+Each iteration yields a **batch of rows** in file order, so use the inner loop to process individual records. Process
+batches as they arrive to avoid collecting the complete file in memory. The header is returned as the first row.
 
 To count records without materializing rows:
 
@@ -84,20 +84,21 @@ console.log(await csv.count('data.csv')); // 3, including the header
 
 ## Choose an API
 
-| Task                         | API                                                | Result or lifecycle                                    |
-| ---------------------------- | -------------------------------------------------- | ------------------------------------------------------ |
-| Parse an in-memory buffer    | `await csv.parse(buffer)`                          | All rows as arrays of strings                          |
-| Stream a file                | `csv.rows(path)`                                   | Async stream of row batches                            |
-| Count records                | `await csv.count(path)`                            | Record count, optionally filtered                      |
-| Access native batches        | `csv.withBatches(path, options, callback)`         | Callback with automatic batch disposal                 |
-| Reuse row or columnar views  | `csv.withRowViews()` / `csv.withColumnarBatches()` | Synchronous callback; views are scoped to the callback |
-| Process a file in parallel   | `csv.rows()` / `csv.count()` with `workerCount`    | Worker-based processing of an uncompressed file        |
-| Repeat parallel operations   | `csv.workerPool(path, options)`                    | Reusable pool that must be closed                      |
-| Supply your own input chunks | `NativeCsvParser`                                  | Manual parser and batch disposal                       |
+| Task                         | API                                                 | Result or lifecycle                                    |
+| ---------------------------- | --------------------------------------------------- | ------------------------------------------------------ |
+| Parse an in-memory buffer    | `await csv.parse(buffer)`                           | All rows as arrays of strings                          |
+| Stream a file                | `csv.rows(path)`                                    | Async stream of row batches                            |
+| Count records                | `await csv.count(path)`                             | Record count, optionally filtered                      |
+| Access native batches        | `csv.withBatches(path, options, callback)`          | Callback with automatic batch disposal                 |
+| Reuse row or columnar views  | `csv.withRowViews()` / `csv.withColumnarBatches()`  | Synchronous callback; views are scoped to the callback |
+| Supply your own input chunks | `NativeCsvParser`                                   | Manual parser and batch disposal                       |
+| Find record-safe boundaries  | `findCsvSafeSplitOffsets()` / `findCsvSafeShards()` | Advanced byte-range processing                         |
+
+For code that uses workers, see the [migration guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#migration-from-removed-worker-apis).
 
 Start with `csv.rows()` for streaming records. Use batches or views when you need byte access or lower allocation
-overhead. Parallel row output is not globally ordered; workers require an uncompressed file, a fixed delimiter, and
-non-strict parsing. See the [API guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md)
+overhead. Advanced applications can use the record-safe boundary helpers to divide an uncompressed CSV file into
+byte ranges for their own processing pipeline. See the [API guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md)
 for options and resource lifetimes.
 
 ## Common operations
@@ -151,8 +152,8 @@ for await (
 }
 ```
 
-Decompression streams into the parser. Serial file APIs support gzip, deflate, deflate-raw, Brotli, Zstandard,
-and selected ZIP entries. Automatic delimiter detection is also available for serial files.
+Decompression streams into the parser. File APIs support gzip, deflate, deflate-raw, Brotli, Zstandard, and selected
+ZIP entries. Automatic delimiter detection is also available for file APIs.
 
 For a ZIP archive, select an entry with `compression: { format: 'zip', entry: 'data.csv' }`. See
 [Compression](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#compression-and-delimiter-detection)
@@ -176,7 +177,7 @@ console.log(rows.length); // 3
 ```
 
 Strict mode validates quote syntax and can check header and row-count requirements. It supports column selection
-with `csv.parse()` and `csv.rows()`, but cannot be combined with filters or workers. See
+with `csv.parse()` and `csv.rows()`, but cannot be combined with filters. See
 [Strict validation](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#strict-validation)
 for supported combinations.
 
@@ -200,7 +201,7 @@ column selection. Use `bunx @konstit/csv lines --help` or read the
 ## Documentation
 
 - [API guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md): filters, encoding, compression,
-  validation, typed options, batches, views, workers, and manual parsing.
+  validation, typed options, batches, views, advanced byte boundaries, and manual parsing.
 - [CLI guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/cli.md): commands, filters, output formats,
   and option constraints.
 - [Benchmarks](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/benchmarks.md): datasets, commands,

@@ -27,7 +27,7 @@ const minDataRows = parseMinDataRows(Bun.env['CSV_EXAMPLE_MIN_DATA_ROWS']);
 // passing explicit `undefined` values.
 const strictSchema = {
   // The literal `true` is preserved by `as const`, allowing TypeScript to rule
-  // out unsupported strict/worker/filter combinations at the call site.
+  // out unsupported strict/filter combinations at the call site.
   strict: true,
   ...(expectedHeaders === undefined ? {} : { expectedHeaders }),
   ...(requireHeader ? { requireHeader: true } : {}),

@@ -11,7 +11,7 @@ export type CsvEncoding = 'utf8' | 'latin1' | 'iso88591' | 'iso-8859-1';
 /**
  * Selects one CSV entry from a ZIP archive.
  *
- * ZIP input is available to serial file operations. The `entry` name must
+ * ZIP input is available to file parsing operations. The `entry` name must
  * match the archive member exactly; use `'*'` only when the archive contains
  * exactly one file entry.
  */
@@ -39,16 +39,15 @@ export interface CsvZipCompression {
  * Compression accepted for file input.
  *
  * `'auto'` detects the supported compression format from the input prefix and
- * filename. A ZIP object selects one archive entry. Compression is supported
- * for serial file operations; worker, parallel, and byte-offset sharding APIs
- * require uncompressed input.
+ * filename. A ZIP object selects one archive entry. Byte-offset sharding
+ * requires an uncompressed file.
  */
 export type CsvCompression = Bun.CompressionFormat | 'auto' | CsvZipCompression;
 
 /**
  * Field delimiter used by the CSV parser.
  *
- * Omit the option to use comma. `'auto'` is supported by serial file
+ * Omit the option to use comma. `'auto'` is supported by file parsing
  * operations and probes the input for a stable common delimiter. Other strings
  * are accepted by TypeScript, but runtime parsing requires one character.
  */
@@ -195,10 +194,7 @@ export interface CsvFieldRange {
 }
 
 /**
- * Inclusive byte range assigned to one worker shard of an uncompressed CSV file.
- *
- * The range boundaries are chosen at record boundaries, so a worker can parse
- * the shard independently.
+ * Inclusive byte range containing complete records from an uncompressed CSV file.
  */
 export interface CsvShard {
   /** Inclusive start byte offset in the file. */
@@ -217,7 +213,7 @@ export interface CsvShard {
 export interface CsvParserOptions {
   /** Input field encoding used when decoding bytes into JavaScript strings. Defaults to `'utf8'`. */
   readonly encoding?: CsvEncoding;
-  /** Field separator. Defaults to comma; `'auto'` is for serial file input. */
+  /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
   readonly delimiter?: CsvDelimiter;
   /** Physical columns to emit from each row, in the requested output order. */
   readonly selectedColumns?: CsvColumns;
@@ -237,7 +233,7 @@ export interface CsvParserOptions {
  * File input options, including parser settings and stream controls.
  *
  * Compression is streamed into the parser and does not load the complete file
- * into memory. Compressed input cannot be used with parallel or sharded APIs.
+ * into memory. Byte-offset sharding requires an uncompressed file.
  */
 export interface CsvFileOptions extends CsvParserOptions {
   /** Read-stream chunk size in bytes. Defaults to 1 MiB. */
@@ -344,8 +340,6 @@ export interface CsvNativeProjectionOptions {
 export interface CsvApiFileOptions extends CsvFileOptions {
   /** Preferred physical-column projection for materialized row APIs. */
   readonly columns?: CsvColumns;
-  /** Number of workers for parallel operations; values greater than one enable sharding. */
-  readonly workerCount?: number;
   /** Opaque filter created by `csv.column()`, `csv.all()`, `csv.any()`, or `csv.not()`. */
   readonly where?: CsvFilter;
 }
@@ -371,145 +365,46 @@ export type CsvColumnSelection<TColumns extends CsvColumns | undefined> =
     readonly selectedColumns?: TColumns;
   };
 
-/** Internal common API options after removing the mutually exclusive projection fields. */
-type CsvApiOptionsWithoutSelection = Omit<CsvApiFileOptions, 'columns' | 'selectedColumns'>;
-
 /** Apply `Omit` to each member of a union independently. */
 type CsvDistributiveOmit<T, TKeys extends PropertyKey> = T extends unknown ? Omit<T, TKeys> : never;
 
-/** Internal serial option base shared by row and batch APIs. */
-type CsvOptionsWithoutWhereWorkerCount<TColumns extends CsvColumns | undefined> =
-  & Omit<
-    CsvApiOptionsWithoutSelection,
-    'where' | 'workerCount'
-  >
-  & CsvColumnSelection<TColumns>;
-
-/**
- * Options for one-process row parsing, row views, and batch streaming.
- *
- * `strict: true` selects validated parsing and cannot be combined with `where`.
- * `workerCount` is restricted to `1` for this serial shape. The generic keeps a
- * literal projection tuple when supplied.
- */
-type CsvSerialFileOptions<TColumns extends CsvColumns | undefined> =
-  | (CsvDistributiveOmit<CsvOptionsWithoutWhereWorkerCount<TColumns>, 'strict'> & {
-    /** Disable strict quote/schema validation (the default serial mode). */
-    readonly strict?: false | undefined;
-    /** Optional immutable filter created by the CSV filter factories. */
-    readonly where?: CsvFilter | undefined;
-    /** Serial mode uses one worker; omit this field to use the default. */
-    readonly workerCount?: 1 | undefined;
-  })
-  | (CsvDistributiveOmit<CsvOptionsWithoutWhereWorkerCount<TColumns>, 'strict'> & {
-    /** Enable strict quote/schema validation; strict mode cannot use `where`. */
-    readonly strict: true;
-    /** Filters are excluded when strict validation is enabled. */
-    readonly where?: undefined;
-    /** Strict parsing remains single-threaded. */
-    readonly workerCount?: 1 | undefined;
-  });
-
-/** Options for streaming materialized rows in one process. */
-export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvSerialFileOptions<TColumns> & {
-  /** Refill the batch and its row arrays across iterations. Treat them as read-only and copy any row you want to keep. Defaults to false. */
-  readonly reuseArrays?: boolean;
-};
-
-/**
- * Options for sharded row parsing with multiple workers.
- *
- * Set `workerCount` to the desired number of workers. Parallel operations do
- * not support compression, automatic delimiter detection, or strict parsing.
- */
-export type CsvParallelRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
-  & Omit<
-    CsvApiOptionsWithoutSelection,
-    'compression' | 'where' | 'workerCount' | 'strict'
-  >
+/** A projection can use either column spelling. Strict validation requires unfiltered input. */
+type CsvOperationOptions<TColumns extends CsvColumns | undefined> =
+  & Omit<CsvApiFileOptions, 'columns' | 'selectedColumns' | 'strict' | 'where'>
   & CsvColumnSelection<TColumns>
-  & {
-    /** Compressed input cannot be byte-offset sharded. */
-    readonly compression?: never;
-    /** Optional immutable filter applied in each worker. */
-    readonly where?: CsvFilter | undefined;
-    /** Required worker count; must be an integer greater than one. */
-    readonly workerCount: number;
-    /** Strict validation is unsupported for parallel parsing. */
-    readonly strict?: false | undefined;
-  };
+  & (
+    | { readonly strict?: false | undefined; readonly where?: CsvFilter | undefined; }
+    | { readonly strict: true; readonly where?: undefined; }
+  );
 
 /** Options for parsing an in-memory buffer into materialized rows. */
 export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> = CsvDistributiveOmit<
-  CsvSerialFileOptions<TColumns>,
+  CsvOperationOptions<TColumns>,
   'compression'
 >;
 
-/** Options accepted by `csv.rows()`, serial or parallel. */
-export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
-  | CsvSingleThreadRowsOptions<TColumns>
-  | (CsvParallelRowsOptions<TColumns> & { readonly reuseArrays?: never; });
+/** Options for streaming materialized rows in file order. */
+export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvOperationOptions<TColumns> & {
+  /** Refill the batch and its row arrays across iterations. Copy any row you want to keep. Defaults to false. */
+  readonly reuseArrays?: boolean;
+};
+
+/** Alias for the options accepted by `csv.rows()`. */
+export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvRowsOptions<TColumns>;
 
 /** Options accepted by `csv.batches()` and `csv.withBatches()`. */
-export type CsvBatchesOptions = CsvSerialFileOptions<CsvColumns | undefined>;
+export type CsvBatchesOptions = CsvOperationOptions<CsvColumns | undefined>;
 
 /** Options accepted by reusable row-view callbacks. */
-export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvSerialFileOptions<TColumns>;
+export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvOperationOptions<TColumns>;
 
-/**
- * Options accepted by columnar-batch callbacks.
- *
- * Columnar batches expose raw projected bytes and therefore always use
- * non-strict parsing when a projection tuple is supplied.
- */
+/** Projected columnar batches expose raw bytes and require non-strict parsing. */
 export type CsvColumnarBatchOptions<TColumns extends CsvColumns | undefined = undefined> = [TColumns] extends [undefined]
-  ? CsvSerialFileOptions<TColumns>
-  : CsvDistributiveOmit<CsvSerialFileOptions<TColumns>, 'strict'> & {
-    /** Strict validation is unavailable for projected columnar batches. */
-    readonly strict?: false | undefined;
-  };
+  ? CsvOperationOptions<TColumns>
+  : CsvOperationOptions<TColumns> & { readonly strict?: false | undefined; };
 
-/** Internal serial count option union used by the exported `CsvCountOptions`. */
-type CsvCountSingleThreadOptions =
-  | (Omit<CsvApiOptionsWithoutSelection, 'where' | 'workerCount' | 'strict'> & CsvColumnSelection<CsvColumns | undefined> & {
-    /** Disable strict validation (the default serial count mode). */
-    readonly strict?: false | undefined;
-    /** Optional immutable filter evaluated by the native count path. */
-    readonly where?: CsvFilter | undefined;
-    /** Serial mode uses one worker; omit this field to use the default. */
-    readonly workerCount?: 1 | undefined;
-  })
-  | (Omit<CsvApiOptionsWithoutSelection, 'where' | 'workerCount' | 'strict'> & CsvColumnSelection<CsvColumns | undefined> & {
-    /** Enable strict quote/schema validation; filtered strict counts are unsupported. */
-    readonly strict: true;
-    /** Filters are excluded when strict validation is enabled. */
-    readonly where?: undefined;
-    /** Strict counting remains single-threaded. */
-    readonly workerCount?: 1 | undefined;
-  });
-
-/** Options for counting rows with multiple workers. */
-export type CsvParallelCountOptions =
-  & Omit<CsvApiOptionsWithoutSelection, 'compression' | 'where' | 'workerCount' | 'strict'>
-  & CsvColumnSelection<CsvColumns | undefined>
-  & {
-    /** Compressed input cannot be byte-offset sharded. */
-    readonly compression?: never;
-    /** Optional immutable filter evaluated in each worker. */
-    readonly where?: CsvFilter | undefined;
-    /** Required worker count; must be an integer greater than one. */
-    readonly workerCount: number;
-    /** Strict validation is unsupported for parallel counting. */
-    readonly strict?: false | undefined;
-  };
-
-/** Options accepted by `csv.count()`, serial or parallel. */
-export type CsvCountOptions =
-  | CsvCountSingleThreadOptions
-  | CsvParallelCountOptions;
-
-/** Options captured when a reusable `CsvWorkerPool` is created. */
-export type CsvWorkerPoolOptions<TColumns extends CsvColumns | undefined = undefined> = CsvParallelRowsOptions<TColumns>;
+/** Options accepted by `csv.count()`. */
+export type CsvCountOptions = CsvOperationOptions<CsvColumns | undefined>;
 
 /**
  * Materialized row type inferred from a literal projection tuple.

@@ -68,9 +68,8 @@ export function column(columnIndex: number): CsvFilterColumn {
 /**
  * Match rows for which every supplied filter matches.
  *
- * Groups can be nested, and the resulting filter can be reused across row, count, and worker
- * operations. A missing physical column remains unknown rather than becoming a match through
- * negation; the native evaluator applies the CSV filter's three-valued semantics.
+ * Groups can be nested, and the resulting filter can be reused for both rows and counts.
+ * A missing physical column remains unknown under negation.
  *
  * @param first - First filter in the group.
  * @param rest - Additional filters that must also match.
@@ -85,9 +84,8 @@ export function all(first: CsvFilter, ...rest: readonly CsvFilter[]): CsvFilter 
 /**
  * Match rows for which at least one supplied filter matches.
  *
- * Groups can be nested, and the resulting filter can be reused across row, count, and worker
- * operations. A missing column does not match by itself, but another matching child can still make
- * the group match.
+ * Groups can be nested, and the resulting filter can be reused for both rows and counts.
+ * Another matching child can satisfy the group when one child's column is missing.
  *
  * @param first - First filter in the group.
  * @param rest - Additional filters, any one of which may match.

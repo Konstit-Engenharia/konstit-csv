@@ -135,7 +135,7 @@ export function findCsvSafeSplitOffsets(path: string, shardCount: number, delimi
 }
 
 /**
- * Return inclusive, record-safe byte ranges for parallel CSV processing.
+ * Return inclusive byte ranges that can each be read as complete CSV records.
  *
  * The ranges are derived from {@link findCsvSafeSplitOffsets}. Empty ranges
  * are omitted, so a small file can produce fewer ranges than `shardCount`.
@@ -302,7 +302,7 @@ async function* iterateCsvFileProjected(
  * Count logical CSV records in a file without materializing row strings.
  *
  * The parser honors quoted newlines and supports the same compression and
- * delimiter options as serial file parsing. With `strict: true`, quote syntax
+ * delimiter options as file parsing. With `strict: true`, quote syntax
  * is validated while counting. Strict schema metadata is intentionally not
  * supported by this counting path; use row parsing when headers or minimum
  * data-row constraints must be checked.

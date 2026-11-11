@@ -15,8 +15,6 @@ import {
   countCsvFile,
   csv,
   NativeCsvParser,
-  parallelCount,
-  parallelRows,
   parseCsvFile,
   parseCsvFileProjected,
 } from '../src/index.ts';
@@ -184,20 +182,8 @@ describe('automatic delimiter detection', () => {
     expect(() => csv.findCsvSafeSplitOffsets('unused.tsv', 2, { delimiter: 'auto' })).toThrow(
       'CSV split offset scanning does not support automatic delimiter detection',
     );
-    expect((await rejectedError(csv.count('unused.tsv', { delimiter: 'auto', workerCount: 2 }))).message).toContain(
-      'parallel counting does not support automatic delimiter detection',
-    );
-    expect(
-      (await rejectedAsyncGeneratorError(csv.rows('unused.tsv', { delimiter: 'auto', workerCount: 2 }))).message,
-    ).toContain('parallel row parsing does not support automatic delimiter detection');
-    expect((await rejectedError(parallelCount('unused.tsv', { delimiter: 'auto', workerCount: 2 }))).message).toContain(
-      'parallel counting does not support automatic delimiter detection',
-    );
-    expect(
-      (await rejectedAsyncGeneratorError(parallelRows('unused.tsv', { delimiter: 'auto', workerCount: 2 }))).message,
-    ).toContain('parallel row parsing does not support automatic delimiter detection');
-    expect(() => csv.workerPool('unused.tsv', { delimiter: 'auto', workerCount: 2 })).toThrow(
-      'worker pool does not support automatic delimiter detection',
+    expect(() => csv.findCsvSafeShards('unused.tsv', 2, { delimiter: 'auto' })).toThrow(
+      'CSV shard scanning does not support automatic delimiter detection',
     );
   });
 });
@@ -209,13 +195,4 @@ async function rejectedError(promise: Promise<unknown>): Promise<Error> {
     return error instanceof Error ? error : new Error(String(error));
   }
   throw new Error('expected promise to reject');
-}
-
-async function rejectedAsyncGeneratorError(generator: AsyncGenerator<unknown, void>): Promise<Error> {
-  try {
-    await generator.next();
-  } catch (error) {
-    return error instanceof Error ? error : new Error(String(error));
-  }
-  throw new Error('expected async generator to reject');
 }

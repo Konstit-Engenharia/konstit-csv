@@ -10,9 +10,8 @@ import type {
  * Preserve literal column inference for `csv.rows()` options.
  *
  * This identity helper is useful when options are declared separately from the call site. It
- * checks the selected-column/strict/worker union while retaining tuple literals for projected row
- * types; it does not clone or freeze the object. Each operation snapshots caller-owned option
- * values when invoked.
+ * checks projection and strict validation options while retaining tuple literals for projected row
+ * types. Each operation snapshots caller-owned option values when invoked.
  *
  * @typeParam TColumns - Literal selected column indexes, when supplied.
  * @typeParam TOptions - The complete rows option object to preserve.
@@ -37,8 +36,7 @@ export function defineRowsOptions<
 /**
  * Preserve literal inference for `csv.count()` options.
  *
- * The helper validates the count option union, including the restrictions that apply to strict
- * and parallel counting, while returning the original object unchanged.
+ * The helper checks that strict counts use unfiltered input and returns the original object.
  *
  * @typeParam TOptions - The complete count option object to preserve.
  * @param options - Type-checked count options.
@@ -69,7 +67,7 @@ export function defineColumnarOptions<
 /**
  * Preserve literal column inference for `csv.withRowViews()` options.
  *
- * The helper checks the serial row-view option union and keeps a selected-column tuple visible to
+ * The helper checks the row-view options and keeps a selected-column tuple visible to
  * the callback's `CsvRowView` type. It is an identity function at runtime.
  *
  * @typeParam TColumns - Literal selected column indexes, when supplied.

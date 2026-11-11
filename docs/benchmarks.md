@@ -79,6 +79,13 @@ bun run bench -- field-access.bench.ts
 Benchmark files live under `bench/` and use the `*.bench.ts` suffix. They register benchmarks without calling `run()`.
 Keep fixture generation and unrelated setup outside measured operations, and validate or consume results.
 
+This command compares materialized rows, row views, and columnar batches on the same three columns of the checked-in fixture.
+
+```sh
+CSV_BENCH_FILE=corpus/bench/regression-smoke-25000-rows.csv CSV_BENCH_DELIMITER=, CSV_BENCH_COLUMNS=0,2,4 \
+  bun run bench -- materialization-serial.bench.ts
+```
+
 For small correctness and performance checks:
 
 ```sh

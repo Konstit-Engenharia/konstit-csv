@@ -19,14 +19,7 @@ import {
 import {
   countCsvFile,
   csv,
-  type CsvCountOptions,
-  type CsvParallelCountOptions,
-  type CsvParallelRowsOptions,
-  type CsvRowsOptions,
   type CsvShardingOptions,
-  type CsvWorkerPoolOptions,
-  parallelCount,
-  parallelRows,
   parseCsvFile,
   parseCsvFileProjected,
 } from '../src/index.ts';
@@ -355,30 +348,14 @@ describe('compressed CSV file streams', () => {
     expect((await rejectedError(csv.parse(source, options))).message).toContain('parse() does not support compression');
   });
 
-  test('rejects compressed input for byte-offset worker and shard APIs', async () => {
-    const invalidRows = { compression: 'gzip', workerCount: 2 } as unknown as CsvRowsOptions;
-    const invalidCount = { compression: 'gzip', workerCount: 2 } as unknown as CsvCountOptions;
-    const invalidPool = { compression: 'gzip', workerCount: 2 } as unknown as CsvWorkerPoolOptions;
+  test('rejects compressed input for byte-offset sharding APIs', () => {
     const invalidSharding = { compression: 'gzip' } as unknown as CsvShardingOptions;
 
-    const rowsError = await rejectedAsyncGeneratorError(csv.rows('unused.csv.gz', invalidRows));
-    expect(rowsError.message).toContain('parallel row parsing does not support compressed input');
-    expect((await rejectedError(csv.count('unused.csv.gz', invalidCount))).message).toContain(
-      'parallel counting does not support compressed input',
-    );
-    expect(() => csv.workerPool('unused.csv.gz', invalidPool)).toThrow('worker pool does not support compressed input');
     expect(() => csv.findCsvSafeSplitOffsets('unused.csv.gz', 2, invalidSharding)).toThrow(
       'CSV split offset scanning does not support compressed input',
     );
-
-    const directRowsError = await rejectedAsyncGeneratorError(
-      parallelRows('unused.csv.gz', invalidRows as unknown as CsvParallelRowsOptions),
-    );
-    expect(directRowsError.message).toContain('parallel row parsing does not support compressed input');
-    expect(
-      (await rejectedError(parallelCount('unused.csv.gz', invalidCount as unknown as CsvParallelCountOptions))).message,
-    ).toContain(
-      'parallel counting does not support compressed input',
+    expect(() => csv.findCsvSafeShards('unused.csv.gz', 2, invalidSharding)).toThrow(
+      'CSV shard scanning does not support compressed input',
     );
   });
 });
@@ -416,13 +393,4 @@ async function rejectedError(promise: Promise<unknown>): Promise<Error> {
     return error instanceof Error ? error : new Error(String(error));
   }
   throw new Error('expected promise to reject');
-}
-
-async function rejectedAsyncGeneratorError(generator: AsyncGenerator<unknown, void>): Promise<Error> {
-  try {
-    await generator.next();
-  } catch (error) {
-    return error instanceof Error ? error : new Error(String(error));
-  }
-  throw new Error('expected async generator to reject');
 }

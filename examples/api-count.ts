@@ -58,7 +58,7 @@ if (FILTER_VALUE !== undefined) {
       ...baseOptions,
       where: filterColumn.hasMatch(new RegExp(`^${escapeRegExp(FILTER_VALUE)}$`, 'u')),
     }),
-    // Boolean groups are immutable and reusable across serial and worker APIs.
+    // Boolean groups are immutable and reusable across row and count APIs.
     composed: await csv.count(FILE, {
       ...baseOptions,
       where: composed,

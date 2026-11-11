@@ -24,10 +24,8 @@ interface BenchResult {
 
 const PROJECTED_COLUMNS = SELECTED_COLUMNS.map((_, index) => index);
 const BYTES = statSync(FILE).size;
-const WORKERS = Number(Bun.env['CSV_BENCH_WORKERS'] ?? 4);
 const CASES = [
   ['csv.rows projected selected columns', () => consumeMaterializedRowsFromApi()],
-  ['csv.rows projected selected columns(workers)', () => consumeMaterializedRowsFromApiWorkers()],
   ['native projected rowsInto(reused js arrays)', () => consumeMaterializedRowsFromRowsInto()],
   ['csv.withColumnarBatches projected selected columns(scanColumns)', () => consumeScannedColumns()],
   ['csv.withColumnarBatches projected selected columns(ranges)', () => consumeColumnarBatchRanges()],
@@ -47,7 +45,6 @@ console.log({
   delimiter: DELIMITER,
   selectedColumns: SELECTED_COLUMNS,
   projectedColumns: PROJECTED_COLUMNS,
-  workers: WORKERS,
 });
 
 for (const [name, fn,] of CASES) {
@@ -91,21 +88,6 @@ async function consumeMaterializedRowsFromApi(): Promise<BenchResult> {
   return result;
 }
 
-async function consumeMaterializedRowsFromApiWorkers(): Promise<BenchResult> {
-  const result = emptyResult();
-  for await (
-    const rows of csv.rows(FILE, {
-      chunkSize: CHUNK_SIZE,
-      delimiter: DELIMITER,
-      columns: SELECTED_COLUMNS,
-      workerCount: WORKERS,
-    })
-  ) {
-    consumeMaterializedRows(rows, result);
-  }
-  return result;
-}
-
 async function consumeMaterializedRowsFromRowsInto(): Promise<BenchResult> {
   using parser = new NativeCsvParser({ delimiter: DELIMITER });
   const rowsBuffer: string[][] = [];
@@ -124,7 +106,7 @@ async function consumeProjectedRowViewsBytes(): Promise<BenchResult> {
   const result = emptyResult();
   await withProjectedRowViews((row) => {
     ++result.rows;
-    for (const column of PROJECTED_COLUMNS) {
+    for (const column of row.selectedColumns) {
       const bytes = row.fieldBytes(column);
       if (bytes !== null) {
         ++result.fields;
@@ -214,7 +196,7 @@ async function consumeProjectedRowViewsStrings(): Promise<BenchResult> {
   const result = emptyResult();
   await withProjectedRowViews((row) => {
     ++result.rows;
-    for (const column of PROJECTED_COLUMNS) {
+    for (const column of row.selectedColumns) {
       const value = row.fieldString(column);
       if (value !== null) {
         ++result.fields;

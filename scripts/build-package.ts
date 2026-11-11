@@ -71,8 +71,6 @@ async function verifyPackageOutput(): Promise<void> {
     'index.js',
     'index.d.ts',
     'cli.js',
-    'workers/count.worker.js',
-    'workers/rows.worker.js',
   ] as const;
   for (const file of requiredFiles) {
     if (!(await Bun.file(join(distDirectory, file)).exists())) {

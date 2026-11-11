@@ -90,28 +90,6 @@ describe('fixed columns with projection and filters', () => {
     expect(await csv.count(validPath, { delimiter: ';', fixedColumns: 3 })).toBe(3);
   });
 
-  test('propagates fixed columns to parallel rows, counts and worker pools', async () => {
-    const options = {
-      chunkSize: 2,
-      columns: [2, 0] as const,
-      delimiter: ';',
-      fixedColumns: 3,
-      where: csv.column(0).equals('keep'),
-      workerCount: 2,
-    };
-    expect((await collect(csv.rows(validPath, options))).sort((a, b) => (a[0] ?? '').localeCompare(b[0] ?? ''))).toEqual([
-      ['1', 'keep'],
-      ['3', 'keep'],
-    ]);
-    await rejects(collect(csv.rows(invalidPath, options)), mismatch);
-    await rejects(collect(csv.rows(invalidPath, { ...options, columns: undefined, where: undefined })), mismatch);
-    await rejects(csv.count(invalidPath, options), mismatch);
-    await rejects(csv.count(invalidPath, { ...options, where: undefined }), mismatch);
-    using pool = csv.workerPool(invalidPath, options);
-    await rejects(collect(pool.rows()), mismatch);
-    await rejects(pool.count(), mismatch);
-  });
-
   test('validates fixed columns when counting chunks directly', () => {
     using parser = new NativeCsvParser({ delimiter: ';', fixedColumns: 3 });
     expect(parser.writeCount(Buffer.from('a;b;c\nx;'))).toBe(1);

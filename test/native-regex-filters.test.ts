@@ -77,45 +77,6 @@ describe('native RE2 filters', () => {
     expect(count).toBe(1);
   });
 
-  test('supports regex filters in worker count, rows, and reusable pools', async () => {
-    const path = csvFixturePath('api/quoted-people-sp-filter.csv');
-    const stateFilter = csv.column(2).hasMatch(/^(?:SP|RJ)$/);
-
-    expect(
-      await csv.count(path, {
-        delimiter: ';',
-        workerCount: 2,
-        where: stateFilter,
-      }),
-    ).toBe(3);
-
-    const rows: string[][] = [];
-    for await (
-      const batch of csv.rows(path, {
-        columns: [0, 1] as const,
-        delimiter: ';',
-        workerCount: 2,
-        where: csv.column(1).hasMatch(/^b/i),
-      })
-    ) {
-      rows.push(...batch);
-    }
-    expect(rows).toEqual([['3', 'Bia']]);
-
-    using pool = csv.workerPool(path, {
-      columns: [0, 1] as const,
-      delimiter: ';',
-      workerCount: 2,
-      where: stateFilter,
-    });
-    expect(await pool.count()).toBe(3);
-    const pooledRows: string[][] = [];
-    for await (const batch of pool.rows()) {
-      pooledRows.push(...batch);
-    }
-    expect(pooledRows.map((row) => row.join('|')).sort()).toEqual(['1|Ana', '2|Joao', '3|Bia']);
-  });
-
   test('limits native regex filters per operation', () => {
     const regex = csv.re(/x/);
     expect(() => normalizeNativeFilters(Array.from({ length: 33 }, () => ({ column: 0, regex })))).toThrow(

@@ -107,7 +107,7 @@ Both commands accept these file options:
 
 | Option                             | Behavior                                                                               |
 | ---------------------------------- | -------------------------------------------------------------------------------------- |
-| `--delimiter <value>`              | One safe ASCII character, or `auto` for serial file operations. Defaults to `,`.       |
+| `--delimiter <value>`              | One safe ASCII character, or `auto` for file operations. Defaults to `,`.              |
 | `--encoding <value>`               | `utf8` (default), `latin1`, `iso88591`, or `iso-8859-1`.                               |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                   |
 | `--compression <format>`           | `auto`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                  |
@@ -117,11 +117,11 @@ Both commands accept these file options:
 
 `--delimiter auto` detects comma, tab, semicolon, pipe, colon, caret, or tilde
 from a bounded prefix while ignoring separators inside quoted fields. Detection
-is available for serial file operations. Omit the option when comma is the
-input delimiter.
+is available for file operations. Omit the option when comma is the input
+delimiter.
 
-Compressed input is streamed into the parser. Worker pools, parallel
-operations, and byte-offset sharding require uncompressed input. ZIP input
+Compressed input is streamed into the parser. The advanced byte-boundary helpers
+in the TypeScript API require uncompressed input. ZIP input
 supports stored and DEFLATE entries; encrypted entries and other compression
 methods fail. ZIP options must be used together with `--compression zip` and a
 non-empty `--zip-entry`.
@@ -187,9 +187,8 @@ bunx @konstit/csv lines data.csv \
   --where-prefix 1=A --where-eq 2=SP
 ```
 
-The CLI runs one serial process and exposes string filter values. It does not
-expose `workerCount`; use the [TypeScript API](./api.md) for
-parallel operations and binary `Buffer` or `Uint8Array` operands.
+The CLI exposes string filter values. Use the [TypeScript API](./api.md) for
+advanced byte-boundary helpers and binary `Buffer` or `Uint8Array` operands.
 
 ## Advanced JSON filters
 

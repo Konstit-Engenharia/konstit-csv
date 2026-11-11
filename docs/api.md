@@ -43,8 +43,8 @@ console.log(rows);
 // ]
 ```
 
-`csv.parse()` accepts bytes, not a file path. Compression, automatic delimiter detection, and worker sharding are
-available through file APIs instead. Use `columns` to project and reorder fields:
+`csv.parse()` accepts bytes, not a file path. Compression and automatic delimiter detection are available through file
+APIs instead. Use `columns` to project and reorder fields:
 
 ```ts
 const names = await csv.parse(source, { columns: [1] as const });
@@ -53,8 +53,8 @@ const names = await csv.parse(source, { columns: [1] as const });
 
 ## Stream a local file
 
-`csv.rows()` returns an async generator. Each yielded value is one non-empty batch of materialized row arrays, so there
-are two loops:
+`csv.rows()` returns an async generator. Each yielded value is one non-empty batch of materialized row arrays, and both
+batches and rows are yielded in file order, so there are two loops:
 
 ```ts
 for await (const batch of csv.rows('data.csv')) {
@@ -64,12 +64,12 @@ for await (const batch of csv.rows('data.csv')) {
 }
 ```
 
-By default, you can retain batches and individual rows. Set `reuseArrays: true` on a serial stream to let the iterator
-refill the batch and its row arrays. Treat both as read-only and finish using them before requesting the next batch.
+By default, you can retain batches and individual rows. Set `reuseArrays: true` on a file stream to let the iterator refill
+the batch and its row arrays. Treat both as read-only and finish using them before requesting the next batch.
 Use `row.slice()` to keep a row or retain individual field strings directly.
 
-Serial streams preserve file order. The `count()` helper counts records without returning row arrays, including the
-header when one is present:
+File streams preserve file order, and `count()` counts records without returning row arrays, including the header when
+one is present:
 
 ```ts
 const totalRecords = await csv.count('data.csv');
@@ -84,9 +84,8 @@ The `csv` namespace provides these helpers:
 - `csv.withBatches(path, options, callback)` closes each native batch after the callback settles.
 - `csv.withRowViews(path, options, callback)` visits reusable row views without allocating one string array per row.
 - `csv.withColumnarBatches(path, options, callback)` visits reusable columnar batch views.
-- `csv.workerPool(path, options)` creates a reusable pool for repeated parallel row or count operations.
 - `csv.findCsvSafeSplitOffsets(path, count, options)` and `csv.findCsvSafeShards(path, count, options)` find record-safe
-  byte boundaries for independent processing.
+  byte boundaries for advanced applications that process file ranges themselves.
 
 `columns` contains zero-based physical input indexes and preserves the requested output order. The legacy
 `selectedColumns` spelling is still accepted, but the two properties cannot be supplied together.
@@ -94,7 +93,7 @@ The `csv` namespace provides these helpers:
 ## Filters
 
 Create filters with `csv.column(index)`. The index is a zero-based physical input column. A column builder can create
-many immutable predicates, and the resulting filter can be reused by row, count, and worker APIs:
+many immutable predicates, and the resulting filter can be reused by row and count APIs:
 
 ```ts
 const state = csv.column(2);
@@ -138,8 +137,8 @@ full-field match. Patterns are limited to 4096 UTF-8 bytes, and one operation ca
 
 ## Compression and delimiter detection
 
-Serial file operations stream `gzip`, `deflate`, `deflate-raw`, Brotli, Zstandard, and ZIP input into the parser. Use an
-explicit format or `compression: 'auto'`:
+File operations stream `gzip`, `deflate`, `deflate-raw`, Brotli, Zstandard, and ZIP input into the parser. Use an explicit
+format or `compression: 'auto'`:
 
 ```ts
 for await (const batch of csv.rows('data.csv.gz', { compression: 'auto' })) {
@@ -160,20 +159,19 @@ directories are ignored. Encrypted entries and methods other than stored and DEF
 by default to 64 GiB and a declared compression ratio of 1000; use `maxDecompressedBytes` and `maxCompressionRatio`
 to apply stricter limits or to permit a larger trusted entry.
 
-`delimiter: 'auto'` is supported for serial file operations. Detection probes at most 64 KiB of decompressed input,
+`delimiter: 'auto'` is supported for file operations. Detection probes at most 64 KiB of decompressed input,
 ignores separators inside quoted fields, and considers comma, tab, semicolon, pipe, colon, caret, and tilde. File
 extensions such as `.csv`, `.tsv`, `.tab`, and `.psv` are confirmed hints and can resolve an otherwise tied result,
 including before a compression suffix such as `.gz`. Empty, single-column, inconsistent, and ambiguous probes fail;
-specify a delimiter explicitly in those cases. Omitted `delimiter` remains comma. In-memory parsing and worker or
-byte-sharded operations use a fixed one-character delimiter, defaulting to comma.
+specify a delimiter explicitly in those cases. Omitted `delimiter` remains comma. In-memory parsing and the byte-boundary
+helpers use a fixed one-character delimiter, defaulting to comma.
 
 `compression: 'auto'` reads at most four prefix bytes and combines supported signatures with `.gz`, `.gzip`, `.zst`,
 `.zstd`, `.br`, `.zz`, `.zlib`, `.deflate`, and `.deflate-raw` extensions. Signature and extension mismatches fail. A
 `.deflate` file without a zlib wrapper requires explicit `compression: 'deflate-raw'`.
 
-Compressed input and automatic delimiter detection are serial-only. Byte-offset sharding powers parallel operations,
-but it requires an uncompressed file and a fixed one-character delimiter. Worker operations cannot combine with
-compression or `delimiter: 'auto'`.
+Compressed input and automatic delimiter detection are supported by the file APIs. The byte-boundary helpers require an
+uncompressed file and a fixed one-character delimiter.
 
 The parser decodes UTF-8 by default. For the repository's large Latin-1 corpus, pass `encoding: 'latin1'` (the
 `iso88591` and `iso-8859-1` spellings select the same decoder):
@@ -190,47 +188,37 @@ for await (
 }
 ```
 
-## Parallel operations and worker pools
+## Record-safe byte boundaries
 
-Set `workerCount` above one on `csv.rows()` or `csv.count()` to process record-safe shards with Bun workers. The input
-must be uncompressed, use a fixed delimiter (comma by default), and use non-strict validation. Parallel row batches are yielded as
-workers report them, so they do not have a global file-order guarantee. Use `parallelRows()` or `parallelCount()` when
-you want the parallel API as a separate root export.
-
-```ts
-for await (
-  const batch of csv.rows('data.csv', {
-    workerCount: 2,
-    where: csv.column(2).isOneOf(['SP', 'RJ']),
-  })
-) {
-  console.log(batch);
-}
-
-const count = await csv.count('data.csv', { workerCount: 2 });
-```
-
-Use a pool when repeated operations should reuse worker startup:
+Advanced applications that process an uncompressed CSV file in their own pipeline can use the boundary helpers to avoid
+starting a range in the middle of a quoted record. `findCsvSafeSplitOffsets()` returns record-safe starts plus the
+terminal file boundary. `findCsvSafeShards()` returns the same boundaries as non-empty inclusive `{ start, end }` ranges.
+These helpers only calculate offsets and ranges. They do not parse the ranges or schedule processing.
 
 ```ts
-using pool = csv.workerPool('data.csv', {
-  workerCount: 2,
-  columns: [0, 2] as const,
-});
+const offsets = csv.findCsvSafeSplitOffsets('data.csv', 4, { delimiter: ',' });
+const shards = csv.findCsvSafeShards('data.csv', 4, { delimiter: ',' });
 
-console.log(await pool.count());
-for await (const batch of pool.rows()) {
-  console.log(batch);
-}
+console.log(offsets);
+console.log(shards);
 ```
 
-Close a pool when it is no longer needed, or use `using` as above. Pools capture their options at construction and do
-not support compression, automatic delimiter detection, or strict validation.
+The delimiter must be one character, and compressed input and automatic delimiter detection are not supported for these
+helpers. A small file can produce fewer non-empty shards than requested.
+
+## Migration from removed worker APIs
+
+Replace `parallelRows()` and `parallelCount()` with `csv.rows()` and `csv.count()`, and remove `workerCount` from
+their options. For a `workerPool()` or `CsvWorkerPool` call site, pass the file path and options directly to
+`csv.rows()` or `csv.count()` each time. Row batches arrive in file order.
+
+Replace `CsvParallelRowsOptions`, `CsvParallelCountOptions`, and `CsvWorkerPoolOptions` with `CsvRowsOptions` or
+`CsvCountOptions` for the corresponding operation. `CsvSingleThreadRowsOptions` is an alias for `CsvRowsOptions`.
 
 ## Strict validation
 
-Set `strict: true` to validate RFC-style quote syntax. This applies to `csv.parse()`, serial `csv.rows()`, serial batches,
-and unfiltered serial counts:
+Set `strict: true` to validate RFC-style quote syntax. This applies to `csv.parse()`, `csv.rows()`, batches, and
+unfiltered counts:
 
 ```ts
 await csv.parse(
@@ -269,8 +257,8 @@ const checked = await csv.parse(source, {
 `minDataRows` counts records after the first row. The header remains in the returned rows and in `csv.count()`; these
 options validate it rather than remove it.
 
-Strict validation cannot be combined with `where` or worker sharding. Strict selected columns are supported by materialized
-rows. Native projected-batch methods do not support strict mode, and columnar-batch callbacks reject strict mode when
+Strict validation cannot be combined with `where`. Strict selected columns are supported by materialized rows. Native
+projected-batch methods do not support strict mode, and columnar-batch callbacks reject strict mode when
 `columns` is supplied.
 
 ## Typed options and configuration snapshots
@@ -300,8 +288,8 @@ for await (const batch of csv.rows('data.csv', rowOptions)) {
 console.log(await csv.count('data.csv', countOptions));
 ```
 
-The public option types reject unsupported combinations, including strict filters, strict workers, compressed workers,
-and using both `columns` and `selectedColumns`. Projection and filter indexes are integers from `0` through `2024`; a
+The public option types reject unsupported combinations, including strict filters and using both `columns` and
+`selectedColumns`. Projection and filter indexes are integers from `0` through `2024`; a
 projection may contain at most 2024 unique columns. A filter program may contain at most 2024 predicates and 4096 total
 predicates and Boolean operators. Invalid values fail before parsing starts.
 
@@ -309,8 +297,7 @@ File and in-memory operations snapshot their options when called, before asynchr
 expected headers, and nested ZIP settings are copied, so later mutation of the original options does not affect an active
 operation. The option types are readonly, but this is a type-level contract rather than a runtime freeze: caller-owned
 objects remain mutable. Filters created by `csv.column()`, `csv.all()`, `csv.any()`, and `csv.not()` are immutable and
-reusable. Start a new operation to apply changed settings; a worker pool similarly uses the configuration captured when
-it was created.
+reusable. Start a new operation to apply changed settings.
 
 ## Native batches and reusable views
 
@@ -362,11 +349,10 @@ await csv.withRowViews(
 
 `withRowViews()` invokes a synchronous callback for each row. Its reusable view is invalid when the callback returns.
 Read strings or copy raw bytes before returning if the values must outlive the callback; do not retain the view.
-It does not support workers.
 
 `withColumnarBatches()` follows the same lifetime rule for a reusable columnar view. Its callback must be synchronous,
 its raw buffers may alias native storage, and data that must outlive the callback must be copied. It does not support
-workers or strict validation with selected columns.
+strict validation with selected columns.
 
 `rowOffsets()` and `fieldOffsets()` return `BigUint64Array`. Convert an offset to `number` only after checking it is within
 `Number.MAX_SAFE_INTEGER` and the associated backing data. Columnar `scanColumns()` supplies JavaScript-safe numeric

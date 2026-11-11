@@ -27,8 +27,6 @@ export type {
   CsvNativeProjectionOptions,
   CsvNotEqualsFilter,
   CsvNotInFilter,
-  CsvParallelCountOptions,
-  CsvParallelRowsOptions,
   CsvParseOptions,
   CsvParserOptions,
   CsvProjectedRow,
@@ -44,23 +42,18 @@ export type {
   CsvShardingOptions,
   CsvSingleThreadRowsOptions,
   CsvStartsWithFilter,
-  CsvWorkerPoolOptions,
   CsvZipCompression,
   NativeCsvRowCallback,
 } from './types.js';
 
 export {
   csv,
-  CsvWorkerPool,
   findCsvSafeShards,
   findCsvSafeSplitOffsets,
   forEachColumnarBatches,
   forEachRowViews,
-  parallelCount,
-  parallelRows,
   withColumnarBatches,
   withRowViews,
-  workerPool,
 } from './api.js';
 export { NativeCsvBatch, NativeCsvRowView } from './batches.js';
 export { countCsvFile, countTrustedNewlineRows, parseCsvBuffer, parseCsvFile, parseCsvFileProjected } from './files.js';

@@ -305,7 +305,7 @@ function parseCountInput(arguments_: readonly string[]): CountInput {
   }
 
   const options = parseCommonOptions(values);
-  if (!isCountOptions(options)) {
+  if (!areFileOptionsCompatible(options)) {
     throw new Error('count options are incompatible');
   }
 
@@ -343,7 +343,7 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
     }
     options.chunkSize = 1;
   }
-  if (!isRowsOptions(options)) {
+  if (!areFileOptionsCompatible(options)) {
     throw new Error('lines options are incompatible');
   }
   const json = values.json === true;
@@ -508,18 +508,8 @@ function validateCountOptionCombinations(options: CsvApiFileOptions): void {
   }
 }
 
-function isCountOptions(options: CsvApiFileOptions): options is CsvCountOptions {
+function areFileOptionsCompatible(options: CsvApiFileOptions): options is CsvCountOptions {
   if (options.columns !== undefined && options.selectedColumns !== undefined) {
-    return false;
-  }
-  return options.strict !== true || options.where === undefined;
-}
-
-function isRowsOptions(options: CsvApiFileOptions): options is CsvRowsOptions<CsvColumns | undefined> {
-  if (options.columns !== undefined && options.selectedColumns !== undefined) {
-    return false;
-  }
-  if (options.workerCount !== undefined && options.workerCount !== 1) {
     return false;
   }
   return options.strict !== true || options.where === undefined;
