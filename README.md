@@ -1,12 +1,15 @@
 # @konstit/csv
 
 A CSV toolkit for Bun with native parsing, streaming file access, filtering, and column selection.
+The parser reads RFC 4180 CSV and passes the csv-spectrum compatibility tests and selected W3C CSVW parsing tests.
 
 [Quick start](#quick-start) · [Choose an API](#choose-an-api) · [CLI](#cli) · [Documentation](#documentation)
 
 - Stream large files in batches, or parse a buffer you already have in memory.
 - Filter records and select columns before materializing results as JavaScript rows.
-- Read compressed input, detect delimiters, and decode the encodings supported by Bun's `TextDecoder`.
+- Read compressed input and detect delimiters.
+- Read many encodings out of the box, including Windows-1252, UTF-16LE, and Shift_JIS. UTF-8 (the default) and
+  Latin-1 use native fast paths.
 - Use native batches and reusable views for low-allocation access.
 
 ## Installation
