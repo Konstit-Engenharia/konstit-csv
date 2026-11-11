@@ -198,6 +198,46 @@ describe('private Latin1 row materialization compatibility', () => {
     }
   });
 
+  test('keeps mixed quoted-span rows correct through rejection, reuse and iterator completion', async () => {
+    const binary = '\0\x80\x9fÿ';
+    const path = join(directory, 'quoted-span-mixed.csv');
+    const input = [
+      `"keep";"first";"${binary}";""\n`,
+      '"drop";"rejected";"ignored";"ignored"\n',
+      '"keep";"";"";""\n',
+      '"keep";"escaped ""quote""";"line\nbreak";"tail"\n',
+      '"keep";"ragged"\n',
+      '"keep";"crlf";"é";"end"\r\n',
+      '"keep";"eof";"\0ÿ";"last"',
+    ].join('');
+    const expected = [
+      ['keep', 'first', binary, ''],
+      ['keep', '', '', ''],
+      ['keep', 'escaped "quote"', 'line\nbreak', 'tail'],
+      ['keep', 'ragged'],
+      ['keep', 'crlf', 'é', 'end'],
+      ['keep', 'eof', '\0ÿ', 'last'],
+    ];
+
+    await Bun.write(path, Buffer.from(input, 'latin1'));
+    for (const chunkSize of [1, 17, 64, input.length]) {
+      const stream = csv.rows(path, {
+        chunkSize,
+        delimiter: ';',
+        encoding: 'latin1',
+        reuseArrays: true,
+        where: csv.column(0).equals('keep'),
+      });
+      const snapshots: string[][] = [];
+      for await (const batch of stream) {
+        for (const row of batch) {
+          snapshots.push(row.slice());
+        }
+      }
+      expect(snapshots).toEqual(expected);
+    }
+  });
+
   test('validates physical Latin1 rows before projection and filtering', async () => {
     const path = join(directory, 'fixed.csv');
     const where = csv.column(0).equals('café');

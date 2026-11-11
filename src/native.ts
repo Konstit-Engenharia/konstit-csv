@@ -415,6 +415,29 @@ const LATIN1_ROWS_SYMBOLS = {
 
 let latin1RowsNative: Library<typeof LATIN1_ROWS_SYMBOLS> | null | undefined;
 
+const QUOTED_SPAN_SYMBOLS = {
+  // C signature:
+  // void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter);
+  csv_parser_create_latin1_rows_with_quoted_spans: { args: ['u8'], returns: 'ptr' },
+  // C signature:
+  // const uint8_t* csv_batch_quoted_rows_ptr(void* batch);
+  csv_batch_quoted_rows_ptr: { args: ['ptr'], returns: 'ptr' },
+} as const;
+
+let quotedSpanNative: Library<typeof QUOTED_SPAN_SYMBOLS> | null | undefined;
+
+export function optionalQuotedSpanNative(): Library<typeof QUOTED_SPAN_SYMBOLS> | null {
+  if (quotedSpanNative === undefined) {
+    try {
+      quotedSpanNative = dlopen(nativeLibraryPath, QUOTED_SPAN_SYMBOLS);
+    } catch {
+      // Earlier libraries return batches containing decoded field bytes only.
+      quotedSpanNative = null;
+    }
+  }
+  return quotedSpanNative;
+}
+
 const FIXED_LATIN1_ROWS_SYMBOLS = {
   // C signature:
   // void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
@@ -437,6 +460,10 @@ export function optionalLatin1RowsParser(fixedColumns: number | undefined): ((de
     }
     const create = fixedLatin1RowsNative?.symbols.csv_parser_create_latin1_rows_with_fixed_columns;
     return create === undefined ? undefined : (delimiter) => create(delimiter, fixedColumns);
+  }
+  const quotedSpanParser = optionalQuotedSpanNative()?.symbols.csv_parser_create_latin1_rows_with_quoted_spans;
+  if (quotedSpanParser !== undefined) {
+    return quotedSpanParser;
   }
   if (latin1RowsNative === undefined) {
     try {

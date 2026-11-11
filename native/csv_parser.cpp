@@ -32,6 +32,8 @@ enum class csv_encoding : int {
   latin1 = 1,
 };
 
+enum class batch_layout { utf8, latin1, latin1_quoted_spans };
+
 enum class output_mode {
   batch,
   count,
@@ -74,6 +76,7 @@ struct row_filter {
 struct csv_batch {
   std::vector<uint64_t> row_offsets{0};
   std::vector<uint64_t> field_offsets{0};
+  std::vector<uint8_t> quoted_rows;
   std::string data;
 
   void reserve(size_t input_len, csv_encoding encoding) {
@@ -562,8 +565,9 @@ uint64_t clear_mask_bits_through(uint64_t bits, size_t lane) {
 
 class csv_parser {
 public:
-  csv_parser(csv_encoding encoding, uint8_t delimiter, bool preserve_latin1 = false, uint32_t fixed_columns = 0)
-      : encoding_(encoding), delimiter_(delimiter), preserve_latin1_(preserve_latin1), fixed_columns_(fixed_columns) {}
+  csv_parser(csv_encoding encoding, uint8_t delimiter, batch_layout layout = batch_layout::utf8,
+             uint32_t fixed_columns = 0)
+      : encoding_(encoding), delimiter_(delimiter), layout_(layout), fixed_columns_(fixed_columns) {}
 
   bool prepare_configuration(const uint32_t* selected_columns, size_t selected_columns_len,
                              std::vector<row_filter> filters, const uint8_t* values_data, size_t values_data_len,
@@ -622,6 +626,9 @@ public:
     direct_projection_ = prepared_direct_projection_;
     restore_direct_projection_row();
     parse_projected_batch(data, len, final, prepared_quoted_records_);
+    if (!batch->quoted_rows.empty()) {
+      batch->quoted_rows.resize(batch->row_offsets.size() - 1, 0);
+    }
     batch_ = nullptr;
     return parse_failed_ ? nullptr : batch.release();
   }
@@ -1271,16 +1278,27 @@ private:
     }
 
     size_t output = batch_->data.size();
-    // Each field has two quotes and one terminator (delimiter or LF).
-    const size_t payload_size = cursor - 3 * field_count;
-    batch_->data.resize(output + payload_size);
-    for (size_t column = 0; column < field_count; ++column) {
-      const auto field = field_at(column);
-      if (!field.empty()) {
-        std::memcpy(batch_->data.data() + output, field.data(), field.size());
+    if (layout_ == batch_layout::latin1_quoted_spans) {
+      // Each span includes its opening quote, closing quote and one terminator.
+      batch_->data.append(reinterpret_cast<const char*>(data), cursor);
+      const size_t first = batch_->field_offsets.size();
+      batch_->field_offsets.resize(first + field_count);
+      for (size_t column = 0; column < field_count; ++column) {
+        batch_->field_offsets[first + column] = output + ends[column] + 2;
       }
-      output += field.size();
-      batch_->field_offsets.push_back(output);
+      batch_->quoted_rows.resize(batch_->row_offsets.size(), 0);
+      batch_->quoted_rows.back() = 1;
+    } else {
+      const size_t payload_size = cursor - 3 * field_count;
+      batch_->data.resize(output + payload_size);
+      for (size_t column = 0; column < field_count; ++column) {
+        const auto field = field_at(column);
+        if (!field.empty()) {
+          std::memcpy(batch_->data.data() + output, field.data(), field.size());
+        }
+        output += field.size();
+        batch_->field_offsets.push_back(output);
+      }
     }
     finish_batch_row();
     ++emitted_rows_;
@@ -1288,7 +1306,7 @@ private:
   }
 
   bool supports_quoted_records() const {
-    if (!preserve_latin1_ || !conjunctive_filters_ || projection_enabled_ || fixed_columns_ != 0) {
+    if (layout_ == batch_layout::utf8 || !conjunctive_filters_ || projection_enabled_ || fixed_columns_ != 0) {
       return false;
     }
     for (const auto& filter : filters_) {
@@ -1980,11 +1998,11 @@ private:
     }
 
     // Private row materialization stores Latin1 bytes, but predicates always consume UTF-8.
-    if (preserve_latin1_ && is_filter_column(current_column_)) {
+    if (layout_ != batch_layout::utf8 && is_filter_column(current_column_)) {
       utf8_filter_field_.clear();
       append_latin1(utf8_filter_field_, reinterpret_cast<const uint8_t*>(field_.data()), field_.size());
     }
-    const std::string& filter_field = preserve_latin1_ ? utf8_filter_field_ : field_;
+    const std::string& filter_field = layout_ != batch_layout::utf8 ? utf8_filter_field_ : field_;
     bool changed = false;
     for (uint32_t filter_index = first_filter_by_column_[current_column_];
          filter_index != std::numeric_limits<uint32_t>::max(); filter_index = next_filter_[filter_index]) {
@@ -2282,7 +2300,7 @@ private:
 
   csv_encoding encoding_;
   uint8_t delimiter_;
-  const bool preserve_latin1_;
+  const batch_layout layout_;
   std::string utf8_filter_field_;
   output_mode mode_ = output_mode::batch;
   csv_batch* batch_ = nullptr;
@@ -2576,11 +2594,20 @@ CSV_EXPORT void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimi
   if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
     return nullptr;
   }
-  return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter, true, fixed_columns);
+  return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter, csv_native::batch_layout::latin1,
+                                    fixed_columns);
 }
 
 CSV_EXPORT void* csv_parser_create_latin1_rows(uint8_t delimiter) {
   return csv_parser_create_latin1_rows_with_fixed_columns(delimiter, 0);
+}
+
+CSV_EXPORT void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter) {
+  if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
+    return nullptr;
+  }
+  return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter,
+                                    csv_native::batch_layout::latin1_quoted_spans);
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }
@@ -2857,6 +2884,12 @@ CSV_EXPORT const uint64_t* csv_batch_field_offsets_ptr(void* batch) {
     return nullptr;
   }
   return static_cast<const csv_native::csv_batch*>(batch)->field_offsets.data();
+}
+
+// Null for an all-decoded batch. Otherwise there is one 0/1 flag per output row.
+CSV_EXPORT const uint8_t* csv_batch_quoted_rows_ptr(void* batch) {
+  const auto* typed = csv_native::checked_batch(batch);
+  return typed == nullptr || typed->quoted_rows.empty() ? nullptr : typed->quoted_rows.data();
 }
 
 CSV_EXPORT uint64_t csv_batch_count_where_equals(void* batch, uint32_t column, const uint8_t* value,

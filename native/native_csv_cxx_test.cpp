@@ -15,6 +15,7 @@ extern "C" {
 int csv_runtime_supports_avx2();
 void* csv_parser_create(int encoding, uint8_t delimiter);
 void* csv_parser_create_latin1_rows(uint8_t delimiter);
+void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter);
 void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
 void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
@@ -60,6 +61,7 @@ uint64_t csv_batch_row_count(void* batch);
 uint64_t csv_batch_total_fields(void* batch);
 uint64_t csv_batch_data_len(void* batch);
 const uint8_t* csv_batch_data_ptr(void* batch);
+const uint8_t* csv_batch_quoted_rows_ptr(void* batch);
 const uint64_t* csv_batch_row_offsets_ptr(void* batch);
 const uint64_t* csv_batch_field_offsets_ptr(void* batch);
 uint64_t csv_split_offsets_batch_count(void* batch);
@@ -156,14 +158,24 @@ void require_two_field_batch(void* batch, std::string_view first, std::string_vi
   REQUIRE(field_offsets[2] == expected.size());
 }
 
-void append_batch_rows(void* batch, std::vector<std::vector<std::string>>& rows) {
+void append_batch_rows(void* batch, std::vector<std::vector<std::string>>& rows,
+                       std::vector<uint8_t>* quoted_flags = nullptr) {
   REQUIRE(batch != nullptr);
   const uint64_t* row_offsets = csv_batch_row_offsets_ptr(batch);
   const uint64_t* field_offsets = csv_batch_field_offsets_ptr(batch);
   const uint8_t* data = csv_batch_data_ptr(batch);
+  const uint8_t* flags = csv_batch_quoted_rows_ptr(batch);
+  if (quoted_flags == nullptr) {
+    REQUIRE(flags == nullptr);
+  }
   REQUIRE(row_offsets[0] == 0);
   REQUIRE(field_offsets[0] == 0);
   for (uint64_t row = 0; row < csv_batch_row_count(batch); ++row) {
+    const uint8_t quoted = flags == nullptr ? 0 : flags[row];
+    if (quoted_flags != nullptr) {
+      REQUIRE(quoted <= 1);
+      quoted_flags->push_back(quoted);
+    }
     auto& fields = rows.emplace_back();
     REQUIRE(row_offsets[row] <= row_offsets[row + 1]);
     REQUIRE(row_offsets[row + 1] <= csv_batch_total_fields(batch));
@@ -172,7 +184,13 @@ void append_batch_rows(void* batch, std::vector<std::vector<std::string>>& rows)
       const uint64_t end = field_offsets[field + 1];
       REQUIRE(start <= end);
       REQUIRE(end <= csv_batch_data_len(batch));
-      fields.emplace_back(reinterpret_cast<const char*>(data + start), end - start);
+      if (quoted) {
+        REQUIRE(end - start >= 3);
+        REQUIRE(data[start] == '"');
+        REQUIRE(data[end - 2] == '"');
+        REQUIRE(data[end - 1] == (field + 1 == row_offsets[row + 1] ? '\n' : ';'));
+      }
+      fields.emplace_back(reinterpret_cast<const char*>(data + start + quoted), end - start - 3 * quoted);
     }
   }
   REQUIRE(row_offsets[csv_batch_row_count(batch)] == csv_batch_total_fields(batch));
@@ -1052,14 +1070,23 @@ TEST_CASE("prepared Latin-1 rows match ASCII predicates across quoted records, f
   const auto* data = reinterpret_cast<const uint8_t*>(input.data());
   for (size_t split = 0; split <= input.size(); ++split) {
     CAPTURE(split);
-    void* parser = csv_parser_create_latin1_rows(';');
-    REQUIRE(parser != nullptr);
-    REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, filters, 3, values, 3, offsets, 2));
-    std::vector<std::vector<std::string>> actual;
-    append_batch_rows(csv_parser_write_prepared_batch(parser, data, split, false), actual);
-    append_batch_rows(csv_parser_write_prepared_batch(parser, data + split, input.size() - split, true), actual);
-    csv_parser_destroy(parser);
-    REQUIRE(actual == expected);
+    for (bool spans : {false, true}) {
+      void* parser = spans ? csv_parser_create_latin1_rows_with_quoted_spans(';') : csv_parser_create_latin1_rows(';');
+      REQUIRE(parser != nullptr);
+      REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, filters, 3, values, 3, offsets, 2));
+      std::vector<std::vector<std::string>> actual;
+      std::vector<uint8_t> flags;
+      append_batch_rows(csv_parser_write_prepared_batch(parser, data, split, false), actual, spans ? &flags : nullptr);
+      append_batch_rows(csv_parser_write_prepared_batch(parser, data + split, input.size() - split, true), actual,
+                        spans ? &flags : nullptr);
+      csv_parser_destroy(parser);
+      REQUIRE(actual == expected);
+      if (spans && split == input.size()) {
+        REQUIRE(flags.front() == 1);
+        REQUIRE(flags[1] == 0);     // escaped quotes
+        REQUIRE(flags.back() == 0); // EOF without a terminator
+      }
+    }
   }
 }
 

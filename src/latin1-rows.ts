@@ -3,6 +3,7 @@ import {
   EMPTY_BUFFER,
   native,
   type NativePointer,
+  optionalQuotedSpanNative,
   requirePtr,
   toArrayBuffer,
   u64ToSafeNumber,
@@ -84,18 +85,26 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
     const fieldOffsets = new Uint32Array(
       toArrayBuffer(requirePtr(native.symbols.csv_batch_field_offsets_ptr(batch)), 0, (totalFields + 1) * 8),
     );
+    const flags = optionalQuotedSpanNative()?.symbols.csv_batch_quoted_rows_ptr(batch);
+    const quotedRows = flags == null ? undefined : new Uint8Array(toArrayBuffer(flags, 0, rowCount));
     const rows: CsvRow[] = reusableRows ?? [];
     rows.length = rowCount;
     let fieldStart = checkedOffset(rowOffsets, 0, totalFields);
     let start = checkedOffset(fieldOffsets, fieldStart, dataLength);
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldEnd = checkedOffset(rowOffsets, rowIndex + 1, totalFields);
+      // A raw span starts with a quote and ends with a quote and delimiter or LF.
+      const leading = quotedRows?.[rowIndex] ?? 0;
+      const trailing = leading * 2;
       const row = reusableRows?.[rowIndex] ?? [];
       row.length = fieldEnd - fieldStart;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
         const end = checkedOffset(fieldOffsets, fieldIndex + 1, dataLength);
+        if (end - trailing < start + leading) {
+          throw new RangeError('CSV field span exceeds its backing range');
+        }
         // Decode fields independently so retaining one value cannot pin a whole batch string.
-        row[fieldIndex - fieldStart] = decodeMaterializedField(bytes, start, end, 'latin1');
+        row[fieldIndex - fieldStart] = decodeMaterializedField(bytes, start + leading, end - trailing, 'latin1');
         start = end;
       }
       rows[rowIndex] = row;
