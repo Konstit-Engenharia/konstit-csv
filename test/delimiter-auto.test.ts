@@ -96,6 +96,18 @@ describe('automatic delimiter detection', () => {
     ).toBe(3);
   });
 
+  test('replays ordered rows across the probe and reused read-ahead buffers', async () => {
+    const path = join(temporaryDirectory, 'large.tsv');
+    let index = 0;
+    for await (const batch of csv.rows(path, { chunkSize: 997, delimiter: 'auto', reuseArrays: true })) {
+      for (const row of batch) {
+        expect(row).toEqual(index === 0 ? ['id', 'value'] : [String(index - 1), `value-${index - 1}`]);
+        ++index;
+      }
+    }
+    expect(index).toBe(10_001);
+  });
+
   test('supports batch callbacks, filtered counts, and direct file helpers', async () => {
     const batchRows: string[][] = [];
     for await (using batch of csv.batches(semicolonPath, { delimiter: 'auto' })) {

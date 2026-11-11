@@ -49,6 +49,12 @@ afterAll(async () => {
 });
 
 describe('serial csv.rows array ownership', () => {
+  test('rejects invalid read-ahead sizes before reading the file', async () => {
+    for (const chunkSize of [0, -1, 1.5, NaN, Infinity]) {
+      await rejects(csv.rows(bytesPath, { chunkSize }).next(), /chunkSize must be a positive safe integer/);
+    }
+  });
+
   for (const encoding of ['utf8', 'latin1'] as const) {
     const chunkSize = Buffer.byteLength('é,x,y\nß\n', encoding);
 

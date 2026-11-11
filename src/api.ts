@@ -145,7 +145,7 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
   const filters = toNativeFilters(options.where);
   const columns = selectedColumns(options);
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
-  await using input = await prepareCsvFileInput(path, options);
+  await using input = await prepareCsvFileInput(path, options, 'read-ahead');
   const parserOptions = toParserOptions(options, input.delimiter);
   const validator = strictSchemaValidator(options);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;

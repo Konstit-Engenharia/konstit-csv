@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
@@ -52,8 +53,12 @@ interface StableDelimiterCandidate {
 export async function prepareCsvFileInput(
   path: string,
   suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter'>,
+  readMode: 'stream' | 'read-ahead' = 'stream',
 ): Promise<CsvFileInput> {
   const options = snapshotCsvOptions(suppliedOptions);
+  const readAhead = readMode === 'read-ahead' && options.compression === undefined
+    ? readAheadFileChunks(path, options.chunkSize ?? DEFAULT_CHUNK_SIZE)
+    : undefined;
   const configuredDelimiter = options.delimiter ?? ',';
   if (configuredDelimiter !== 'auto') {
     let opened = false;
@@ -64,7 +69,7 @@ export async function prepareCsvFileInput(
           throw new Error('CSV file input can only be read once');
         }
         opened = true;
-        return readCsvFileChunks(path, options);
+        return readAhead ?? readCsvFileChunks(path, options);
       },
       [Symbol.asyncDispose](): Promise<void> {
         return Promise.resolve();
@@ -72,7 +77,7 @@ export async function prepareCsvFileInput(
     };
   }
 
-  const iterator = readCsvFileChunks(path, options)[Symbol.asyncIterator]();
+  const iterator = (readAhead ?? readCsvFileChunks(path, options))[Symbol.asyncIterator]();
   const bufferedChunks: Uint8Array[] = [];
   let bufferedByteLength = 0;
   let sourceEnded = false;
@@ -87,8 +92,11 @@ export async function prepareCsvFileInput(
       if (result.value.byteLength === 0) {
         continue;
       }
-      bufferedChunks.push(result.value);
       bufferedByteLength += result.value.byteLength;
+      // A later read can overwrite a probe chunk. The last chunk is replayed before reading resumes.
+      bufferedChunks.push(
+        readAhead !== undefined && bufferedByteLength < DELIMITER_PROBE_SIZE ? new Uint8Array(result.value) : result.value,
+      );
     }
 
     const probe = copyProbePrefix(bufferedChunks, bufferedByteLength);
@@ -110,6 +118,38 @@ export async function prepareCsvFileInput(
   } catch (error) {
     await closeCsvFileIterator(iterator);
     throw error;
+  }
+}
+
+// The row parser consumes each chunk before advancing this iterator.
+async function* readAheadFileChunks(path: string, chunkSize: number): AsyncGenerator<Buffer, void> {
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+    throw new RangeError('chunkSize must be a positive safe integer');
+  }
+  await using file = await open(path, 'r');
+  if (!(await file.stat()).isFile()) {
+    // Pipes and devices can block indefinitely on a speculative read.
+    const buffer = Buffer.allocUnsafe(chunkSize);
+    while (true) {
+      const { bytesRead } = await file.read(buffer);
+      if (bytesRead === 0) {
+        return;
+      }
+      yield buffer.subarray(0, bytesRead);
+    }
+  }
+
+  let current = Buffer.allocUnsafe(chunkSize);
+  let spare = Buffer.allocUnsafe(chunkSize);
+  let { bytesRead } = await file.read(current);
+  while (bytesRead > 0) {
+    const pending = file.read(spare);
+    // Advancing reports the read error even if it arrives while the consumer is suspended.
+    // FileHandle disposal waits for the pending read on early return.
+    void pending.catch(() => {});
+    yield bytesRead === current.length ? current : current.subarray(0, bytesRead);
+    bytesRead = (await pending).bytesRead;
+    [current, spare,] = [spare, current];
   }
 }
 
