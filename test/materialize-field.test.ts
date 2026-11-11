@@ -4,6 +4,22 @@ import {
 } from 'bun:test';
 import { decodeMaterializedField } from '../src/materialize-field.ts';
 
+test('materialized Latin-1 fields own their bytes across source buffer reuse', () => {
+  const bytes = Buffer.alloc(8192);
+  const lengths = [0, 1, 2, 3, 7, 8, 31, 257, 4097];
+  const retained: string[] = [];
+  const expected: string[] = [];
+  for (const length of lengths) {
+    for (let i = 0; i < length; ++i) {
+      bytes[5 + i] = (i + length) & 255;
+    }
+    expected.push(bytes.toString('latin1', 5, 5 + length));
+    retained.push(decodeMaterializedField(bytes, 5, 5 + length, 'latin1'));
+    bytes.fill(0);
+  }
+  expect(retained).toEqual(expected);
+});
+
 for (const encoding of ['utf8', 'latin1'] as const) {
   test(`shared materialization matches every one-byte and two-byte ${encoding} value`, () => {
     const data = Buffer.alloc(4);

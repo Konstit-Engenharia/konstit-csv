@@ -1,4 +1,8 @@
 const LATIN1_SINGLE: readonly string[] = Array.from({ length: 256 }, (_, byte) => String.fromCharCode(byte));
+// Bun's encoding-specific Buffer method copies just the requested byte range.
+type Latin1Slice = (this: Buffer, start: number, end: number) => string;
+const bufferPrototype: Buffer & { latin1Slice?: Latin1Slice; } = Buffer.prototype;
+const latin1Slice = bufferPrototype.latin1Slice;
 // The module owns at most 16,384 immutable two-byte strings. Keys are the bytes,
 // not batch offsets, so mutations and batch disposal never invalidate an entry.
 // ASCII entries have the same value for both supported encodings.
@@ -28,6 +32,9 @@ export function decodeMaterializedField(data: Buffer, start: number, end: number
       ASCII_PAIRS[key] = decoded;
       return decoded;
     }
+  }
+  if (encoding === 'latin1' && typeof latin1Slice === 'function') {
+    return latin1Slice.call(data, start, end);
   }
   return data.toString(encoding, start, end);
 }

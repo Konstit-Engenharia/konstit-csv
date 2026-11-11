@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(_WIN32)
@@ -605,6 +606,7 @@ public:
     }
     prepared_configuration_ = true;
     prepared_direct_projection_ = direct_projection_;
+    prepared_quoted_records_ = supports_quoted_records();
     return true;
   }
 
@@ -619,7 +621,7 @@ public:
     batch_ = batch.get();
     direct_projection_ = prepared_direct_projection_;
     restore_direct_projection_row();
-    parse_projected_batch(data, len, final);
+    parse_projected_batch(data, len, final, prepared_quoted_records_);
     batch_ = nullptr;
     return parse_failed_ ? nullptr : batch.release();
   }
@@ -789,6 +791,7 @@ public:
     configuration_initialized_ = false;
     prepared_configuration_ = false;
     prepared_direct_projection_ = false;
+    prepared_quoted_records_ = false;
     owned_selected_columns_.clear();
     owned_filter_values_.clear();
     owned_filter_offsets_.clear();
@@ -837,10 +840,14 @@ public:
   void set_error(const char* value) { error_ = value; }
 
 private:
-  void parse_projected_batch(const uint8_t* data, size_t len, bool final) {
+  void parse_projected_batch(const uint8_t* data, size_t len, bool final, bool try_quoted_records = false) {
     parse_failed_ = false;
     emitted_rows_ = 0;
-    parse(data, len);
+    if (try_quoted_records) {
+      parse<true>(data, len);
+    } else {
+      parse(data, len);
+    }
     if (parse_failed_) {
       return;
     }
@@ -1193,7 +1200,115 @@ private:
     }
   }
 
-  void parse(const uint8_t* data, size_t len) {
+  // Return bytes consumed for a complete LF-terminated record of simple quoted fields.
+  // Zero leaves all parser and batch state at the record start for the general parser.
+  HWY_ATTR size_t try_quoted_record(const uint8_t* data, size_t available) {
+    const size_t len = std::min<size_t>(available, std::numeric_limits<uint16_t>::max());
+    std::array<uint16_t, 64> ends;
+    const hn::CappedTag<uint8_t, 64> du8;
+    const size_t lanes = hn::Lanes(du8);
+    const auto quote = hn::Set(du8, static_cast<uint8_t>('"'));
+    size_t block = 0;
+    size_t next_block = 0;
+    uint64_t bits = 0;
+    auto next_quote = [&]() -> size_t {
+      while (bits == 0) {
+        block = next_block;
+        if (len - block < lanes) {
+          while (next_block < len) {
+            const size_t index = next_block++;
+            if (data[index] == '"') {
+              return index;
+            }
+          }
+          return len;
+        }
+        bits = hn::BitsFromMask(du8, hn::Eq(hn::LoadU(du8, data + block), quote));
+        next_block += lanes;
+      }
+      const size_t lane = hwy::Num0BitsBelowLS1Bit_Nonzero64(bits);
+      bits &= bits - 1;
+      return block + lane;
+    };
+
+    size_t field_count = 0;
+    size_t cursor = 0;
+    while (true) {
+      if (field_count == ends.size() || cursor >= len || next_quote() != cursor) {
+        return 0;
+      }
+      const size_t end = next_quote();
+      if (end + 1 >= len) {
+        return 0;
+      }
+      ends[field_count++] = static_cast<uint16_t>(end);
+      cursor = end + 2;
+      if (data[end + 1] == '\n') {
+        break;
+      }
+      if (data[end + 1] != delimiter_) {
+        return 0;
+      }
+    }
+
+    const auto field_at = [&](size_t column) {
+      // A closing quote, delimiter and opening quote separate consecutive payloads.
+      const size_t start = column == 0 ? 1 : ends[column - 1] + 3;
+      return std::string_view(reinterpret_cast<const char*>(data + start), ends[column] - start);
+    };
+    for (const auto& filter : filters_) {
+      if (filter.kind == row_filter_kind::all_of) {
+        continue;
+      }
+      // A missing physical column fails every leaf predicate, including inequality.
+      if (filter.column >= field_count) {
+        return cursor;
+      }
+      const bool equal = field_equals_filter(field_at(filter.column), filter.value, filter.value_len);
+      if (equal != (filter.kind == row_filter_kind::equals)) {
+        return cursor;
+      }
+    }
+
+    size_t output = batch_->data.size();
+    // Each field has two quotes and one terminator (delimiter or LF).
+    const size_t payload_size = cursor - 3 * field_count;
+    batch_->data.resize(output + payload_size);
+    for (size_t column = 0; column < field_count; ++column) {
+      const auto field = field_at(column);
+      if (!field.empty()) {
+        std::memcpy(batch_->data.data() + output, field.data(), field.size());
+      }
+      output += field.size();
+      batch_->field_offsets.push_back(output);
+    }
+    finish_batch_row();
+    ++emitted_rows_;
+    return cursor;
+  }
+
+  bool supports_quoted_records() const {
+    if (!preserve_latin1_ || !conjunctive_filters_ || projection_enabled_ || fixed_columns_ != 0) {
+      return false;
+    }
+    for (const auto& filter : filters_) {
+      if (filter.kind == row_filter_kind::all_of) {
+        continue;
+      }
+      if (filter.kind != row_filter_kind::equals && filter.kind != row_filter_kind::neq) {
+        return false;
+      }
+      // ASCII predicate bytes compare identically against UTF-8 and the raw Latin-1 field.
+      for (size_t i = 0; i < filter.value_len; ++i) {
+        if (filter.value[i] >= 128) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  template <bool try_quoted_records = false> void parse(const uint8_t* data, size_t len) {
     if (data == nullptr || len == 0) {
       return;
     }
@@ -1206,6 +1321,8 @@ private:
     size_t i = 0;
     // Skipping a rejected tail ignores delimiters, which fixed-width validation needs to count.
     const bool can_skip_rejected_tail = !strict_quote_syntax_ && fixed_columns_ == 0;
+    constexpr unsigned quoted_record_miss_limit = 4;
+    unsigned misses_left = quoted_record_miss_limit;
     if (can_skip_rejected_tail && row_filter_rejected()) {
       i = skip_rejected_row_tail(data, len);
     }
@@ -1271,6 +1388,21 @@ private:
       }
 
       if (byte == '"' && at_field_start_) {
+        if constexpr (try_quoted_records) {
+          if (!saw_row_data_ && current_column_ == 0) {
+            const size_t consumed = try_quoted_record(data + i, len - i);
+            if (consumed != 0) {
+              misses_left = quoted_record_miss_limit;
+              i += consumed;
+              continue;
+            }
+            // Repeated misses would scan escaped or mixed-format records twice.
+            // Resume at this record in the general loop until the next chunk.
+            if (--misses_left == 0) {
+              return parse<false>(data + i, len - i);
+            }
+          }
+        }
         const size_t close_quote = find_complete_quoted_field_close(data + i, len - i);
         if (close_quote != npos) {
           append_complete_quoted_field(data + i, close_quote);
@@ -1966,7 +2098,7 @@ private:
     return false;
   }
 
-  bool field_equals_filter(const std::string& field, const uint8_t* value, size_t value_len) const {
+  bool field_equals_filter(std::string_view field, const uint8_t* value, size_t value_len) const {
     if (field.size() != value_len) {
       return false;
     }
@@ -2157,6 +2289,7 @@ private:
   bool configuration_initialized_ = false;
   bool prepared_configuration_ = false;
   bool prepared_direct_projection_ = false;
+  bool prepared_quoted_records_ = false;
   std::vector<uint32_t> owned_selected_columns_;
   std::vector<uint8_t> owned_filter_values_;
   std::vector<uint32_t> owned_filter_offsets_;

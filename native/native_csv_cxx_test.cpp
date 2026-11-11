@@ -1025,6 +1025,74 @@ TEST_CASE("private Latin-1 rows preserve raw bytes and UTF-8 filters across chun
   }
 }
 
+TEST_CASE("prepared Latin-1 rows match ASCII predicates across quoted records, fallbacks and chunk splits") {
+  const uint8_t values[] = "okX";
+  const uint32_t offsets[] = {0, 2, 3};
+  const uint32_t filters[] = {
+      1, 0, 0, 1, // column 0 equals "ok"
+      5, 2, 1, 1, // column 2 differs from "X"
+      7, 2, 0, 0, // both leaves must match
+  };
+  const std::string binary{char(0), static_cast<char>(0xE9)};
+  const std::string input = "\"ok\";\"a;\r\nb\";\"" + binary + "\"\n" +
+                            "\"ok\";\"missing column\"\n"
+                            "\"drop\";\"\";\"y\"\n"
+                            "\"ok\";\"skip\";\"X\"\n"
+                            "\"ok\";\"a\"\"b\";\"\"\n"
+                            "\"ok\";\"crlf\";\"y\"\r\n"
+                            "\"ok\";plain;\"y\"\n"
+                            "\"ok\";\"d\"\"e\";\"y\"\n"
+                            "\"ok\";\"\";\"y\"\n"
+                            "\"ok\";\"eof\";\"y\"";
+  const std::vector<std::vector<std::string>> expected = {
+      {"ok", "a;\r\nb", binary}, {"ok", "a\"b", ""}, {"ok", "crlf", "y"}, {"ok", "plain", "y"},
+      {"ok", "d\"e", "y"},       {"ok", "", "y"},    {"ok", "eof", "y"},
+  };
+
+  const auto* data = reinterpret_cast<const uint8_t*>(input.data());
+  for (size_t split = 0; split <= input.size(); ++split) {
+    CAPTURE(split);
+    void* parser = csv_parser_create_latin1_rows(';');
+    REQUIRE(parser != nullptr);
+    REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, filters, 3, values, 3, offsets, 2));
+    std::vector<std::vector<std::string>> actual;
+    append_batch_rows(csv_parser_write_prepared_batch(parser, data, split, false), actual);
+    append_batch_rows(csv_parser_write_prepared_batch(parser, data + split, input.size() - split, true), actual);
+    csv_parser_destroy(parser);
+    REQUIRE(actual == expected);
+  }
+}
+
+TEST_CASE("prepared Latin-1 rows preserve every field at quoted record size and width limits") {
+  std::string input;
+  std::vector<std::vector<std::string>> expected;
+  for (size_t count : {64, 65}) {
+    for (size_t column = 1; column < count; ++column) {
+      input += "\"\",";
+    }
+    input += "\"\"\n";
+    expected.emplace_back(count);
+  }
+  for (size_t bytes : {65534, 65535, 65536}) {
+    std::string field(bytes - 3, 'a');
+    input += "\"" + field + "\"\n";
+    expected.push_back({field});
+  }
+  input += "\"tail\"\n";
+  expected.push_back({"tail"});
+
+  void* parser = csv_parser_create_latin1_rows(',');
+  REQUIRE(parser != nullptr);
+  const uint32_t offsets[] = {0};
+  REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, offsets, 0));
+  std::vector<std::vector<std::string>> actual;
+  append_batch_rows(
+      csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true),
+      actual);
+  csv_parser_destroy(parser);
+  REQUIRE(actual == expected);
+}
+
 TEST_CASE("fixed Latin-1 rows reject bad physical widths after early filter rejection") {
   const uint32_t projection[] = {0};
   const uint32_t filters[] = {1, 0, 0, 1}; // column 0 equals "keep"

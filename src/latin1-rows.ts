@@ -86,18 +86,20 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
     );
     const rows: CsvRow[] = reusableRows ?? [];
     rows.length = rowCount;
+    let fieldStart = checkedOffset(rowOffsets, 0, totalFields);
+    let start = checkedOffset(fieldOffsets, fieldStart, dataLength);
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-      const fieldStart = checkedOffset(rowOffsets, rowIndex, totalFields);
       const fieldEnd = checkedOffset(rowOffsets, rowIndex + 1, totalFields);
       const row = reusableRows?.[rowIndex] ?? [];
       row.length = fieldEnd - fieldStart;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
-        const start = checkedOffset(fieldOffsets, fieldIndex, dataLength);
         const end = checkedOffset(fieldOffsets, fieldIndex + 1, dataLength);
         // Decode fields independently so retaining one value cannot pin a whole batch string.
         row[fieldIndex - fieldStart] = decodeMaterializedField(bytes, start, end, 'latin1');
+        start = end;
       }
       rows[rowIndex] = row;
+      fieldStart = fieldEnd;
     }
     return rows;
   } finally {
@@ -112,7 +114,7 @@ function checkedOffset(words: Uint32Array, index: number, upperBound: number): n
   if (low === undefined || high === undefined || high > 0x1f_ffff) {
     throw new RangeError('CSV batch offset out of range');
   }
-  const offset = low + high * 0x1_0000_0000;
+  const offset = high === 0 ? low : low + high * 0x1_0000_0000;
   if (offset > upperBound) {
     throw new RangeError('CSV batch offset exceeds backing storage');
   }
