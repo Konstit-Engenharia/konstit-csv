@@ -5,6 +5,7 @@ import {
   expect,
   test,
 } from 'bun:test';
+import iconv from 'iconv-lite';
 import {
   mkdtemp,
   rm,
@@ -32,6 +33,10 @@ beforeAll(async () => {
     createZip([{ data: Buffer.from('a;b\n'.repeat(4_096)), method: 8, name: 'input.csv' }]),
   );
   await Bun.write(join(temporaryDirectory, 'equals.csv'), 'id,value\n1,a=b\n2,other\n');
+  await Bun.write(
+    join(temporaryDirectory, 'windows-1252.csv'),
+    Uint8Array.from(iconv.encode('id;name\n1;€\n2;“quoted”\n', 'windows-1252')),
+  );
   await Bun.write(join(temporaryDirectory, 'empty.csv'), '');
   await Bun.write(
     join(temporaryDirectory, 'quoted.csv'),
@@ -163,6 +168,23 @@ describe('csv CLI', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('1\n');
+    expect(result.stderr.toString()).toBe('');
+  });
+
+  test('decodes a Bun encoding for lines output', () => {
+    const result = runCli(
+      'lines',
+      join(temporaryDirectory, 'windows-1252.csv'),
+      '--delimiter',
+      ';',
+      '--encoding',
+      'windows-1252',
+      '--chunk-size',
+      '1',
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('id,name\n1,€\n2,“quoted”\n');
     expect(result.stderr.toString()).toBe('');
   });
 

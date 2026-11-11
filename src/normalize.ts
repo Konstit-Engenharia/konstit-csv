@@ -9,11 +9,19 @@ import type {
   CsvEqualsFilter,
   CsvFieldValue,
   CsvInFilter,
+  CsvNativeEncoding,
   CsvNativeFilter,
   CsvNativeProjectionOptions,
   CsvRegex,
   CsvStartsWithFilter,
 } from './types.js';
+
+const LATIN1_ENCODINGS = new Set<string>(['latin1', 'iso88591', 'iso-8859-1']);
+
+interface PreparedCsvBufferInput {
+  readonly bytes: NodeJS.TypedArray | DataView;
+  readonly parserEncoding: 'utf8' | 'latin1';
+}
 
 export const MAX_COLUMN_INDEX = 2024;
 export const MAX_PROJECTION_LENGTH = 2024;
@@ -73,15 +81,67 @@ export function projectionFilterProgram(
   return filters.length === 1 ? filters : [...filters, { operator: 'all', operandCount: filters.length }];
 }
 
-export function encodingCode(encoding: CsvEncoding = 'utf8'): number {
-  const normalized = encoding.toLowerCase();
+export function encodingCode(encoding: CsvNativeEncoding = 'utf8'): number {
+  const normalized = resolveInputEncoding(encoding);
   if (normalized === 'utf8') {
     return 0;
   }
-  if (normalized === 'latin1' || normalized === 'iso88591' || normalized === 'iso-8859-1') {
+  if (normalized === 'latin1') {
     return 1;
   }
   throw new Error(`unsupported encoding: ${encoding}`);
+}
+
+/**
+ * Selects the byte encoding used by the native parser or a decoder for the input.
+ * The three Latin-1 labels map bytes 0x80–0x9f directly to Unicode control characters.
+ */
+export function resolveInputEncoding(encoding: string = 'utf8', delimiter?: string): 'utf8' | 'latin1' | TextDecoder {
+  if (encoding === 'utf8' || encoding === 'utf-8') {
+    return 'utf8';
+  }
+  if (LATIN1_ENCODINGS.has(encoding)) {
+    return 'latin1';
+  }
+  if (typeof encoding !== 'string') {
+    throw new TypeError('encoding must be a string');
+  }
+  let decoder: TextDecoder;
+  try {
+    // The constructor validates labels supplied by JavaScript and CLI callers.
+    decoder = new TextDecoder(encoding as Bun.Encoding);
+  } catch (cause) {
+    if (cause instanceof RangeError) {
+      throw new Error(`unsupported encoding: ${encoding}`, { cause });
+    }
+    throw cause;
+  }
+  if (decoder.encoding === 'utf-8') {
+    return 'utf8';
+  }
+  if (decoder.encoding === 'windows-1252' && LATIN1_ENCODINGS.has(encoding.trim().toLowerCase())) {
+    return 'latin1';
+  }
+  if (delimiter !== undefined && delimiter.charCodeAt(0) > 0x7f) {
+    throw new Error(`encoding ${decoder.encoding} requires an ASCII delimiter`);
+  }
+  return decoder;
+}
+
+/** Converts a complete buffer to bytes accepted by the native parser. */
+export function prepareCsvBufferInput(
+  buffer: NodeJS.TypedArray | DataView,
+  encoding?: CsvEncoding,
+  delimiter?: string,
+): PreparedCsvBufferInput {
+  const resolved = resolveInputEncoding(encoding, delimiter);
+  if (typeof resolved === 'string') {
+    return { bytes: buffer, parserEncoding: resolved };
+  }
+  return {
+    bytes: new TextEncoder().encode(resolved.decode(buffer)),
+    parserEncoding: 'utf8',
+  };
 }
 
 export function normalizeChunk(chunk: NodeJS.TypedArray | DataView): NodeJS.TypedArray | DataView {

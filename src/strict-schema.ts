@@ -5,18 +5,14 @@ import type {
   CsvRow,
 } from './types.js';
 
-interface StrictSchemaOptions {
-  readonly expectedHeaders?: readonly string[];
-  readonly requireHeader?: boolean;
-  readonly minDataRows?: number;
-}
+type StrictSchemaOptions = Pick<CsvParserOptions, 'strict' | 'expectedHeaders' | 'requireHeader' | 'minDataRows'>;
 
 export class CsvStrictSchemaValidator {
   readonly #options: StrictSchemaOptions;
   #seenHeader = false;
   #dataRows = 0;
 
-  constructor(suppliedOptions: CsvParserOptions) {
+  constructor(suppliedOptions: StrictSchemaOptions) {
     const options = snapshotCsvOptions(suppliedOptions);
     this.#options = {
       expectedHeaders: options.expectedHeaders,
@@ -120,7 +116,7 @@ export class CsvStrictSchemaValidator {
   }
 }
 
-export function strictSchemaValidator(options: CsvParserOptions): CsvStrictSchemaValidator | undefined {
+export function strictSchemaValidator(options: StrictSchemaOptions): CsvStrictSchemaValidator | undefined {
   if (options.strict !== true) {
     return undefined;
   }
@@ -128,7 +124,7 @@ export function strictSchemaValidator(options: CsvParserOptions): CsvStrictSchem
   return validator.enabled ? validator : undefined;
 }
 
-export function rejectStrictSchemaUnsupported(options: CsvParserOptions, operation: string): void {
+export function rejectStrictSchemaUnsupported(options: StrictSchemaOptions, operation: string): void {
   if (strictSchemaValidator(options) !== undefined) {
     throw new Error(`strict CSV schema validation is not supported for ${operation}`);
   }

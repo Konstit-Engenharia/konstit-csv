@@ -23,6 +23,7 @@ export type {
   CsvFilter,
   CsvFilterColumn,
   CsvInFilter,
+  CsvNativeEncoding,
   CsvNativeFilter,
   CsvNativeProjectionOptions,
   CsvNotEqualsFilter,

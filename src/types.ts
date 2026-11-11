@@ -3,10 +3,23 @@ import type { NativeCsvRowView } from './batches.js';
 /**
  * Text encoding used when CSV fields are decoded into JavaScript strings.
  *
- * `utf8` is the default. The `latin1`, `iso88591`, and `iso-8859-1` spellings
- * select the same single-byte decoding path.
+ * The values are labels accepted by Bun's `TextDecoder`. `utf8` is the
+ * default. The `latin1`, `iso88591`, and `iso-8859-1` spellings retain the
+ * parser's native Latin-1 byte mapping.
  */
-export type CsvEncoding = 'utf8' | 'latin1' | 'iso88591' | 'iso-8859-1';
+export type CsvEncoding = Bun.Encoding;
+
+/** Encoding labels that can be passed directly to the native parser. */
+export type CsvNativeEncoding =
+  | 'unicode-1-1-utf-8'
+  | 'unicode11utf8'
+  | 'unicode20utf8'
+  | 'utf-8'
+  | 'utf8'
+  | 'x-unicode20utf8'
+  | 'latin1'
+  | 'iso88591'
+  | 'iso-8859-1';
 
 /**
  * Selects one CSV entry from a ZIP archive.
@@ -209,10 +222,13 @@ export interface CsvShard {
  * Options are readonly and are captured at operation invocation time, before
  * asynchronous iteration begins. Start a new operation to apply changed arrays
  * or values.
+ *
+ * @typeParam TEncoding - Defaults to the native parser's labels. File and buffer
+ * parsing accept the full {@link CsvEncoding} set.
  */
-export interface CsvParserOptions {
+export interface CsvParserOptions<TEncoding extends CsvEncoding = CsvNativeEncoding> {
   /** Input field encoding used when decoding bytes into JavaScript strings. Defaults to `'utf8'`. */
-  readonly encoding?: CsvEncoding;
+  readonly encoding?: TEncoding;
   /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
   readonly delimiter?: CsvDelimiter;
   /** Physical columns to emit from each row, in the requested output order. */
@@ -235,7 +251,7 @@ export interface CsvParserOptions {
  * Compression is streamed into the parser and does not load the complete file
  * into memory. Byte-offset sharding requires an uncompressed file.
  */
-export interface CsvFileOptions extends CsvParserOptions {
+export interface CsvFileOptions extends CsvParserOptions<CsvEncoding> {
   /** Read-stream chunk size in bytes. Defaults to 1 MiB. */
   readonly chunkSize?: number;
   /** Optional compression format or ZIP entry selection. */
@@ -248,9 +264,11 @@ export interface CsvFileOptions extends CsvParserOptions {
  * Compression is excluded because compressed byte streams cannot be split into
  * independently readable file ranges.
  */
-export type CsvShardingOptions = Omit<CsvFileOptions, 'compression'> & {
+export type CsvShardingOptions = Omit<CsvFileOptions, 'compression' | 'encoding'> & {
   /** Compression is unsupported for byte-offset sharding. */
   readonly compression?: never;
+  /** Sharding scans raw file bytes and supports native encodings only. */
+  readonly encoding?: CsvNativeEncoding;
 };
 
 /** Native equality predicate used by projection and count fast paths. */

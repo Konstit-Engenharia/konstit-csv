@@ -23,7 +23,8 @@ id,name,state
 
 Rows are mutable arrays of decoded strings. The parser does not assign special meaning to a header row: parsing and
 counting include every physical record unless your application skips or filters one explicitly. The default delimiter is
-`,` and the default encoding is UTF-8.
+`,` and the default encoding is UTF-8. Parsing options accept any `Bun.Encoding` label supported by Bun's
+`TextDecoder`.
 
 ## Start with an in-memory buffer
 
@@ -159,7 +160,7 @@ directories are ignored. Encrypted entries and methods other than stored and DEF
 by default to 64 GiB and a declared compression ratio of 1000; use `maxDecompressedBytes` and `maxCompressionRatio`
 to apply stricter limits or to permit a larger trusted entry.
 
-`delimiter: 'auto'` is supported for file operations. Detection probes at most 64 KiB of decompressed input,
+`delimiter: 'auto'` is supported for file operations. Detection probes at most 64 KiB after decompression and any transcoding,
 ignores separators inside quoted fields, and considers comma, tab, semicolon, pipe, colon, caret, and tilde. File
 extensions such as `.csv`, `.tsv`, `.tab`, and `.psv` are confirmed hints and can resolve an otherwise tied result,
 including before a compression suffix such as `.gz`. Empty, single-column, inconsistent, and ambiguous probes fail;
@@ -173,8 +174,9 @@ helpers use a fixed one-character delimiter, defaulting to comma.
 Compressed input and automatic delimiter detection are supported by the file APIs. The byte-boundary helpers require an
 uncompressed file and a fixed one-character delimiter.
 
-The parser decodes UTF-8 by default. For the repository's large Latin-1 corpus, pass `encoding: 'latin1'` (the
-`iso88591` and `iso-8859-1` spellings select the same decoder):
+UTF-8 (the default) and its aliases use the native UTF-8 parser. `latin1`, `iso88591`, and `iso-8859-1` use the
+native Latin-1 parser. With these three labels, byte `0x80` decodes to U+0080. Use `windows-1252` for an export
+that uses the same byte for `€`. For the repository's large Latin-1 corpus, pass `encoding: 'latin1'`:
 
 ```ts
 for await (
@@ -186,6 +188,18 @@ for await (
 ) {
   console.log(batch);
 }
+```
+
+Bun decodes other input encodings, including `windows-1252`, `utf-16le`, and `shift_jis`, before CSV parsing.
+Files retain one decoder across chunks. Both file and buffer APIs use an ASCII delimiter for transcoded input.
+The decoder replaces malformed sequences with U+FFFD and consumes an initial UTF-16 byte-order mark matching the
+selected byte order. In-memory parsing uses the same option:
+
+```ts
+const rows = await csv.parse(Buffer.from([0x6e, 0x61, 0x6d, 0x65, 0x0a, 0x80, 0x0a]), {
+  encoding: 'windows-1252',
+});
+// [['name'], ['€']]
 ```
 
 ## Record-safe byte boundaries
@@ -203,8 +217,8 @@ console.log(offsets);
 console.log(shards);
 ```
 
-The delimiter must be one character, and compressed input and automatic delimiter detection are not supported for these
-helpers. A small file can produce fewer non-empty shards than requested.
+These helpers scan source-file bytes and require uncompressed UTF-8 or Latin-1 input with a fixed one-character
+delimiter. A small file can produce fewer non-empty shards than requested.
 
 ## Migration from removed worker APIs
 
@@ -389,6 +403,7 @@ apply at the current stream position. Keep them consistent across chunks that ma
 that row or call `reset()` before changing them. `selectedColumns` passed to the constructor is validated but does not
 configure `writeBatch()`; use the explicit projected methods for low-level projection.
 
-`NativeCsvParser` captures `encoding`, `delimiter`, `strict`, and `fixedColumns` at construction. It does not support
+`NativeCsvParser` accepts native UTF-8 and Latin-1 labels. It captures `encoding`, `delimiter`, `strict`, and
+`fixedColumns` at construction. It does not support
 `delimiter: 'auto'` or schema metadata options. Dispose the parser with `close()`, `dispose()`, or `using`; its
 `closed` property reports whether the native handle has been released.

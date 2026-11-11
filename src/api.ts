@@ -20,9 +20,10 @@ import {
 import { latin1Rows } from './latin1-rows.js';
 import { optionalLatin1RowsParser } from './native.js';
 import {
-  encodingCode,
   normalizeColumns,
   normalizeFixedColumnsCount,
+  prepareCsvBufferInput,
+  resolveInputEncoding,
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
@@ -39,7 +40,6 @@ import type {
   CsvColumnarBatchView,
   CsvColumns,
   CsvCountOptions,
-  CsvFileOptions,
   CsvFilter,
   CsvParseOptions,
   CsvParserOptions,
@@ -83,9 +83,10 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
   const filters = toNativeFilters(options.where);
   const columns = selectedColumns(options);
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
-  using parser = createPreparedParser(toParserOptions(options), projected ? columns : undefined, filters);
+  const input = prepareCsvBufferInput(buffer, options.encoding, options.delimiter);
+  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding), projected ? columns : undefined, filters);
   const validator = strictSchemaValidator(options);
-  const batch = parser.writeBatch(buffer, true);
+  const batch = parser.writeBatch(input.bytes, true);
   try {
     validator?.validateBatch(batch);
     validator?.finish();
@@ -126,10 +127,10 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
   const columns = selectedColumns(options);
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   await using input = await prepareCsvFileInput(path, options, 'read-ahead');
-  const parserOptions = toParserOptions(options, input.delimiter);
+  const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
   const validator = strictSchemaValidator(options);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
-  if (options.strict !== true && validator === undefined && encodingCode(options.encoding) === 1) {
+  if (options.strict !== true && validator === undefined && input.parserEncoding === 'latin1') {
     const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
     const createParser = optionalLatin1RowsParser(fixedColumns);
     if (createParser !== undefined) {
@@ -200,7 +201,7 @@ async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncG
   const filters = toNativeFilters(options.where);
   const columns = filters === undefined ? undefined : selectedColumns(options);
   await using input = await prepareCsvFileInput(path, options);
-  using parser = createPreparedParser(toParserOptions(options, input.delimiter), columns, filters);
+  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters);
   const validator = strictSchemaValidator(options);
   for await (const chunk of input.chunks()) {
     const batch = parser.writeBatch(chunk);
@@ -306,7 +307,7 @@ export async function forEachColumnarBatches<TColumns extends CsvColumns | undef
   const scopedBatch = new ScopedCsvColumnarBatchView(columns as TColumns);
   let batchIndex = 0;
   await using input = await prepareCsvFileInput(path, options);
-  using parser = createPreparedParser(toParserOptions(options, input.delimiter), columns, filters);
+  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters);
   const validator = strictSchemaValidator(options);
   for await (const chunk of input.chunks()) {
     const batch = parser.writeBatch(chunk);
@@ -507,7 +508,7 @@ export async function count(path: string, suppliedOptions: CsvCountOptions = {})
   if (options.strict === true && filters !== undefined) {
     throw new Error('strict CSV validation is not supported for count filters');
   }
-  using parser = createPreparedParser(toParserOptions(options, input.delimiter), undefined, filters);
+  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), undefined, filters);
   const validator = strictSchemaValidator(options);
   let total = 0;
   if (options.strict === true && filters === undefined) {
@@ -542,42 +543,47 @@ export async function count(path: string, suppliedOptions: CsvCountOptions = {})
  * Find byte offsets that divide a CSV file only at record boundaries.
  *
  * The returned array contains shard start offsets followed by the terminal file boundary. Quoted
- * fields and embedded newlines are respected. The operation reads the file directly, so compressed
- * input and automatic delimiter detection are not supported.
+ * fields and embedded newlines are respected. The operation scans original UTF-8 or Latin-1
+ * bytes in an uncompressed file with a fixed delimiter.
  *
  * @param path - Path to the uncompressed CSV file.
  * @param shardCount - Desired number of partitions; the result may contain fewer non-empty shards.
  * @param suppliedOptions - Explicit delimiter and file parser options. Compression is unavailable.
  * @returns Monotonically increasing byte offsets, including `0` and the file-length boundary.
  * @throws {RangeError} If `shardCount` is not a positive integer.
- * @throws {Error} If the delimiter is automatic, compressed, or invalid for native scanning.
+ * @throws {Error} If the input is compressed, the encoding requires transcoding, or the delimiter is automatic or invalid.
  */
 export function findCsvSafeSplitOffsets(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): number[] {
   const options = snapshotCsvOptions(suppliedOptions);
-  rejectCompressedSharding(options, 'CSV split offset scanning');
-  rejectAutoDelimiterSharding(options, 'CSV split offset scanning');
-  return findCsvSafeSplitOffsetsNative(path, shardCount, options.delimiter ?? ',');
+  return findCsvSafeSplitOffsetsNative(path, shardCount, shardingDelimiter(options, 'CSV split offset scanning'));
 }
 
 /**
  * Find non-empty CSV byte ranges that begin and end at record boundaries.
  *
  * Shards use inclusive `start` and `end` offsets and never split quoted fields or embedded
- * newlines. A small file can produce fewer non-empty shards than requested. The operation does
- * not support compressed input or automatic delimiter detection.
+ * newlines. A small file can produce fewer non-empty shards than requested. The operation
+ * requires original UTF-8 or Latin-1 bytes in an uncompressed file with a fixed delimiter.
  *
  * @param path - Path to the uncompressed CSV file.
  * @param shardCount - Desired number of partitions; the result may contain fewer shards.
  * @param suppliedOptions - Explicit delimiter and file parser options. Compression is unavailable.
  * @returns Non-empty, ordered byte ranges with inclusive endpoints.
  * @throws {RangeError} If `shardCount` is not a positive integer.
- * @throws {Error} If the delimiter is automatic, compressed, or invalid for native scanning.
+ * @throws {Error} If the input is compressed, the encoding requires transcoding, or the delimiter is automatic or invalid.
  */
 export function findCsvSafeShards(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): CsvShard[] {
   const options = snapshotCsvOptions(suppliedOptions);
-  rejectCompressedSharding(options, 'CSV shard scanning');
-  rejectAutoDelimiterSharding(options, 'CSV shard scanning');
-  return findCsvSafeShardsNative(path, shardCount, options.delimiter ?? ',');
+  return findCsvSafeShardsNative(path, shardCount, shardingDelimiter(options, 'CSV shard scanning'));
+}
+
+function shardingDelimiter(options: CsvShardingOptions, operation: string): string {
+  rejectCompressedSharding(options, operation);
+  rejectAutoDelimiterSharding(options, operation);
+  if (typeof resolveInputEncoding(options.encoding) !== 'string') {
+    throw new Error(`${operation} requires a native UTF-8 or Latin-1 encoding because offsets refer to the source file`);
+  }
+  return options.delimiter ?? ',';
 }
 
 /**
@@ -733,7 +739,8 @@ export const csv = {
 };
 
 function toParserOptions(
-  options: CsvApiFileOptions | CsvFileOptions,
+  options: CsvApiFileOptions,
+  encoding: CsvParserOptions['encoding'],
   delimiter: CsvParserOptions['delimiter'] = options.delimiter,
 ): CsvParserOptions {
   const selectedColumns = 'columns' in options && options.columns !== undefined
@@ -744,7 +751,7 @@ function toParserOptions(
   }
   return {
     delimiter,
-    encoding: options.encoding,
+    encoding,
     strict: options.strict,
     selectedColumns,
     fixedColumns: options.fixedColumns,

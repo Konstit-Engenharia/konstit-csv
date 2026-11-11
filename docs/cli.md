@@ -108,7 +108,7 @@ Both commands accept these file options:
 | Option                             | Behavior                                                                               |
 | ---------------------------------- | -------------------------------------------------------------------------------------- |
 | `--delimiter <value>`              | One safe ASCII character, or `auto` for file operations. Defaults to `,`.              |
-| `--encoding <value>`               | `utf8` (default), `latin1`, `iso88591`, or `iso-8859-1`.                               |
+| `--encoding <value>`               | Any `Bun.Encoding` label accepted by Bun's `TextDecoder`; defaults to `utf8`.            |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                   |
 | `--compression <format>`           | `auto`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                  |
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file entry. |
@@ -135,6 +135,22 @@ bunx @konstit/csv lines corpus/large/example.csv \
 bunx @konstit/csv count corpus/large/example.csv \
   --delimiter ';' --encoding latin1
 ```
+
+The same option handles common legacy exports such as Windows-1252, UTF-16LE, and Shift_JIS. The decoder stays active
+across input chunks, so a multibyte character split at a chunk boundary is decoded as one character:
+
+```sh
+bunx @konstit/csv lines windows-export.csv --encoding windows-1252
+bunx @konstit/csv lines excel-export.csv --encoding utf-16le
+bunx @konstit/csv lines japanese-export.csv --encoding shift_jis
+```
+
+`latin1`, `iso88591`, and `iso-8859-1` retain the parser's Latin-1 byte mapping. Use `windows-1252` when the source
+uses the Windows mapping for bytes such as `0x80`.
+
+Input delimiters must be one ASCII character. With a fallback encoding, decoding happens before parsing, and
+`--delimiter auto` probes up to 64 KiB of the transcoded UTF-8 bytes. Bun's decoder replaces malformed byte sequences
+and removes an initial UTF-16 byte-order mark using its default streaming behavior.
 
 ## Projection
 

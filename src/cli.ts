@@ -6,6 +6,7 @@ import {
   normalizeColumns,
   normalizeFilterColumn,
   normalizeFixedColumnsCount,
+  resolveInputEncoding,
 } from './normalize.js';
 import type {
   CsvApiFileOptions,
@@ -38,7 +39,7 @@ Count every CSV record, including the header row.
 
 File options:
   --delimiter <value>              One safe ASCII character or auto (default: ,)
-  --encoding <value>               utf8, latin1, iso88591, or iso-8859-1 (default: utf8)
+  --encoding <value>               Any Bun.Encoding label accepted by TextDecoder (default: utf8)
   --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
   --compression <format>           auto, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: none)
   --zip-entry <path>               Entry used with --compression zip
@@ -88,7 +89,7 @@ CSV output uses comma delimiters and LF record endings by default.
 
 File options:
   --delimiter <value>              Input delimiter: one safe ASCII character or auto (default: ,)
-  --encoding <value>               utf8, latin1, iso88591, or iso-8859-1 (default: utf8)
+  --encoding <value>               Any Bun.Encoding label accepted by TextDecoder (default: utf8)
   --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
   --compression <format>           auto, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: none)
   --zip-entry <path>               Entry used with --compression zip
@@ -180,7 +181,6 @@ const linesOptionDefinitions = {
 } as const;
 
 const compressionFormats = new Set(['auto', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd']);
-const encodings = new Set(['utf8', 'latin1', 'iso88591', 'iso-8859-1']);
 const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 const MAX_FILTER_NESTING = 128;
 const OUTPUT_BUFFER_SIZE = 64 * 1024;
@@ -434,10 +434,8 @@ function parseOutputDelimiter(value: string): string {
 }
 
 function parseEncoding(value: string): CsvEncoding {
-  if (!encodings.has(value)) {
-    throw new Error(`unsupported encoding: ${value}`);
-  }
-  return value as CsvEncoding;
+  const resolved = resolveInputEncoding(value);
+  return typeof resolved === 'string' ? resolved : resolved.encoding as CsvEncoding;
 }
 
 function parseInteger(value: string, label: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {

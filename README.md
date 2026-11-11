@@ -6,7 +6,7 @@ A CSV toolkit for Bun with native parsing, streaming file access, filtering, and
 
 - Stream large files in batches, or parse a buffer you already have in memory.
 - Filter records and select columns before materializing results as JavaScript rows.
-- Read compressed input, detect delimiters, and decode UTF-8 or Latin-1 files.
+- Read compressed input, detect delimiters, and decode the encodings supported by Bun's `TextDecoder`.
 - Use native batches and reusable views for low-allocation access.
 
 ## Installation
@@ -49,7 +49,9 @@ bun parse.ts
 ```
 
 Each row is an array of strings. Headers remain ordinary records, and numeric-looking fields remain strings.
-The default delimiter is a comma and the default encoding is UTF-8.
+The default delimiter is a comma and the default encoding is UTF-8. File and buffer APIs accept any `Bun.Encoding`
+label. UTF-8 and Latin-1 use the native fast paths. For other encodings, the reader converts the input to UTF-8,
+one chunk at a time for files.
 
 ## Stream a file
 

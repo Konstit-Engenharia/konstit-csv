@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { DEFAULT_CHUNK_SIZE } from './native.js';
+import { resolveInputEncoding } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvCompression,
@@ -42,6 +43,8 @@ interface CompressionExtensionHint {
 
 interface CsvFileInput extends AsyncDisposable {
   readonly delimiter: CsvDelimiter;
+  /** Encoding expected by the native parser after any stream transcoding. */
+  readonly parserEncoding: 'utf8' | 'latin1';
   chunks(): AsyncIterable<Uint8Array>;
 }
 
@@ -52,24 +55,31 @@ interface StableDelimiterCandidate {
 
 export async function prepareCsvFileInput(
   path: string,
-  suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter'>,
+  suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter' | 'encoding'>,
   readMode: 'stream' | 'read-ahead' = 'stream',
 ): Promise<CsvFileInput> {
   const options = snapshotCsvOptions(suppliedOptions);
+  const inputEncoding = resolveInputEncoding(options.encoding, options.delimiter);
+  const parserEncoding = typeof inputEncoding === 'string' ? inputEncoding : 'utf8';
   const readAhead = readMode === 'read-ahead' && options.compression === undefined
     ? readAheadFileChunks(path, options.chunkSize ?? DEFAULT_CHUNK_SIZE)
     : undefined;
+  const source = (): AsyncIterable<Uint8Array> => {
+    const chunks = readAhead ?? readCsvFileChunks(path, options);
+    return typeof inputEncoding === 'string' ? chunks : transcodeCsvChunks(chunks, inputEncoding);
+  };
   const configuredDelimiter = options.delimiter ?? ',';
   if (configuredDelimiter !== 'auto') {
     let opened = false;
     return {
       delimiter: configuredDelimiter,
+      parserEncoding,
       chunks() {
         if (opened) {
           throw new Error('CSV file input can only be read once');
         }
         opened = true;
-        return readAhead ?? readCsvFileChunks(path, options);
+        return source();
       },
       [Symbol.asyncDispose](): Promise<void> {
         return Promise.resolve();
@@ -77,7 +87,8 @@ export async function prepareCsvFileInput(
     };
   }
 
-  const iterator = (readAhead ?? readCsvFileChunks(path, options))[Symbol.asyncIterator]();
+  const iterator = source()[Symbol.asyncIterator]();
+  const reusesReadBuffer = readAhead !== undefined && typeof inputEncoding === 'string';
   const bufferedChunks: Uint8Array[] = [];
   let bufferedByteLength = 0;
   let sourceEnded = false;
@@ -93,9 +104,9 @@ export async function prepareCsvFileInput(
         continue;
       }
       bufferedByteLength += result.value.byteLength;
-      // A later read can overwrite a probe chunk. The last chunk is replayed before reading resumes.
+      // Raw read-ahead reuses buffers. The last probe chunk is replayed before reading resumes.
       bufferedChunks.push(
-        readAhead !== undefined && bufferedByteLength < DELIMITER_PROBE_SIZE ? new Uint8Array(result.value) : result.value,
+        reusesReadBuffer && bufferedByteLength < DELIMITER_PROBE_SIZE ? new Uint8Array(result.value) : result.value,
       );
     }
 
@@ -104,6 +115,7 @@ export async function prepareCsvFileInput(
     let opened = false;
     return {
       delimiter,
+      parserEncoding,
       chunks() {
         if (opened) {
           throw new Error('CSV file input can only be read once');
@@ -212,6 +224,23 @@ async function* replayCsvFileChunks(
     }
   } finally {
     await closeCsvFileIterator(iterator);
+  }
+}
+
+async function* transcodeCsvChunks(
+  source: AsyncIterable<Uint8Array>,
+  decoder: TextDecoder,
+): AsyncGenerator<Uint8Array, void> {
+  const encoder = new TextEncoder();
+  for await (const chunk of source) {
+    const text = decoder.decode(chunk, { stream: true });
+    if (text.length > 0) {
+      yield encoder.encode(text);
+    }
+  }
+  const text = decoder.decode();
+  if (text.length > 0) {
+    yield encoder.encode(text);
   }
 }
 

@@ -9,6 +9,7 @@ import {
 } from './native.js';
 import {
   normalizeChunk,
+  prepareCsvBufferInput,
   projectionFilterProgram,
 } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
@@ -21,6 +22,7 @@ import {
   strictSchemaValidator,
 } from './strict-schema.js';
 import type {
+  CsvEncoding,
   CsvFileOptions,
   CsvNativeProjectionOptions,
   CsvParserOptions,
@@ -53,11 +55,15 @@ import type {
  * // rows[0] is ['id', 'name']
  * ```
  */
-export function parseCsvBuffer(buffer: NodeJS.TypedArray | DataView, suppliedOptions: CsvParserOptions = {}): CsvRow[] {
+export function parseCsvBuffer(
+  buffer: NodeJS.TypedArray | DataView,
+  suppliedOptions: CsvParserOptions<CsvEncoding> = {},
+): CsvRow[] {
   const options = snapshotCsvOptions(suppliedOptions);
-  using parser = new NativeCsvParser(options);
+  const input = prepareCsvBufferInput(buffer, options.encoding, options.delimiter);
+  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding });
   const validator = strictSchemaValidator(options);
-  const batch = parser.writeBatch(buffer, true);
+  const batch = parser.writeBatch(input.bytes, true);
   try {
     validator?.validateBatch(batch);
     validator?.finish();
@@ -198,7 +204,7 @@ export function parseCsvFile(path: string, options: CsvFileOptions = {}): AsyncG
 
 async function* iterateCsvFile(path: string, options: CsvFileOptions): AsyncGenerator<CsvRow[], void> {
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser({ ...options, delimiter: input.delimiter });
+  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
   const validator = strictSchemaValidator(options);
   for await (const chunk of input.chunks()) {
     const batch = parser.writeBatch(chunk);
@@ -270,7 +276,7 @@ async function* iterateCsvFileProjected(
   rejectStrictSchemaUnsupported(options, 'projected file parsing');
   await using input = await prepareCsvFileInput(path, options);
   using parser = createPreparedParser(
-    { ...options, delimiter: input.delimiter },
+    { ...options, encoding: input.parserEncoding, delimiter: input.delimiter },
     options.selectedColumns,
     projectionFilterProgram(options),
     true,
@@ -323,7 +329,7 @@ export async function countCsvFile(path: string, suppliedOptions: CsvFileOptions
   const options = snapshotCsvOptions(suppliedOptions);
   rejectStrictSchemaUnsupported(options, 'count');
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser({ ...options, delimiter: input.delimiter });
+  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
   let rows = 0;
   if (options.strict === true) {
     for await (const chunk of input.chunks()) {
