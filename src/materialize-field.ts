@@ -3,10 +3,22 @@ const LATIN1_SINGLE: readonly string[] = Array.from({ length: 256 }, (_, byte) =
 type Latin1Slice = (this: Buffer, start: number, end: number) => string;
 const bufferPrototype: Buffer & { latin1Slice?: Latin1Slice; } = Buffer.prototype;
 const latin1Slice = bufferPrototype.latin1Slice;
-// The module owns at most 16,384 immutable two-byte strings. Keys are the bytes,
-// not batch offsets, so mutations and batch disposal never invalidate an entry.
-// ASCII entries have the same value for both supported encodings.
-const ASCII_PAIRS = Array.from<string | undefined>({ length: 128 * 128 });
+// Each 16-bit key identifies an immutable two-byte string. ASCII pairs can also be reused for UTF-8.
+const LATIN1_PAIRS = Array.from<string | undefined>({ length: 256 * 256 });
+
+export function latin1Pair(key: number): string {
+  const cached = LATIN1_PAIRS[key];
+  if (cached !== undefined) {
+    return cached;
+  }
+  const value = String.fromCharCode(key & 255, key >>> 8);
+  LATIN1_PAIRS[key] = value;
+  return value;
+}
+
+export function copyLatin1Range(data: Buffer, start: number, end: number): string {
+  return typeof latin1Slice === 'function' ? latin1Slice.call(data, start, end) : data.toString('latin1', start, end);
+}
 
 // Callers validate offsets against the backing storage before decoding.
 export function decodeMaterializedField(data: Buffer, start: number, end: number, encoding: 'utf8' | 'latin1'): string {
@@ -23,18 +35,8 @@ export function decodeMaterializedField(data: Buffer, start: number, end: number
     const first = data[start] ?? 128;
     const second = data[start + 1] ?? 128;
     if (first < 128 && second < 128) {
-      const key = (first << 7) | second;
-      const cached = ASCII_PAIRS[key];
-      if (cached !== undefined) {
-        return cached;
-      }
-      const decoded = String.fromCharCode(first, second);
-      ASCII_PAIRS[key] = decoded;
-      return decoded;
+      return latin1Pair(first | (second << 8));
     }
   }
-  if (encoding === 'latin1' && typeof latin1Slice === 'function') {
-    return latin1Slice.call(data, start, end);
-  }
-  return data.toString(encoding, start, end);
+  return encoding === 'latin1' ? copyLatin1Range(data, start, end) : data.toString('utf8', start, end);
 }

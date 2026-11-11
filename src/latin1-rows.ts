@@ -1,4 +1,7 @@
-import { decodeMaterializedField } from './materialize-field.js';
+import {
+  copyLatin1Range,
+  latin1Pair,
+} from './materialize-field.js';
 import {
   EMPTY_BUFFER,
   native,
@@ -79,6 +82,7 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
       ? EMPTY_BUFFER
       : new Uint8Array(toArrayBuffer(requirePtr(native.symbols.csv_batch_data_ptr(batch)), 0, dataLength));
     const bytes = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const rowOffsets = new Uint32Array(
       toArrayBuffer(requirePtr(native.symbols.csv_batch_row_offsets_ptr(batch)), 0, (rowCount + 1) * 8),
     );
@@ -97,14 +101,36 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
       const leading = quotedRows?.[rowIndex] ?? 0;
       const trailing = leading * 2;
       const row = reusableRows?.[rowIndex] ?? [];
-      row.length = fieldEnd - fieldStart;
-      for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
-        const end = checkedOffset(fieldOffsets, fieldIndex + 1, dataLength);
-        if (end - trailing < start + leading) {
-          throw new RangeError('CSV field span exceeds its backing range');
+      const width = fieldEnd - fieldStart;
+      row.length = width;
+      for (let column = 0; column < width; ++column) {
+        const end = checkedOffset(fieldOffsets, fieldStart + column + 1, dataLength);
+        const payload = start + leading;
+        const payloadEnd = end - trailing;
+        const length = payloadEnd - payload;
+        // Short fields use strings keyed by their bytes, so they can outlive the batch.
+        switch (length) {
+          case 0:
+            row[column] = '';
+            break;
+          case 1:
+            row[column] = String.fromCharCode(view.getUint8(payload));
+            break;
+          case 2:
+            row[column] = latin1Pair(view.getUint16(payload, true));
+            break;
+          case 3:
+            row[column] = latin1Pair(view.getUint16(payload, true)) + String.fromCharCode(view.getUint8(payload + 2));
+            break;
+          case 4:
+            row[column] = latin1Pair(view.getUint16(payload, true)) + latin1Pair(view.getUint16(payload + 2, true));
+            break;
+          default:
+            if (length < 0) {
+              throw new RangeError('CSV field span exceeds its backing range');
+            }
+            row[column] = copyLatin1Range(bytes, payload, payloadEnd);
         }
-        // Decode fields independently so retaining one value cannot pin a whole batch string.
-        row[fieldIndex - fieldStart] = decodeMaterializedField(bytes, start + leading, end - trailing, 'latin1');
         start = end;
       }
       rows[rowIndex] = row;
