@@ -6,7 +6,6 @@ import {
   EMPTY_BUFFER,
   native,
   type NativePointer,
-  optionalQuotedSpanNative,
   requirePtr,
   toArrayBuffer,
   u64ToSafeNumber,
@@ -89,8 +88,8 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
     const fieldOffsets = new Uint32Array(
       toArrayBuffer(requirePtr(native.symbols.csv_batch_field_offsets_ptr(batch)), 0, (totalFields + 1) * 8),
     );
-    const flags = optionalQuotedSpanNative()?.symbols.csv_batch_quoted_rows_ptr(batch);
-    const quotedRows = flags == null ? undefined : new Uint8Array(toArrayBuffer(flags, 0, rowCount));
+    const flags = native.symbols.csv_batch_quoted_rows_ptr(batch);
+    const quotedRows = flags === null ? undefined : new Uint8Array(toArrayBuffer(flags, 0, rowCount));
     const rows: CsvRow[] = reusableRows ?? [];
     rows.length = rowCount;
     let fieldStart = checkedOffset(rowOffsets, 0, totalFields);

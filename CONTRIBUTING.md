@@ -112,6 +112,10 @@ The build writes architecture-specific outputs under
 absolute library path when testing a specific local build. Target-specific and
 legacy build paths remain development fallbacks when no tracked prebuild exists.
 
+The native library must provide all symbols required by the TypeScript bindings.
+Imports fail immediately when a symbol is missing. Rebuild the library from the
+matching source revision when using `CSV_NATIVE_LIBRARY_PATH`.
+
 The supported native targets are Clang C++20 builds for macOS ARM64/x64 and
 Linux x64. ARM64 requires NEON, and x64 requires AVX2; CPUs without those
 instruction sets are not supported.

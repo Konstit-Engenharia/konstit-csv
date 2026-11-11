@@ -1,6 +1,5 @@
 import {
   dlopen,
-  type Library,
   type Pointer,
   suffix,
 } from 'bun:ffi';
@@ -361,12 +360,6 @@ const CSV_SYMBOLS = {
     args: ['ptr'],
     returns: 'cstring',
   },
-} as const;
-
-const nativeLibraryPath = resolveNativeLibraryPath();
-export const native = dlopen(nativeLibraryPath, CSV_SYMBOLS);
-
-const PREPARED_PARSER_SYMBOLS = {
   // C signature:
   // bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
   //                         uint64_t selected_columns_len, const uint32_t* filter_descriptors,
@@ -388,57 +381,18 @@ const PREPARED_PARSER_SYMBOLS = {
     args: ['ptr', 'buffer', 'buffer_length', 'bool'],
     returns: 'u64',
   },
-} as const;
-
-let preparedParserNative: Library<typeof PREPARED_PARSER_SYMBOLS> | null | undefined;
-
-export function optionalPreparedParserNative(): Library<typeof PREPARED_PARSER_SYMBOLS> | null {
-  if (preparedParserNative === undefined) {
-    try {
-      preparedParserNative = dlopen(nativeLibraryPath, PREPARED_PARSER_SYMBOLS);
-    } catch {
-      // Older prebuilt libraries keep using the normalized-buffer fallback.
-      preparedParserNative = null;
-    }
-  }
-  return preparedParserNative;
-}
-
-const LATIN1_ROWS_SYMBOLS = {
   // C signature:
   // void* csv_parser_create_latin1_rows(uint8_t delimiter);
   csv_parser_create_latin1_rows: {
     args: ['u8'],
     returns: 'ptr',
   },
-} as const;
-
-let latin1RowsNative: Library<typeof LATIN1_ROWS_SYMBOLS> | null | undefined;
-
-const QUOTED_SPAN_SYMBOLS = {
   // C signature:
   // void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter);
   csv_parser_create_latin1_rows_with_quoted_spans: { args: ['u8'], returns: 'ptr' },
   // C signature:
   // const uint8_t* csv_batch_quoted_rows_ptr(void* batch);
   csv_batch_quoted_rows_ptr: { args: ['ptr'], returns: 'ptr' },
-} as const;
-
-let quotedSpanNative: Library<typeof QUOTED_SPAN_SYMBOLS> | null | undefined;
-
-export function optionalQuotedSpanNative(): Library<typeof QUOTED_SPAN_SYMBOLS> | null {
-  if (quotedSpanNative === undefined) {
-    try {
-      quotedSpanNative = dlopen(nativeLibraryPath, QUOTED_SPAN_SYMBOLS);
-    } catch {
-      // Earlier libraries return batches containing decoded field bytes only.
-      quotedSpanNative = null;
-    }
-  }
-  return quotedSpanNative;
-}
-
-const FIXED_LATIN1_ROWS_SYMBOLS = {
   // C signature:
   // void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
   csv_parser_create_latin1_rows_with_fixed_columns: {
@@ -447,33 +401,13 @@ const FIXED_LATIN1_ROWS_SYMBOLS = {
   },
 } as const;
 
-let fixedLatin1RowsNative: Library<typeof FIXED_LATIN1_ROWS_SYMBOLS> | null | undefined;
+export const native = dlopen(resolveNativeLibraryPath(), CSV_SYMBOLS);
 
-export function optionalLatin1RowsParser(fixedColumns: number | undefined): ((delimiter: number) => NativePointer | null) | undefined {
+export function latin1RowsParser(fixedColumns: number | undefined): (delimiter: number) => NativePointer | null {
   if (fixedColumns !== undefined) {
-    if (fixedLatin1RowsNative === undefined) {
-      try {
-        fixedLatin1RowsNative = dlopen(nativeLibraryPath, FIXED_LATIN1_ROWS_SYMBOLS);
-      } catch {
-        fixedLatin1RowsNative = null;
-      }
-    }
-    const create = fixedLatin1RowsNative?.symbols.csv_parser_create_latin1_rows_with_fixed_columns;
-    return create === undefined ? undefined : (delimiter) => create(delimiter, fixedColumns);
+    return (delimiter) => native.symbols.csv_parser_create_latin1_rows_with_fixed_columns(delimiter, fixedColumns);
   }
-  const quotedSpanParser = optionalQuotedSpanNative()?.symbols.csv_parser_create_latin1_rows_with_quoted_spans;
-  if (quotedSpanParser !== undefined) {
-    return quotedSpanParser;
-  }
-  if (latin1RowsNative === undefined) {
-    try {
-      latin1RowsNative = dlopen(nativeLibraryPath, LATIN1_ROWS_SYMBOLS);
-    } catch {
-      // Older prebuilt libraries do not expose this optional optimization.
-      latin1RowsNative = null;
-    }
-  }
-  return latin1RowsNative?.symbols.csv_parser_create_latin1_rows;
+  return native.symbols.csv_parser_create_latin1_rows_with_quoted_spans;
 }
 
 function resolveNativeLibraryPath(): string {

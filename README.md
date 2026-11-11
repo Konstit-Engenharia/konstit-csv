@@ -7,10 +7,15 @@ The parser reads RFC 4180 CSV and passes the csv-spectrum compatibility tests an
 
 - Stream large files in batches, or parse a buffer you already have in memory.
 - Filter records and select columns before materializing results as JavaScript rows.
-- Read compressed input and detect delimiters.
-- Read many encodings out of the box, including Windows-1252, UTF-16LE, and Shift_JIS. UTF-8 (the default) and
-  Latin-1 use native fast paths.
-- Use native batches and reusable views for low-allocation access.
+- Read compressed input
+  - zip
+  - gzip
+  - brotli
+  - zstd
+  - deflate
+- Auto detect delimiters.
+- UTF-8 and Latin-1 use native fast paths.
+  - More encodings are supported out of the box, including Windows-1252, UTF-16LE, and Shift_JIS.
 
 ## Installation
 

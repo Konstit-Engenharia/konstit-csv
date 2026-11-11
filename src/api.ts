@@ -18,7 +18,7 @@ import {
   re,
 } from './filter.js';
 import { latin1Rows } from './latin1-rows.js';
-import { optionalLatin1RowsParser } from './native.js';
+import { latin1RowsParser } from './native.js';
 import {
   normalizeColumns,
   normalizeFixedColumnsCount,
@@ -132,14 +132,12 @@ async function* iterateRows<TColumns extends CsvColumns | undefined>(
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
   if (options.strict !== true && validator === undefined && input.parserEncoding === 'latin1') {
     const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
-    const createParser = optionalLatin1RowsParser(fixedColumns);
-    if (createParser !== undefined) {
-      yield* latin1Rows(input.chunks(), input.delimiter, columns, filters, createParser, reusableRows) as AsyncGenerator<
-        CsvProjectedRow<TColumns>[],
-        void
-      >;
-      return;
-    }
+    const createParser = latin1RowsParser(fixedColumns);
+    yield* latin1Rows(input.chunks(), input.delimiter, columns, filters, createParser, reusableRows) as AsyncGenerator<
+      CsvProjectedRow<TColumns>[],
+      void
+    >;
+    return;
   }
   using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters);
   for await (const chunk of input.chunks()) {

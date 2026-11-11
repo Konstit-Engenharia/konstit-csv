@@ -3,7 +3,6 @@ import {
   EMPTY_BUFFER,
   native,
   type NativePointer,
-  optionalPreparedParserNative,
   u64ToSafeNumber,
 } from './native.js';
 import {
@@ -92,14 +91,12 @@ interface PreparedNativeWriter {
   writeCount(input: NodeJS.TypedArray | DataView, final: boolean): bigint | number;
 }
 
-// The fallback closures retain all normalized buffers for the parser's lifetime.
-// New native libraries additionally copy the configuration into native storage.
 /**
  * Prepares native projection and filter buffers for an existing parser handle.
  *
- * This low-level helper is intended for the parser implementation. The
- * returned closures retain the normalized configuration for the lifetime of
- * the handle, and the caller remains responsible for closing that handle.
+ * This low-level helper is intended for the parser implementation. The native
+ * parser owns a copy of the normalized configuration, and the caller remains
+ * responsible for closing the handle.
  *
  * @param handle Open native parser handle.
  * @param selectedColumns Optional zero-based output columns.
@@ -119,69 +116,29 @@ export function prepareNativeParser(
   const normalized = program === undefined ? normalizeNativeFilters(undefined) : normalizeNativeFilterProgram(program);
   const filterCount = BigInt(normalized.filterCount);
   const valueCount = BigInt(normalized.valueCount);
-  const prepared = optionalPreparedParserNative();
-  if (prepared !== null) {
-    if (
-      !prepared.symbols.csv_parser_prepare(
-        handle,
-        hasProjection,
-        columns,
-        columnCount,
-        normalized.descriptors,
-        filterCount,
-        normalized.valuesData,
-        normalized.valuesData,
-        normalized.valueOffsets,
-        valueCount,
-      )
-    ) {
-      throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
-    }
-    return {
-      writeBatch: (input, final) => prepared.symbols.csv_parser_write_prepared_batch(handle, input, input, final),
-      writeCount: (input, final) => {
-        const count = prepared.symbols.csv_parser_write_prepared_count(handle, input, input, final);
-        // The prepared ABI reserves UINT64_MAX so successful chunks need only one FFI call.
-        if (count === 0xffff_ffff_ffff_ffffn) {
-          throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
-        }
-        return count;
-      },
-    };
+  if (
+    !native.symbols.csv_parser_prepare(
+      handle,
+      hasProjection,
+      columns,
+      columnCount,
+      normalized.descriptors,
+      filterCount,
+      normalized.valuesData,
+      normalized.valuesData,
+      normalized.valueOffsets,
+      valueCount,
+    )
+  ) {
+    throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
   }
   return {
-    writeBatch: (input, final) =>
-      native.symbols.csv_parser_write_projected_batch_where_all(
-        handle,
-        input,
-        input,
-        final,
-        hasProjection,
-        columns,
-        columnCount,
-        normalized.descriptors,
-        filterCount,
-        normalized.valuesData,
-        normalized.valuesData,
-        normalized.valueOffsets,
-        valueCount,
-      ),
+    writeBatch: (input, final) => native.symbols.csv_parser_write_prepared_batch(handle, input, input, final),
     writeCount: (input, final) => {
-      const count = native.symbols.csv_parser_write_count_where_all(
-        handle,
-        input,
-        input,
-        final,
-        normalized.descriptors,
-        filterCount,
-        normalized.valuesData,
-        normalized.valuesData,
-        normalized.valueOffsets,
-        valueCount,
-      );
-      const error = native.symbols.csv_parser_last_error(handle);
-      if (error !== null && error.length > 0) {
-        throw new Error(`native CSV parser failed: ${error}`);
+      const count = native.symbols.csv_parser_write_prepared_count(handle, input, input, final);
+      // The prepared ABI reserves UINT64_MAX so successful chunks need only one FFI call.
+      if (count === 0xffff_ffff_ffff_ffffn) {
+        throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
       }
       return count;
     },
