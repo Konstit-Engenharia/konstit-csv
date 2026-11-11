@@ -9,6 +9,9 @@ import type { NativeCsvRowView } from './batches.js';
  */
 export type CsvEncoding = Bun.Encoding;
 
+/** File readers accept explicit encoding labels or infer an encoding from the decompressed prefix. */
+export type CsvFileEncoding = CsvEncoding | 'auto';
+
 /** Encoding labels that can be passed directly to the native parser. */
 export type CsvNativeEncoding =
   | 'unicode-1-1-utf-8'
@@ -226,7 +229,7 @@ export interface CsvShard {
  * @typeParam TEncoding - Defaults to the native parser's labels. File and buffer
  * parsing accept the full {@link CsvEncoding} set.
  */
-export interface CsvParserOptions<TEncoding extends CsvEncoding = CsvNativeEncoding> {
+export interface CsvParserOptions<TEncoding extends CsvFileEncoding = CsvNativeEncoding> {
   /** Input field encoding used when decoding bytes into JavaScript strings. Defaults to `'utf8'`. */
   readonly encoding?: TEncoding;
   /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
@@ -251,7 +254,9 @@ export interface CsvParserOptions<TEncoding extends CsvEncoding = CsvNativeEncod
  * Compression is streamed into the parser and does not load the complete file
  * into memory. Byte-offset sharding requires an uncompressed file.
  */
-export interface CsvFileOptions extends CsvParserOptions<CsvEncoding> {
+export interface CsvFileOptions extends CsvParserOptions<CsvFileEncoding> {
+  /** Defaults to `'auto'`, probing up to 64 KiB after decompression, independently of the delimiter. */
+  readonly encoding?: CsvFileEncoding;
   /** Read-stream chunk size in bytes. Defaults to 1 MiB. */
   readonly chunkSize?: number;
   /** Optional compression format or ZIP entry selection. */
@@ -396,10 +401,12 @@ type CsvOperationOptions<TColumns extends CsvColumns | undefined> =
   );
 
 /** Options for parsing an in-memory buffer into materialized rows. */
-export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> = CsvDistributiveOmit<
-  CsvOperationOptions<TColumns>,
-  'compression'
->;
+export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> =
+  & CsvDistributiveOmit<
+    CsvOperationOptions<TColumns>,
+    'compression' | 'encoding'
+  >
+  & { readonly encoding?: CsvEncoding; };
 
 /** Options for streaming materialized rows in file order. */
 export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvOperationOptions<TColumns> & {

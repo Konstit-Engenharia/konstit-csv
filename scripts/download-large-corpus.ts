@@ -4,6 +4,7 @@ import {
   rm,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { formatBytes } from '../src/format-bytes.ts';
 
 const corpusDirectory = join(import.meta.dir, '..', 'corpus', 'large');
 const exampleCsvPath = join(corpusDirectory, 'example.csv');
@@ -164,16 +165,4 @@ function formatProgress(receivedBytes: number, expectedBytes: number | undefined
   return expectedBytes === undefined
     ? formatBytes(receivedBytes)
     : `${formatBytes(receivedBytes)} / ${formatBytes(expectedBytes)}`;
-}
-
-function formatBytes(bytes: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const;
-  let value = bytes;
-  let unitIndex = 0;
-  while (unitIndex < units.length - 1 && value >= 1_024) {
-    value /= 1_024;
-    ++unitIndex;
-  }
-  const unit = units[unitIndex] ?? 'B';
-  return `${value.toFixed(value >= 10 || unit === 'B' ? 0 : 1)} ${unit}`;
 }

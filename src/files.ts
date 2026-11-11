@@ -39,7 +39,7 @@ import type {
  * options are captured when the function is called; changing an options array
  * while parsing cannot change the operation.
  *
- * Automatic delimiter detection and file compression are file-only features.
+ * Automatic delimiter and encoding detection and compression are file-only features.
  * Use an explicit one-character delimiter for in-memory input.
  *
  * @param buffer Complete CSV bytes to parse.
@@ -177,7 +177,7 @@ export function findCsvSafeShards(path: string, shardCount: number, delimiter = 
  *
  * Each yielded value contains the rows parsed from one input chunk. Rows are
  * ordinary strings and remain usable after the next batch is yielded. File
- * compression and automatic delimiter detection are supported by
+ * compression and automatic delimiter and encoding detection are supported by
  * `CsvFileOptions`.
  *
  * Options are snapshotted when this function is called, before iteration

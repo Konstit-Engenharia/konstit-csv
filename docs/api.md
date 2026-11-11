@@ -23,7 +23,7 @@ id,name,state
 
 Rows are mutable arrays of decoded strings. The parser does not assign special meaning to a header row: parsing and
 counting include every physical record unless your application skips or filters one explicitly. The default delimiter is
-`,` and the default encoding is UTF-8. Parsing options accept any `Bun.Encoding` label supported by Bun's
+`,`. File readers default to `encoding: 'auto'`; buffers default to UTF-8. Parsing options accept any `Bun.Encoding` label supported by Bun's
 `TextDecoder`.
 
 ## Start with an in-memory buffer
@@ -44,7 +44,7 @@ console.log(rows);
 // ]
 ```
 
-`csv.parse()` accepts bytes, not a file path. Compression and automatic delimiter detection are available through file
+`csv.parse()` accepts bytes, not a file path. Compression and automatic delimiter and encoding detection are available through file
 APIs instead. Use `columns` to project and reorder fields:
 
 ```ts
@@ -160,12 +160,22 @@ directories are ignored. Encrypted entries and methods other than stored and DEF
 by default to 64 GiB and a declared compression ratio of 1000; use `maxDecompressedBytes` and `maxCompressionRatio`
 to apply stricter limits or to permit a larger trusted entry.
 
-`delimiter: 'auto'` is supported for file operations. Detection probes at most 64 KiB after decompression and any transcoding,
+`delimiter: 'auto'` is supported for file operations. With an explicit encoding it probes at most 64 KiB after decompression and any transcoding,
 ignores separators inside quoted fields, and considers comma, tab, semicolon, pipe, colon, caret, and tilde. File
 extensions such as `.csv`, `.tsv`, `.tab`, and `.psv` are confirmed hints and can resolve an otherwise tied result,
 including before a compression suffix such as `.gz`. Empty, single-column, inconsistent, and ambiguous probes fail;
 specify a delimiter explicitly in those cases. Omitted `delimiter` remains comma. In-memory parsing and the byte-boundary
 helpers use a fixed one-character delimiter, defaulting to comma.
+
+File readers default to `encoding: 'auto'`, which uses up to the first 64 KiB of decompressed input. It works with the default comma, an explicit delimiter
+(including single-column files), or `delimiter: 'auto'`. When both are automatic, the reader uses the same sample for both
+decisions. It replays buffered bytes into the parser, so the file is read once.
+
+The probe honors initial UTF-8 and UTF-16LE/BE byte-order marks and removes the mark from the first field.
+Without a mark, a UTF-8-compatible sample (including ASCII) selects UTF-8. Otherwise, a byte in `0x80–0x9F`
+selects Windows-1252, and other legacy samples select Latin-1. BOM-less NUL bytes and UTF-32 signatures produce errors.
+Detection is a best guess for the entire file. For example, if the sample is all ASCII and later rows use Latin-1 accents,
+pass `encoding: 'latin1'` explicitly. Supply an explicit label for other encodings such as Shift_JIS.
 
 `compression: 'auto'` reads at most four prefix bytes and combines supported signatures with `.gz`, `.gzip`, `.zst`,
 `.zstd`, `.br`, `.zz`, `.zlib`, `.deflate`, and `.deflate-raw` extensions. Signature and extension mismatches fail. A
@@ -174,7 +184,7 @@ helpers use a fixed one-character delimiter, defaulting to comma.
 Compressed input and automatic delimiter detection are supported by the file APIs. The byte-boundary helpers require an
 uncompressed file and a fixed one-character delimiter.
 
-UTF-8 (the default) and its aliases use the native UTF-8 parser. `latin1`, `iso88591`, and `iso-8859-1` use the
+Explicit `encoding: 'utf8'` skips encoding detection. UTF-8 and its aliases use the native UTF-8 parser. `latin1`, `iso88591`, and `iso-8859-1` use the
 native Latin-1 parser. With these three labels, byte `0x80` decodes to U+0080. Use `windows-1252` for an export
 that uses the same byte for `€`. For the repository's large Latin-1 corpus, pass `encoding: 'latin1'`:
 

@@ -5,6 +5,7 @@ import {
   rejectAutoDelimiterSharding,
   rejectCompressedSharding,
 } from './file-stream.js';
+import type { CsvFileProbe } from './file-stream.js';
 import {
   findCsvSafeShards as findCsvSafeShardsNative,
   findCsvSafeSplitOffsets as findCsvSafeSplitOffsetsNative,
@@ -118,15 +119,16 @@ export function rows<TColumns extends CsvColumns | undefined = undefined>(
   return iterateRows(path, snapshotCsvOptions(options));
 }
 
-async function* iterateRows<TColumns extends CsvColumns | undefined>(
+export async function* iterateRows<TColumns extends CsvColumns | undefined>(
   path: string,
   options: CsvRowsOptions<TColumns>,
+  probeFormat?: CsvFileProbe,
 ): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
   const columns = selectedColumns(options);
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
-  await using input = await prepareCsvFileInput(path, options, 'read-ahead');
+  await using input = await prepareCsvFileInput(path, options, 'read-ahead', probeFormat);
   const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
   const validator = strictSchemaValidator(options);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
@@ -705,7 +707,7 @@ export const csv = {
   withRowViews,
   /**
    * Count CSV records without materializing them.
-   * Counting supports compression and automatic delimiter detection. Filters require non-strict parsing.
+   * Counting supports compression and automatic encoding and delimiter detection. Filters require non-strict parsing.
    * @param path - Path to the CSV file.
    * @param suppliedOptions - File, filter, and validation settings.
    * @returns A promise containing the record count.

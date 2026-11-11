@@ -97,6 +97,9 @@ export function encodingCode(encoding: CsvNativeEncoding = 'utf8'): number {
  * The three Latin-1 labels map bytes 0x80–0x9f directly to Unicode control characters.
  */
 export function resolveInputEncoding(encoding: string = 'utf8', delimiter?: string): 'utf8' | 'latin1' | TextDecoder {
+  if (encoding === 'auto') {
+    throw new Error('automatic encoding detection is only supported by file parsing APIs; specify encoding explicitly');
+  }
   if (encoding === 'utf8' || encoding === 'utf-8') {
     return 'utf8';
   }

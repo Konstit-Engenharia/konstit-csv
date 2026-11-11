@@ -2,8 +2,8 @@
 
 [← Back to the README](../README.md) · [TypeScript API](./api.md)
 
-The `@konstit/csv` package includes a `csv` command for counting records and
-streaming filtered records from a file. The examples use `bunx @konstit/csv`,
+The `@konstit/csv` package includes a `csv` command for inspecting files,
+counting records, and streaming filtered records. The examples use `bunx @konstit/csv`,
 so they run without a global installation.
 
 The examples in this guide use this small UTF-8 fixture. CSV columns are
@@ -24,17 +24,40 @@ Save it as `data.csv` before trying the examples.
 bunx @konstit/csv --help
 bunx @konstit/csv count --help
 bunx @konstit/csv lines --help
+bunx @konstit/csv probe --help
 ```
 
-The top-level command has two subcommands:
+The top-level command has three subcommands:
 
 | Command        | Description                                                                         |
 | -------------- | ----------------------------------------------------------------------------------- |
 | `count <path>` | Print the number of CSV records, including the header row.                          |
 | `lines <path>` | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON). |
+| `probe <path>` | Print file size, encoding, delimiter, record endings, compression, and first record column count. |
 
 Each command accepts exactly one input path. The complete option list and
 defaults are available from the command-specific help output.
+
+## Inspect a file
+
+```sh
+bunx @konstit/csv probe data.csv
+# File size: 34 B
+# Encoding: utf8
+# Delimiter: ","
+# Line endings: LF
+# Compression: none
+# First record columns: 3
+```
+
+Size is the size of the regular file on disk. The other CSV details come from a sample of up to 64 KiB
+after decompression. The probe recognizes the same stream compression signatures and filename hints as
+`--compression auto`, plus plain files and ZIP archives. It reads the only file in a ZIP automatically;
+for archives containing multiple files, pass `--zip-entry path/to/table.csv`.
+
+Record endings can be LF, CRLF, CR, mixed, or absent. Newlines and separators inside quotes belong to their field.
+A complete first record with no candidate separators has one column; an empty file has zero.
+An inconclusive sample reports `undetermined` for the delimiter and `unknown` for details it cannot establish.
 
 ## Count records
 
@@ -46,7 +69,7 @@ bunx @konstit/csv count data.csv
 # 3
 ```
 
-Use `--delimiter` when the input is not comma-delimited, and `--chunk-size` to
+Use `--delimiter` to override detection, and `--chunk-size` to
 choose the number of input bytes read per chunk. The chunk size must be from 1
 through 67,108,864 bytes and defaults to 1 MiB.
 
@@ -103,12 +126,12 @@ only NDJSON records to stdout and cannot be combined with
 
 ## Input options
 
-Both commands accept these file options:
+`count` and `lines` accept these file options:
 
 | Option                             | Behavior                                                                               |
 | ---------------------------------- | -------------------------------------------------------------------------------------- |
-| `--delimiter <value>`              | One safe ASCII character, or `auto` for file operations. Defaults to `,`.              |
-| `--encoding <value>`               | Any `Bun.Encoding` label accepted by Bun's `TextDecoder`; defaults to `utf8`.            |
+| `--delimiter <value>`              | One safe ASCII character, or `auto` (the default) to infer the input delimiter. |
+| `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding. |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                   |
 | `--compression <format>`           | `auto`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                  |
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file entry. |
@@ -116,9 +139,9 @@ Both commands accept these file options:
 | `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.   |
 
 `--delimiter auto` detects comma, tab, semicolon, pipe, colon, caret, or tilde
-from a bounded prefix while ignoring separators inside quoted fields. Detection
-is available for file operations. Omit the option when comma is the input
-delimiter.
+from a bounded prefix while ignoring separators inside quoted fields. Pass a fixed
+delimiter for empty, single-column, ragged, or ambiguous input. To force the traditional
+comma and UTF-8 settings, use `--delimiter ',' --encoding utf8`.
 
 Compressed input is streamed into the parser. The advanced byte-boundary helpers
 in the TypeScript API require uncompressed input. ZIP input
@@ -136,7 +159,18 @@ bunx @konstit/csv count corpus/large/example.csv \
   --delimiter ';' --encoding latin1
 ```
 
-The same option handles common legacy exports such as Windows-1252, UTF-16LE, and Shift_JIS. The decoder stays active
+Use `--encoding auto` with any input delimiter. For example, these commands detect the encoding of a
+semicolon-separated file and infer both settings for an unknown export:
+
+```sh
+bunx @konstit/csv lines export.csv --encoding auto --delimiter ';'
+bunx @konstit/csv count export.csv --encoding auto --delimiter auto
+```
+
+Both settings share a sample of up to 64 KiB after decompression. Automatic encoding covers UTF-8, Latin-1,
+Windows-1252 and UTF-16 with a byte-order mark. The [API guide](./api.md) describes the legacy encoding heuristic.
+
+For an export with a known encoding, pass its label explicitly. The decoder stays active
 across input chunks, so a multibyte character split at a chunk boundary is decoded as one character:
 
 ```sh
@@ -149,7 +183,7 @@ bunx @konstit/csv lines japanese-export.csv --encoding shift_jis
 uses the Windows mapping for bytes such as `0x80`.
 
 Input delimiters must be one ASCII character. With a fallback encoding, decoding happens before parsing, and
-`--delimiter auto` probes up to 64 KiB of the transcoded UTF-8 bytes. Bun's decoder replaces malformed byte sequences
+`--delimiter auto` with an explicit encoding probes up to 64 KiB of the transcoded UTF-8 bytes. Bun's decoder replaces malformed byte sequences
 and removes an initial UTF-16 byte-order mark using its default streaming behavior.
 
 ## Projection
@@ -267,8 +301,8 @@ header is counted only when it is emitted. Because early stopping validates
 only the consumed input prefix, `--limit` cannot be combined with
 `--min-data-rows`.
 
-When `--strict` and `--limit` are used together, the input delimiter must be
-fixed, compressed input (including `--compression auto`) is not supported, and
+When `--strict` and `--limit` are used together, the input delimiter and encoding must be
+fixed (defaulting to comma and UTF-8), compressed input (including `--compression auto`) is not supported, and
 the chunk size must be omitted or set to `1`. The CLI uses one-byte chunks in
 this mode to avoid read-ahead. A later input error can occur after earlier
 records have already been written.

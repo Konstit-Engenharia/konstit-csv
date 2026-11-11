@@ -1,7 +1,12 @@
+import { ptr } from 'bun:ffi';
 import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
-import { DEFAULT_CHUNK_SIZE } from './native.js';
+import {
+  DEFAULT_CHUNK_SIZE,
+  EMPTY_BUFFER,
+  native,
+} from './native.js';
 import { resolveInputEncoding } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
@@ -12,9 +17,10 @@ import type {
 } from './types.js';
 import { readZipEntryChunks } from './zip-reader.js';
 
-const DELIMITER_PROBE_SIZE = 64 * 1024;
+export const FILE_PROBE_SIZE = 64 * 1024;
+const PROBED_BYTE_ENCODINGS = ['utf8', 'latin1', 'windows-1252'] as const;
 const MAX_DELIMITER_PROBE_ROWS = 128;
-const DELIMITER_CANDIDATES = [
+export const DELIMITER_CANDIDATES = [
   { byte: 0x2c, delimiter: ',' },
   { byte: 0x09, delimiter: '\t' },
   { byte: 0x3b, delimiter: ';' },
@@ -53,13 +59,22 @@ interface StableDelimiterCandidate {
   separatorCount: number;
 }
 
+export type CsvFileProbe = (path: string, prefix: Uint8Array, sourceEnded: boolean, delimiter: CsvDelimiter) => {
+  delimiter: CsvDelimiter;
+  encoding: 'utf8' | 'latin1' | 'windows-1252' | 'utf-16le' | 'utf-16be';
+  skipBytes: number;
+};
+
 export async function prepareCsvFileInput(
   path: string,
   suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter' | 'encoding'>,
   readMode: 'stream' | 'read-ahead' = 'stream',
+  probeFormat: CsvFileProbe = probeCsvFileFormat,
 ): Promise<CsvFileInput> {
   const options = snapshotCsvOptions(suppliedOptions);
-  const inputEncoding = resolveInputEncoding(options.encoding, options.delimiter);
+  const autoEncoding = options.encoding === undefined || options.encoding === 'auto';
+  // The encoding probe needs the original bytes after decompression.
+  const inputEncoding = autoEncoding ? 'utf8' : resolveInputEncoding(options.encoding, options.delimiter);
   const parserEncoding = typeof inputEncoding === 'string' ? inputEncoding : 'utf8';
   const readAhead = readMode === 'read-ahead' && options.compression === undefined
     ? readAheadFileChunks(path, options.chunkSize ?? DEFAULT_CHUNK_SIZE)
@@ -69,7 +84,7 @@ export async function prepareCsvFileInput(
     return typeof inputEncoding === 'string' ? chunks : transcodeCsvChunks(chunks, inputEncoding);
   };
   const configuredDelimiter = options.delimiter ?? ',';
-  if (configuredDelimiter !== 'auto') {
+  if (!autoEncoding && configuredDelimiter !== 'auto') {
     let opened = false;
     return {
       delimiter: configuredDelimiter,
@@ -92,9 +107,10 @@ export async function prepareCsvFileInput(
   const bufferedChunks: Uint8Array[] = [];
   let bufferedByteLength = 0;
   let sourceEnded = false;
+  let bytesNeeded = FILE_PROBE_SIZE;
 
   try {
-    while (bufferedByteLength < DELIMITER_PROBE_SIZE) {
+    while (bufferedByteLength < bytesNeeded) {
       const result = await iterator.next();
       if (result.done === true) {
         sourceEnded = true;
@@ -104,24 +120,47 @@ export async function prepareCsvFileInput(
         continue;
       }
       bufferedByteLength += result.value.byteLength;
+      // At the limit, EOF can complete an unterminated record or distinguish
+      // a final Latin-1 accent from the start of a UTF-8 character.
+      if (
+        bufferedByteLength === FILE_PROBE_SIZE && (configuredDelimiter === 'auto' || (autoEncoding && mayEndInPartialUtf8(result.value)))
+      ) {
+        ++bytesNeeded;
+      }
       // Raw read-ahead reuses buffers. The last probe chunk is replayed before reading resumes.
       bufferedChunks.push(
-        reusesReadBuffer && bufferedByteLength < DELIMITER_PROBE_SIZE ? new Uint8Array(result.value) : result.value,
+        reusesReadBuffer && bufferedByteLength < bytesNeeded ? new Uint8Array(result.value) : result.value,
       );
     }
 
     const probe = copyProbePrefix(bufferedChunks, bufferedByteLength);
-    const delimiter = detectDelimiter(delimiterHintPath(path, options.compression), probe, sourceEnded);
+    const hint = delimiterHintPath(path, options.compression);
+    const format = autoEncoding ? probeFormat(hint, probe, sourceEnded, configuredDelimiter) : undefined;
+    const delimiter = format?.delimiter ?? detectDelimiter(hint, probe, sourceEnded);
+    const replayEncoding = format === undefined ? parserEncoding : resolveInputEncoding(format.encoding, delimiter);
+    // A signature can span multiple reads, including one-byte input chunks.
+    let skip = format?.skipBytes ?? 0;
+    if (skip > 0) {
+      for (const [i, chunk,] of bufferedChunks.entries()) {
+        const length = Math.min(skip, chunk.length);
+        bufferedChunks[i] = chunk.subarray(length);
+        skip -= length;
+        if (skip === 0) {
+          break;
+        }
+      }
+    }
     let opened = false;
     return {
       delimiter,
-      parserEncoding,
+      parserEncoding: typeof replayEncoding === 'string' ? replayEncoding : 'utf8',
       chunks() {
         if (opened) {
           throw new Error('CSV file input can only be read once');
         }
         opened = true;
-        return replayCsvFileChunks(bufferedChunks, iterator);
+        const replay = replayCsvFileChunks(bufferedChunks, iterator);
+        return typeof replayEncoding === 'string' ? replay : transcodeCsvChunks(replay, replayEncoding);
       },
       [Symbol.asyncDispose](): Promise<void> {
         return closeCsvFileIterator(iterator);
@@ -252,8 +291,28 @@ async function closeCsvFileIterator(iterator: AsyncIterator<Uint8Array>): Promis
   }
 }
 
+function mayEndInPartialUtf8(chunk: Uint8Array): boolean {
+  let index = chunk.length - 1;
+  while (index >= 0 && chunk.length - index < 4 && ((chunk[index] ?? 0) & 0xc0) === 0x80) {
+    --index;
+  }
+  const length = chunk.length - index;
+  if (length >= 4) {
+    return false;
+  }
+  // One or two continuation bytes in a tiny chunk can have a lead in the preceding chunk.
+  if (index < 0) {
+    return true;
+  }
+  const lead = chunk[index] ?? 0;
+  if (lead < 0xc2 || lead > 0xf4) {
+    return false;
+  }
+  return length < (lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4);
+}
+
 function copyProbePrefix(chunks: readonly Uint8Array[], totalByteLength: number): Uint8Array {
-  const probe = new Uint8Array(Math.min(totalByteLength, DELIMITER_PROBE_SIZE));
+  const probe = new Uint8Array(Math.min(totalByteLength, FILE_PROBE_SIZE));
   let offset = 0;
   for (const chunk of chunks) {
     if (offset === probe.byteLength) {
@@ -267,14 +326,83 @@ function copyProbePrefix(chunks: readonly Uint8Array[], totalByteLength: number)
   return probe;
 }
 
-function detectDelimiter(path: string, probe: Uint8Array, sourceEnded: boolean): CsvDelimiter {
-  const rows = scanDelimiterCounts(probe, sourceEnded);
+export function detectDelimiter(path: string, probe: Uint8Array, sourceEnded: boolean): CsvDelimiter {
+  return requireDelimiter(path, scanDelimiterCounts(probe, sourceEnded));
+}
+
+/** Detect the encoding and, when requested, score delimiters on the same prefix. */
+export const probeCsvFileFormat: CsvFileProbe = (path, prefix, sourceEnded, delimiter) => {
+  const { encoding, skipBytes, counts } = scanCsvFileFormat(prefix, sourceEnded, delimiter === 'auto');
+  return { encoding, delimiter: delimiter === 'auto' ? requireDelimiter(path, counts) : delimiter, skipBytes };
+};
+
+interface CsvFormatSample {
+  bytes: Uint8Array;
+  encoding: ReturnType<CsvFileProbe>['encoding'];
+  skipBytes: number;
+  counts: readonly Uint32Array[];
+}
+
+/** When scoring delimiters, structural bytes exclude the BOM and use UTF-8 for UTF-16 input. */
+export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scoreDelimiters: boolean): CsvFormatSample {
+  let bytes = prefix;
+  let bomEncoding: 'utf-16le' | 'utf-16be' | 'utf8' | undefined;
+  let skipBytes = 0;
+  if (
+    (bytes[0] === 0xff && bytes[1] === 0xfe && bytes[2] === 0 && bytes[3] === 0)
+    || (bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 0xfe && bytes[3] === 0xff)
+  ) {
+    throw new Error('automatic encoding detection does not support UTF-32; transcode the input to UTF-8');
+  }
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    bomEncoding = 'utf8';
+    skipBytes = 3;
+    bytes = bytes.subarray(skipBytes);
+  } else if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    bomEncoding = 'utf-16le';
+  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    bomEncoding = 'utf-16be';
+  }
+  if (bomEncoding !== undefined) {
+    if (!scoreDelimiters) {
+      return { bytes, encoding: bomEncoding, skipBytes, counts: [] };
+    }
+    if (bomEncoding !== 'utf8') {
+      // Score whole UTF-16 characters. The replay decoder consumes the original BOM.
+      const text = new TextDecoder(bomEncoding).decode(bytes, { stream: !sourceEnded });
+      bytes = new TextEncoder().encode(text);
+    }
+  }
+  const counts = scoreDelimiters ? new Uint32Array(8) : undefined;
+  const encodingCode = native.symbols.csv_probe_format(
+    bytes.length === 0 ? EMPTY_BUFFER : bytes,
+    bytes.length,
+    sourceEnded,
+    bomEncoding === undefined,
+    counts === undefined ? null : ptr(counts),
+  );
+  const encoding = bomEncoding ?? PROBED_BYTE_ENCODINGS[encodingCode];
+  if (encoding === undefined) {
+    throw new Error('NUL in encoding probe: specify the encoding explicitly');
+  }
+  return { bytes, encoding, skipBytes, counts: counts === undefined || counts[7] === 0 ? [] : [counts] };
+}
+
+function requireDelimiter(path: string, rows: readonly ArrayLike<number>[]): CsvDelimiter {
+  const result = selectDelimiter(path, rows);
+  if ('error' in result) {
+    throw new Error(result.error);
+  }
+  return result.delimiter;
+}
+
+export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]): { delimiter: CsvDelimiter; } | { error: string; } {
   if (rows.length === 0) {
-    throw new Error(
-      `delimiter auto-detection failed: the ${
-        String(DELIMITER_PROBE_SIZE)
+    return {
+      error: `delimiter auto-detection failed: the ${
+        String(FILE_PROBE_SIZE)
       }-byte probe contains no complete non-empty row; specify delimiter explicitly`,
-    );
+    };
   }
 
   const stableCandidates: StableDelimiterCandidate[] = [];
@@ -292,15 +420,16 @@ function detectDelimiter(path: string, probe: Uint8Array, sourceEnded: boolean):
   }
 
   if (stableCandidates.length === 0) {
-    throw new Error(
-      'delimiter auto-detection failed: no supported delimiter has a stable positive count across the probe rows; specify delimiter explicitly',
-    );
+    return {
+      error:
+        'delimiter auto-detection failed: no supported delimiter has a stable positive count across the probe rows; specify delimiter explicitly',
+    };
   }
 
   const extensionHint = delimiterFromExtension(path);
   const confirmedHint = stableCandidates.find((candidate) => candidate.delimiter === extensionHint);
   if (confirmedHint !== undefined) {
-    return confirmedHint.delimiter;
+    return { delimiter: confirmedHint.delimiter };
   }
 
   const maximumSeparatorCount = Math.max(...stableCandidates.map((candidate) => candidate.separatorCount));
@@ -308,14 +437,14 @@ function detectDelimiter(path: string, probe: Uint8Array, sourceEnded: boolean):
     (candidate) => candidate.separatorCount === maximumSeparatorCount,
   );
   if (strongestCandidates.length === 1) {
-    return strongestCandidates[0]?.delimiter ?? ',';
+    return { delimiter: strongestCandidates[0]?.delimiter ?? ',' };
   }
 
-  throw new Error(
-    `delimiter auto-detection is ambiguous between ${
+  return {
+    error: `delimiter auto-detection is ambiguous between ${
       strongestCandidates.map((candidate) => JSON.stringify(candidate.delimiter)).join(', ')
     }; specify delimiter explicitly`,
-  );
+  };
 }
 
 export function scanDelimiterCounts(probe: Uint8Array, sourceEnded: boolean): number[][] {
@@ -392,7 +521,12 @@ function stripCompressionExtension(path: string): string {
 }
 
 async function* readAutoDetectedCsvFileChunks(path: string, chunkSize: number): AsyncGenerator<Uint8Array, void> {
-  const compression = await detectCompression(path);
+  const compression = compressionFromPrefix(path, await Bun.file(path).slice(0, 4).bytes());
+  if (compression === undefined) {
+    throw new Error(
+      'compression auto-detection failed: no supported signature or extension; specify compression as \'brotli\' or \'deflate-raw\' when applicable',
+    );
+  }
   for await (const chunk of decompressedCsvFileChunks(path, compression, chunkSize)) {
     yield chunk;
   }
@@ -408,8 +542,7 @@ function decompressedCsvFileChunks(
   );
 }
 
-async function detectCompression(path: string): Promise<Bun.CompressionFormat> {
-  const prefix = await Bun.file(path).slice(0, 4).bytes();
+export function compressionFromPrefix(path: string, prefix: Uint8Array): Bun.CompressionFormat | undefined {
   const extensionHint = compressionFromExtension(path);
   const strongSignature = compressionFromStrongSignature(prefix);
 
@@ -444,12 +577,10 @@ async function detectCompression(path: string): Promise<Bun.CompressionFormat> {
     return 'deflate';
   }
 
-  throw new Error(
-    'compression auto-detection failed: no supported signature or extension; specify compression as \'brotli\' or \'deflate-raw\' when applicable',
-  );
+  return undefined;
 }
 
-function compressionFromExtension(path: string): CompressionExtensionHint | undefined {
+export function compressionFromExtension(path: string): CompressionExtensionHint | undefined {
   const lowerPath = path.toLowerCase();
   if (lowerPath.endsWith('.deflate-raw')) {
     return { extension: '.deflate-raw', format: 'deflate-raw', signatureRequired: false };

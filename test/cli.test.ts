@@ -88,6 +88,96 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
+  test('detects the encoding with a fixed delimiter and detects both for filtered counts', () => {
+    const path = join(temporaryDirectory, 'windows-1252.csv');
+    const lines = runCli('lines', path, '--encoding', 'auto', '--delimiter', ';', '--json');
+    expect(lines.exitCode).toBe(0);
+    expect(lines.stdout.toString()).toBe('["id","name"]\n["1","€"]\n["2","“quoted”"]\n');
+    const count = runCli('count', path, '--where-eq', '1=€');
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout.toString()).toBe('1\n');
+    expect(runCli('lines', path, '--json').stdout.toString()).toBe(lines.stdout.toString());
+  });
+
+  test('probe reports the compressed size and the format of quoted UTF-16 records', async () => {
+    const path = join(temporaryDirectory, 'compressed-without-extension');
+    const compressed = Bun.gzipSync(Buffer.from('\ufeff"first\nfield"\t"say ""hi""\there"\t\r\n1\t2\t3\r\n', 'utf16le'));
+    await Bun.write(path, compressed);
+    const result = runCli('probe', path);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).toBe('');
+    expect(result.stdout.toString()).toBe(
+      `File size: ${
+        String(compressed.length)
+      } B\nEncoding: utf-16le\nDelimiter: "\\t"\nLine endings: CRLF\nCompression: gzip\nFirst record columns: 3\n`,
+    );
+  });
+
+  test('probe reports mixed record endings and plain CSV with a zlib-like prefix', async () => {
+    const path = join(temporaryDirectory, 'plain.csv');
+    await Bun.write(path, Buffer.from('H,name\r1,\x80\n2,João\r\n', 'latin1'));
+    const result = runCli('probe', path);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain(
+      'Encoding: windows-1252\nDelimiter: ","\nLine endings: mixed\nCompression: none\nFirst record columns: 2',
+    );
+  });
+
+  test('probe uses the only ZIP entry or the named entry in a multi-file archive', async () => {
+    const single = runCli('probe', join(temporaryDirectory, 'input.zip'));
+    expect(single.exitCode).toBe(0);
+    expect(single.stdout.toString()).toContain('Delimiter: ";"\nLine endings: LF\nCompression: zip\nFirst record columns: 2');
+    const path = join(temporaryDirectory, 'tables.zip');
+    await Bun.write(
+      path,
+      createZip([
+        { data: Buffer.from('a,b\n'), method: 8, name: 'data.csv' },
+        { data: Buffer.from('a|b,c\r1|2,3'), method: 0, name: 'data.psv' },
+      ]),
+    );
+    expectCommandError(runCli('probe', path), 'exactly one file');
+    const chosen = runCli('probe', path, '--zip-entry', 'data.psv');
+    expect(chosen.exitCode).toBe(0);
+    expect(chosen.stdout.toString()).toContain('Delimiter: "|"\nLine endings: CR\nCompression: zip\nFirst record columns: 2');
+  });
+
+  test('probe distinguishes missing, incomplete, single-column, and ambiguous first records', async () => {
+    const path = join(temporaryDirectory, 'unknown.data');
+    for (
+      const [input, ending, width,] of [
+        ['', 'none', '0'],
+        ['one field', 'none', '1'],
+        ['a,b;c\n1,2;3', 'LF', 'unknown'],
+        [`${'a'.repeat(65536)},b\n`, 'unknown', 'unknown'],
+      ] as const
+    ) {
+      await Bun.write(path, input);
+      const result = runCli('probe', path);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString()).toContain(
+        `Delimiter: undetermined\nLine endings: ${ending}\nCompression: none\nFirst record columns: ${width}`,
+      );
+      if (input.length > 65536) {
+        expect(result.stdout.toString()).toStartWith('File size: 64 KiB\n');
+      }
+    }
+  });
+
+  test('probe accepts one file path and provides command help', () => {
+    expectUsageError(runCli('probe'), 'probe requires one file path', 'probe');
+    expectUsageError(runCli('probe', 'one', 'two'), 'probe requires one file path', 'probe');
+    expectUsageError(runCli('probe', 'one', '--strict'), 'Unknown option \'--strict\'', 'probe');
+    const help = runCli('probe', '--help');
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout.toString()).toContain('Usage: csv probe <path>');
+    expectCommandError(runCli('probe', join(temporaryDirectory, 'missing')), 'missing');
+  });
+
+  test('rejects an encoding probe when strict line limits forbid read-ahead', () => {
+    const result = runCli('lines', join(temporaryDirectory, 'strict-prefix.csv'), '--encoding', 'auto', '--strict', '--limit', '1');
+    expectUsageError(result, '--strict with --limit requires a fixed input encoding', 'lines');
+  });
+
   test('supports compression options', () => {
     const result = runCli(
       'count',
@@ -248,7 +338,7 @@ describe('csv CLI', () => {
   });
 
   test('reports a missing required header', () => {
-    const result = runCli('count', join(temporaryDirectory, 'empty.csv'), '--strict', '--require-header');
+    const result = runCli('count', join(temporaryDirectory, 'empty.csv'), '--strict', '--require-header', '--delimiter', ',');
 
     expectCommandError(result, 'strict CSV schema error: missing header row');
   });
@@ -592,8 +682,10 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
-  test('emits no bytes for an empty input file', () => {
-    const result = runCli('lines', join(temporaryDirectory, 'empty.csv'));
+  test('an empty file needs an explicit input delimiter and emits no bytes', () => {
+    const path = join(temporaryDirectory, 'empty.csv');
+    expectCommandError(runCli('lines', path), 'specify delimiter explicitly');
+    const result = runCli('lines', path, '--delimiter', ',');
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('');
@@ -721,6 +813,7 @@ describe('csv CLI', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain('count <path>');
     expect(result.stdout.toString()).toContain('lines <path>');
+    expect(result.stdout.toString()).toContain('probe <path>');
     expect(result.stdout.toString()).toContain('bunx @konstit/csv <command> <path>');
     expect(result.stderr.toString()).toBe('');
   });

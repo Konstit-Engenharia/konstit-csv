@@ -36,6 +36,18 @@ export const DEFAULT_CHUNK_SIZE = 1024 * 1024;
 
 const CSV_SYMBOLS = {
   // C signature:
+  // uint32_t csv_probe_format(const uint8_t* bytes, uint32_t size, bool eof, bool infer_encoding, uint32_t* output);
+  csv_probe_format: {
+    args: [
+      'buffer', // const uint8_t* bytes
+      'u32', // uint32_t size
+      'bool', // bool eof
+      'bool', // bool infer_encoding
+      'ptr', // uint32_t* output (eight elements, or null to skip delimiter detection)
+    ],
+    returns: 'u32',
+  },
+  // C signature:
   // int csv_runtime_supports_avx2();
   csv_runtime_supports_avx2: {
     args: [],

@@ -134,6 +134,7 @@ set_target_properties(zlib-ng PROPERTIES
 
 add_library(csv_native SHARED
   native/csv_parser.cpp
+  native/file_probe.cpp
   native/runtime.cpp
   native/zip_reader.cpp
 )

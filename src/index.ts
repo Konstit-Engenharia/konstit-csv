@@ -19,6 +19,7 @@ export type {
   CsvEqualsFilter,
   CsvFieldRange,
   CsvFieldValue,
+  CsvFileEncoding,
   CsvFileOptions,
   CsvFilter,
   CsvFilterColumn,

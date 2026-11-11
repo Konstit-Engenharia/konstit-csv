@@ -57,9 +57,10 @@ bun parse.ts
 ```
 
 Each row is an array of strings. Headers remain ordinary records, and numeric-looking fields remain strings.
-The default delimiter is a comma and the default encoding is UTF-8. File and buffer APIs accept any `Bun.Encoding`
-label. UTF-8 and Latin-1 use the native fast paths. For other encodings, the reader converts the input to UTF-8,
-one chunk at a time for files.
+File and buffer APIs default to a comma delimiter. Buffers default to UTF-8; file readers detect UTF-8, Latin-1,
+Windows-1252 or BOM-marked UTF-16 from the first 64 KiB after decompression. Set `delimiter: 'auto'` on a file
+to detect both from the same sample. To skip detection, pass the encoding and delimiter explicitly.
+UTF-8 and Latin-1 use native paths; other supported `Bun.Encoding` labels are transcoded to UTF-8.
 
 ## Stream a file
 
@@ -193,9 +194,11 @@ for supported combinations.
 
 ## CLI
 
-Count records or emit the first records as newline-delimited JSON:
+Inspect a file, count its records, or emit the first records as newline-delimited JSON:
 
 ```sh
+bunx @konstit/csv probe data.csv
+
 bunx @konstit/csv count data.csv
 # 3
 
@@ -204,7 +207,8 @@ bunx @konstit/csv lines data.csv --json --limit 2
 # ["1","Ada","SP"]
 ```
 
-Without `--json`, `lines` writes normalized UTF-8 CSV. Both commands support column filters; `lines` also supports
+The CLI detects input encoding and delimiter by default. Without `--json`, `lines` writes normalized UTF-8 CSV.
+`count` and `lines` support column filters; `lines` also supports
 column selection. Use `bunx @konstit/csv lines --help` or read the
 [CLI guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/cli.md) for flags and output behavior.
 

@@ -2,6 +2,8 @@
 
 import { parseArgs } from 'node:util';
 import { csv } from './api.js';
+import { formatBytes } from './format-bytes.js';
+import { inspectCsvFile } from './inspect-file.js';
 import {
   normalizeColumns,
   normalizeFilterColumn,
@@ -15,6 +17,7 @@ import type {
   CsvCountOptions,
   CsvDelimiter,
   CsvEncoding,
+  CsvFileEncoding,
   CsvFilter,
   CsvRowsOptions,
 } from './types.js';
@@ -24,6 +27,7 @@ const help = `Usage: csv <command>
 Commands:
   count <path> [options]  Count CSV records
   lines <path> [options]  Stream matching CSV records to stdout
+  probe <path> [options]  Inspect the file size and CSV format
 
 Options:
   -h, --help              Show this help
@@ -38,8 +42,8 @@ const countHelp = `Usage: csv count <path> [options]
 Count every CSV record, including the header row.
 
 File options:
-  --delimiter <value>              One safe ASCII character or auto (default: ,)
-  --encoding <value>               Any Bun.Encoding label accepted by TextDecoder (default: utf8)
+  --delimiter <value>              One safe ASCII character or auto (default: auto)
+  --encoding <value>               A Bun.Encoding label or auto (default: auto)
   --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
   --compression <format>           auto, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: none)
   --zip-entry <path>               Entry used with --compression zip
@@ -88,8 +92,8 @@ Parse a CSV file and stream matching records as normalized UTF-8 CSV or NDJSON.
 CSV output uses comma delimiters and LF record endings by default.
 
 File options:
-  --delimiter <value>              Input delimiter: one safe ASCII character or auto (default: ,)
-  --encoding <value>               Any Bun.Encoding label accepted by TextDecoder (default: utf8)
+  --delimiter <value>              Input delimiter: one safe ASCII character or auto (default: auto)
+  --encoding <value>               A Bun.Encoding label or auto (default: auto)
   --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
   --compression <format>           auto, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: none)
   --zip-entry <path>               Entry used with --compression zip
@@ -137,7 +141,7 @@ Compatibility:
   --fixed-columns and schema options require --strict.
   --json cannot be combined with --output-delimiter.
   --limit cannot be combined with --min-data-rows.
-  --strict with --limit requires a fixed delimiter and uses --chunk-size 1.
+  --strict with --limit defaults to comma and UTF-8 and uses --chunk-size 1; auto is unavailable.
   --strict with --limit cannot use --compression, including auto.
   ZIP options require --compression zip and --zip-entry.
 
@@ -181,6 +185,12 @@ const linesOptionDefinitions = {
 } as const;
 
 const compressionFormats = new Set(['auto', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd']);
+const probeHelp = `Usage: csv probe <path> [--zip-entry <path>]
+
+Print the on-disk file size and compression, plus the encoding, delimiter,
+record endings and first record's column count from up to 64 KiB of CSV.
+For a ZIP archive with multiple files, select one with --zip-entry.
+Use -h or --help to show this help.`;
 const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 const MAX_FILTER_NESTING = 128;
 const OUTPUT_BUFFER_SIZE = 64 * 1024;
@@ -200,7 +210,49 @@ async function run(arguments_: readonly string[]): Promise<number> {
   if (command === 'lines') {
     return runLines(arguments_.slice(1));
   }
+  if (command === 'probe') {
+    return runProbe(arguments_.slice(1));
+  }
   return usageError(`unknown command: ${command}`);
+}
+
+async function runProbe(arguments_: readonly string[]): Promise<number> {
+  let path: string;
+  let entry: string | undefined;
+  try {
+    const { values, positionals } = parseArgs({
+      args: [...arguments_],
+      allowPositionals: true,
+      strict: true,
+      options: { 'help': countOptionDefinitions.help, 'zip-entry': countOptionDefinitions['zip-entry'] },
+    });
+    if (values.help === true) {
+      console.log(probeHelp);
+      return 0;
+    }
+    if (positionals.length !== 1 || positionals[0] === undefined) {
+      throw new Error('probe requires one file path');
+    }
+    path = positionals[0];
+    entry = values['zip-entry'];
+  } catch (error) {
+    return usageError(error instanceof Error ? error.message : String(error), 'csv probe --help');
+  }
+  try {
+    const result = await inspectCsvFile(path, entry);
+    console.log([
+      `File size: ${formatBytes(result.size)}`,
+      `Encoding: ${result.encoding}`,
+      `Delimiter: ${result.delimiter === undefined ? 'undetermined' : JSON.stringify(result.delimiter)}`,
+      `Line endings: ${result.lineEnding}`,
+      `Compression: ${result.compression}`,
+      `First record columns: ${String(result.firstRecordColumns ?? 'unknown')}`,
+    ].join('\n'));
+    return 0;
+  } catch (error) {
+    console.error(`csv: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
 }
 
 async function runCount(arguments_: readonly string[]): Promise<number> {
@@ -326,8 +378,8 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
     throw new Error('lines requires one file path');
   }
 
-  const options = parseCommonOptions(values);
   const limit = values.limit === undefined ? undefined : parseInteger(values.limit, 'limit', 1);
+  const options = parseCommonOptions(values, values.strict === true && limit !== undefined);
   if (limit !== undefined && options.minDataRows !== undefined) {
     throw new Error('--limit cannot be combined with --min-data-rows');
   }
@@ -337,6 +389,9 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
     }
     if (options.delimiter === 'auto') {
       throw new Error('--strict with --limit requires a fixed input delimiter');
+    }
+    if (options.encoding === 'auto') {
+      throw new Error('--strict with --limit requires a fixed input encoding');
     }
     if (options.chunkSize !== undefined && options.chunkSize !== 1) {
       throw new Error('--strict with --limit requires --chunk-size 1');
@@ -366,14 +421,11 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
 
 type MutableCliOptions = { -readonly [Key in keyof CsvApiFileOptions]: CsvApiFileOptions[Key]; };
 
-function parseCommonOptions(values: CommonOptionValues): MutableCliOptions {
-  const options: MutableCliOptions = {};
-  if (values.delimiter !== undefined) {
-    options.delimiter = parseDelimiter(values.delimiter);
-  }
-  if (values.encoding !== undefined) {
-    options.encoding = parseEncoding(values.encoding);
-  }
+function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): MutableCliOptions {
+  const options: MutableCliOptions = {
+    delimiter: parseDelimiter(values.delimiter ?? (fixedFormat ? ',' : 'auto')),
+    encoding: parseEncoding(values.encoding ?? (fixedFormat ? 'utf8' : 'auto')),
+  };
   if (values['chunk-size'] !== undefined) {
     options.chunkSize = parseInteger(values['chunk-size'], 'chunk size', 1, MAX_CHUNK_SIZE);
   }
@@ -433,7 +485,10 @@ function parseOutputDelimiter(value: string): string {
   return delimiter;
 }
 
-function parseEncoding(value: string): CsvEncoding {
+function parseEncoding(value: string): CsvFileEncoding {
+  if (value === 'auto') {
+    return value;
+  }
   const resolved = resolveInputEncoding(value);
   return typeof resolved === 'string' ? resolved : resolved.encoding as CsvEncoding;
 }

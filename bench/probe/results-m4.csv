@@ -1,0 +1,65 @@
+pass,case,probe,calls,median_us
+1,tiny ASCII 1024KiB,baseline,10625,58.292
+1,tiny ASCII 1024KiB,Highway,11035,55.542
+1,short ASCII rows 1024KiB,baseline,83,8392.583
+1,short ASCII rows 1024KiB,Highway,83,8313.208
+1,wide quoted UTF-8 64KiB,baseline,3290,197.458
+1,wide quoted UTF-8 64KiB,Highway,4020,157.834
+1,wide quoted UTF-8 1024KiB,baseline,439,1555.25
+1,wide quoted UTF-8 1024KiB,Highway,460,1497.729
+1,Windows-1252 1024KiB,baseline,40,18075.875
+1,Windows-1252 1024KiB,Highway,41,17746
+1,UTF-16LE TSV 1024KiB,baseline,144,4877.3335
+1,UTF-16LE TSV 1024KiB,Highway,144,4855.729
+1,Latin-1 corpus 64KiB,baseline,2549,255.875
+1,Latin-1 corpus 64KiB,Highway,3420,186.7085
+1,Latin-1 corpus 1024KiB,baseline,318,2102.75
+1,Latin-1 corpus 1024KiB,Highway,337,1997.375
+2,tiny ASCII 1024KiB,Highway,10626,57.75
+2,tiny ASCII 1024KiB,baseline,10571,58.25
+2,short ASCII rows 1024KiB,Highway,85,8099.875
+2,short ASCII rows 1024KiB,baseline,84,8180.563
+2,wide quoted UTF-8 64KiB,Highway,3934,160.833
+2,wide quoted UTF-8 64KiB,baseline,3322,196.667
+2,wide quoted UTF-8 1024KiB,Highway,434,1558.979
+2,wide quoted UTF-8 1024KiB,baseline,438,1562.313
+2,Windows-1252 1024KiB,Highway,40,18140.104
+2,Windows-1252 1024KiB,baseline,40,18238.146
+2,UTF-16LE TSV 1024KiB,Highway,139,5011.625
+2,UTF-16LE TSV 1024KiB,baseline,139,5021.416
+2,Latin-1 corpus 64KiB,Highway,3481,183.375
+2,Latin-1 corpus 64KiB,baseline,2557,257.542
+2,Latin-1 corpus 1024KiB,Highway,324,2066.0625
+2,Latin-1 corpus 1024KiB,baseline,315,2124.5
+3,tiny ASCII 1024KiB,Highway,10549,58.042
+3,tiny ASCII 1024KiB,baseline,10355,58.875
+3,short ASCII rows 1024KiB,Highway,83,8290.875
+3,short ASCII rows 1024KiB,baseline,84,8276.8755
+3,wide quoted UTF-8 64KiB,Highway,3864,163.6045
+3,wide quoted UTF-8 64KiB,baseline,2735,216
+3,wide quoted UTF-8 1024KiB,Highway,434,1564.354
+3,wide quoted UTF-8 1024KiB,baseline,416,1620.4795
+3,Windows-1252 1024KiB,Highway,39,18507.042
+3,Windows-1252 1024KiB,baseline,40,17877.979
+3,UTF-16LE TSV 1024KiB,Highway,134,5208
+3,UTF-16LE TSV 1024KiB,baseline,133,5223.583
+3,Latin-1 corpus 64KiB,Highway,3464,183.5
+3,Latin-1 corpus 64KiB,baseline,2351,255.084
+3,Latin-1 corpus 1024KiB,Highway,332,2018.7495
+3,Latin-1 corpus 1024KiB,baseline,315,2129
+4,tiny ASCII 1024KiB,baseline,10014,59.709
+4,tiny ASCII 1024KiB,Highway,10478,57.666
+4,short ASCII rows 1024KiB,baseline,84,8236.1665
+4,short ASCII rows 1024KiB,Highway,84,8347.104
+4,wide quoted UTF-8 64KiB,baseline,3324,196.75
+4,wide quoted UTF-8 64KiB,Highway,4030,159.2705
+4,wide quoted UTF-8 1024KiB,baseline,424,1599.729
+4,wide quoted UTF-8 1024KiB,Highway,434,1563.4375
+4,Windows-1252 1024KiB,baseline,40,17811.938
+4,Windows-1252 1024KiB,Highway,40,18049.5
+4,UTF-16LE TSV 1024KiB,baseline,139,5060.292
+4,UTF-16LE TSV 1024KiB,Highway,121,5200
+4,Latin-1 corpus 64KiB,baseline,2606,251.417
+4,Latin-1 corpus 64KiB,Highway,3299,189.834
+4,Latin-1 corpus 1024KiB,baseline,308,2145.25
+4,Latin-1 corpus 1024KiB,Highway,302,2179.208
