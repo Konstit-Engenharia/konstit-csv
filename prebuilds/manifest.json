@@ -1,7 +1,6 @@
 {
   "schemaVersion": 1,
   "source": {
-    "commit": "5746c32dc14074a71673066f53ee24a326cff2b9",
     "files": [
       ".github/workflows/update-prebuilds.yml",
       "CMakeLists.txt",
@@ -20,7 +19,7 @@
       "toolchains/darwin-x64-clang.cmake",
       "toolchains/linux-x64-clang.cmake"
     ],
-    "sha256": "0f642f4bb46403a61d7fdac7de14ba41be75b714bda201fca56c6ac90e6340e3"
+    "sha256": "c0d1b134a43b5c0d0ea64c0977ab27ed619d62bb19fc063af7676da5b56a48c6"
   },
   "targets": [
     {

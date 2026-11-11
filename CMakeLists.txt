@@ -51,6 +51,9 @@ else()
   message(FATAL_ERROR "CSV_NATIVE_ARCH must be x86_64 or arm64, got: ${CSV_NATIVE_ARCH}")
 endif()
 
+# Enable CTest before adding dependencies so CMake regenerates their test files
+# when a build reuses FetchContent directories with older test registrations.
+include(CTest)
 include(FetchContent)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -191,8 +194,6 @@ target_link_libraries(csv_native_bench PRIVATE csv_native)
 set_target_properties(csv_native_bench PROPERTIES
   INTERPROCEDURAL_OPTIMIZATION_RELEASE ON
 )
-
-include(CTest)
 
 if(BUILD_TESTING)
   set(CATCH_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
