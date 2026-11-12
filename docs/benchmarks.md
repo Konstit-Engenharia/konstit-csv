@@ -44,25 +44,26 @@ This example demonstrates the input settings; it is not a benchmark. Printing ev
 
 ## Full-file filtered materialization
 
-This benchmark compares `csv.rows()` with `csv-parser` after `iconv-lite` decodes ISO-8859-1 input. Both commands parse
-the complete `corpus/large/example.csv` file, apply equivalent column filters, and materialize every field in each
-matching row. `@konstit/csv` applies the filters in native code; the `csv-parser` pipeline applies them to its
-materialized JavaScript rows.
+Each command reads the complete ISO-8859-1 file at `corpus/large/example.csv` and materializes every field in rows
+where column 5 equals `02` and column 19 differs from `EX` (zero-based indexes). The input has no header.
+
+- `@konstit/csv` filters in native code and returns matching rows through `csv.rows()` with `reuseArrays: true`.
+- `csv-parser` reads a stream decoded by `iconv-lite` and filters the resulting JavaScript rows.
 
 ```sh
 bun run bench:csv-parser:example
 ```
 
-`hyperfine` must be available on `PATH`. The recorded `hyperfine -r 2` result produced 11,516,955 rows, 345,508,650
-cells, and 1,808,786,228 characters in both implementations from the 6,780,467,695-byte corpus:
+`hyperfine` must be available on `PATH`. On an Apple M4 with 16 GiB of RAM running macOS arm64 and Bun 1.4.4,
+each target ran twice in a fresh process. All four runs produced 11,516,955 rows, 345,508,650 cells, and
+1,808,786,228 characters from the 6,780,467,695-byte corpus.
 
-| Implementation                   |     Mean time ± σ |  Throughput |  Mean memory ± σ |  Relative result |
-| -------------------------------- | ----------------: | ----------: | ---------------: | ---------------: |
-| `@konstit/csv` with `csv.rows()` |  16.446 ± 0.095 s | 393.2 MiB/s | 480.8 ± 15.8 MiB | **6.12× faster** |
-| `iconv-lite` + `csv-parser`      | 100.665 ± 1.037 s |  64.2 MiB/s | 369.1 ± 10.9 MiB |         Baseline |
+| Implementation                      |  Mean wall time ± σ |  Throughput |    Mean peak RSS ± σ | Throughput vs. csv-parser |
+| ----------------------------------- | ------------------: | ----------: | -------------------: | ------------------------: |
+| `@konstit/csv` with `csv.rows()`    |     7.303 ± 0.048 s | 885.5 MiB/s |       92.6 ± 0.4 MiB |                    13.81× |
+| `iconv-lite` + `csv-parser`         |   100.847 ± 1.263 s |  64.1 MiB/s |      144.8 ± 2.7 MiB |                     1.00× |
 
-Throughput is calculated from the corpus size and mean wall time; σ is the standard deviation across runs.
-For this workload, `@konstit/csv` was 6.12× faster and completed in 83.7% less time, with 30.3% higher mean memory usage.
+Throughput is the original corpus size divided by mean wall time. σ is the sample standard deviation across runs.
 
 These are recorded results from two runs on one machine, not a universal performance guarantee. Hardware, runtime,
 encoding, filters, output representation, and input shape affect results. Re-run the comparison in your environment
@@ -79,24 +80,22 @@ It generates and reuses the 1k, 10k, and 100k row UTF-8 fixtures in `corpus/turb
 `customers-100.csv` and `customers-100000.csv` samples if placed there. TurboCSV fast mode runs only on unquoted inputs.
 
 Each parser reads the file, excludes the header, and consumes the first field of each data row. Each run checks the row
-count and sum of IDs. TurboCSV and `@konstit/csv` batches use row views. `@konstit/csv` rows materializes arrays.
-Both `@konstit/csv` APIs run with all columns and with `columns: [0]` to select just the ID.
+count and sum of IDs. Both `@konstit/csv` cases use `columns: [0]` to select just the ID. TurboCSV and
+`@konstit/csv` batches read the ID through row views. The `@konstit/csv` rows case uses `reuseArrays: true`.
 PapaParse, csv-parse (sync), and fast-csv parse header-keyed objects.
 The following run used Bun 1.4.4 on an Apple M4 running macOS. Each time is the mean of the middle three of five runs
 after one warmup per parser and file. The multiplier in parentheses is elapsed time divided by the fastest time for
 that fixture.
 
-| Parser                            | 1k rows (ms) | 1k MiB/s | 10k rows (ms) | 10k MiB/s | 100k rows (ms) | 100k MiB/s |
-| --------------------------------- | -----------: | -------: | ------------: | --------: | -------------: | ---------: |
-| `@konstit/csv batches`              | 0.54 (1.95×) | 177.1 | 2.49 (1.29×) | 390.4 | 21.88 (1.26×) | 454.4 |
-| `@konstit/csv batches columns: [0]` | 0.42 (1.53×) | 225.2 | 1.99 (1.03×) | 489.3 | 17.33 (1.00×) | 573.6 |
-| `@konstit/csv rows`                 | 0.93 (3.38×) | 102.1 | 6.14 (3.18×) | 158.5 | 56.84 (3.28×) | 174.9 |
-| `@konstit/csv rows columns: [0]`    | 0.28 (1.00×) | 344.8 | 1.93 (1.00×) | 504.7 | 18.11 (1.04×) | 549.0 |
-| TurboCSV                          | 1.19 (4.31×) | 79.9 | 5.41 (2.81×) | 179.6 | 43.59 (2.52×) | 228.1 |
-| TurboCSV fast                     | 0.42 (1.54×) | 224.6 | 3.41 (1.77×) | 285.1 | 26.49 (1.53×) | 375.3 |
-| PapaParse                         | 0.62 (2.25×) | 153.3 | 5.84 (3.03×) | 166.4 | 51.68 (2.98×) | 192.4 |
-| csv-parse (sync)                  | 2.80 (10.13×) | 34.0 | 19.87 (10.31×) | 48.9 | 200.04 (11.54×) | 49.7 |
-| fast-csv                          | 2.83 (10.21×) | 33.8 | 23.28 (12.09×) | 41.8 | 226.77 (13.08×) | 43.8 |
+| Parser                | 1k rows (ms) | 1k MiB/s |  10k rows (ms) | 10k MiB/s |  100k rows (ms) | 100k MiB/s |
+| --------------------- | -----------: | -------: | -------------: | --------: | --------------: | ---------: |
+| `@konstit/csv batches` | 0.49 (1.24×) |    193.8 |   2.21 (1.12×) |     440.2 |   15.86 (1.00×) |      627.0 |
+| `@konstit/csv rows`    | 0.55 (1.39×) |    173.7 |   1.97 (1.00×) |     494.3 |   16.00 (1.01×) |      621.4 |
+| TurboCSV              | 0.61 (1.53×) |    157.5 |   5.40 (2.75×) |     179.9 |   45.37 (2.86×) |      219.1 |
+| TurboCSV fast         | 0.40 (1.00×) |    240.9 |   3.27 (1.66×) |     297.4 |   27.81 (1.75×) |      357.5 |
+| PapaParse             | 0.61 (1.54×) |    156.6 |   5.20 (2.64×) |     187.1 |   51.95 (3.28×) |      191.4 |
+| csv-parse (sync)      | 2.95 (7.45×) |     32.4 | 19.72 (10.02×) |      49.3 | 203.28 (12.82×) |       48.9 |
+| fast-csv              | 2.91 (7.35×) |     32.8 | 22.22 (11.29×) |      43.8 | 225.44 (14.22×) |       44.1 |
 
 For mitata sampling of the same workloads, run `bun run bench -- comparison/libs-comparison.bench.ts`.
 

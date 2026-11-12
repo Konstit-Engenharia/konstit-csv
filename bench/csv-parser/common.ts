@@ -70,7 +70,7 @@ export function materializeFileWithCsvParser(
       .pipe(csvParser({ headers: false, separator: delimiter }))
       .on('data', (row: unknown) => {
         const values = Array.isArray(row) ? row : Object.values(row as Record<string, string>);
-        if (values[5] !== '02' || values[19] === 'EX') {
+        if (values.length <= 19 || values[5] !== '02' || values[19] === 'EX') {
           return;
         }
         ++rows;
