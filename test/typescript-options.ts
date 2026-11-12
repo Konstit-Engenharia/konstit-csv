@@ -3,6 +3,7 @@ import {
   type CsvBatchesOptions,
   type CsvCountOptions,
   type CsvDelimiter,
+  type CsvParseOptions,
   type CsvRowsOptions,
   defineRowsOptions,
 } from '../src/index.ts';
@@ -106,3 +107,28 @@ void invalidStrictBatchOptions;
 // @ts-expect-error strict batches do not support filters
 const invalidStrictFilteredBatch = { strict: true, where: csv.column(1).equals('SP') } satisfies CsvBatchesOptions;
 void invalidStrictFilteredBatch;
+
+const projectedParseOptions = {
+  columns,
+  where: csv.column(1).equals('SP'),
+} satisfies CsvParseOptions<typeof columns>;
+const projectedParsedRows: Promise<[string, string][]> = csv.parse(new Uint8Array(), projectedParseOptions);
+void projectedParsedRows;
+
+const strictProjectedRows: AsyncGenerator<[string, string][], void> = csv.rows(path, { columns, strict: true });
+const strictProjectedParsedRows: Promise<[string, string][]> = csv.parse(new Uint8Array(), { columns, strict: true });
+void strictProjectedRows;
+void strictProjectedParsedRows;
+
+// @ts-expect-error strict parsing supports no filters
+void csv.parse(new Uint8Array(), { strict: true, where: csv.column(1).equals('SP') });
+
+declare const dynamicStrict: boolean;
+// @ts-expect-error dynamic strict parsing cannot safely combine with filters
+void csv.parse(new Uint8Array(), { strict: dynamicStrict, where: csv.column(1).equals('SP') });
+
+// @ts-expect-error automatic encoding detection requires a file operation
+void csv.parse(new Uint8Array(), { encoding: 'auto' });
+
+// @ts-expect-error compression requires a file operation
+void csv.parse(new Uint8Array(), { compression: 'auto' });

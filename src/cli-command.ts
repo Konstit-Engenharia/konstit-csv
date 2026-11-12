@@ -416,9 +416,9 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
   };
 }
 
-type MutableCliOptions = { -readonly [Key in keyof CsvApiFileOptions]: CsvApiFileOptions[Key]; };
+type MutableCliOptions<TOptions = CsvApiFileOptions> = { -readonly [Key in keyof TOptions]: TOptions[Key]; };
 
-function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): MutableCliOptions & CsvCountOptions {
+function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): MutableCliOptions<CsvCountOptions> {
   const options: MutableCliOptions = {
     delimiter: parseDelimiter(values.delimiter ?? (fixedFormat ? ',' : 'auto')),
     encoding: parseEncoding(values.encoding ?? (fixedFormat ? 'utf8' : 'auto')),

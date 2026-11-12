@@ -366,45 +366,78 @@ export interface CsvApiFileOptions extends CsvFileOptions {
 
 /** Retains the literal input indexes and their order for projected row types. */
 export interface CsvColumnSelection<TColumns extends CsvColumns | undefined> {
+  /** Physical columns to emit from each row, in the requested output order. */
   readonly columns?: TColumns;
 }
 
-/** Apply `Omit` to each member of a union independently. */
-type CsvDistributiveOmit<T, TKeys extends PropertyKey> = T extends unknown ? Omit<T, TKeys> : never;
+/** Shared operation properties have declarations that editors can use for hover documentation. */
+interface CsvOperationOptions<TColumns extends CsvColumns | undefined> extends CsvColumnSelection<TColumns> {
+  /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
+  readonly delimiter?: CsvDelimiter;
+  /** Require exactly this many fields per row; malformed rows fail instead of being padded or truncated. */
+  readonly fixedColumns?: number;
+  /** Expected first-row field values, checked in strict mode. */
+  readonly expectedHeaders?: readonly string[];
+  /** Require a first row when strict schema validation is enabled. */
+  readonly requireHeader?: boolean;
+  /** Minimum number of data rows after the header, checked in strict mode. */
+  readonly minDataRows?: number;
+  /** Read-stream chunk size in bytes. Defaults to 1 MiB. Used by file operations only. */
+  readonly chunkSize?: number;
+}
+
+/** File operations support encoding detection and streamed decompression. */
+interface CsvFileOperationOptions<TColumns extends CsvColumns | undefined> extends CsvOperationOptions<TColumns> {
+  /** Defaults to `'auto'`, probing up to 64 KiB after decompression, independently of the delimiter. */
+  readonly encoding?: CsvFileEncoding;
+  /** Compression format or ZIP entry selection. Defaults to `'auto'`; `'none'` skips detection. */
+  readonly compression?: CsvCompression;
+}
+
+/** Non-strict operations can filter input records. */
+interface CsvFilteredOperationOptions {
+  /** Enable RFC-style quote and schema validation. Defaults to `false`. Requires unfiltered input. */
+  readonly strict?: false | undefined;
+  /** Filter records with `csv.column()`, `csv.all()`, `csv.any()`, or `csv.not()`. Requires `strict` to be false or omitted. */
+  readonly where?: CsvFilter | undefined;
+}
 
 /** Strict validation requires unfiltered input. */
-type CsvOperationOptions<TColumns extends CsvColumns | undefined> =
-  & Omit<CsvApiFileOptions, 'columns' | 'strict' | 'where'>
-  & CsvColumnSelection<TColumns>
-  & (
-    | { readonly strict?: false | undefined; readonly where?: CsvFilter | undefined; }
-    | { readonly strict: true; readonly where?: undefined; }
-  );
+interface CsvStrictOperationOptions {
+  /** Enable RFC-style quote and schema validation. Requires unfiltered input. */
+  readonly strict: true;
+  /** Filtering is unavailable with strict validation, which checks every input record. */
+  readonly where?: undefined;
+}
+
+/** Each branch keeps its documented properties and enforces the strict/filter constraint. */
+type CsvValidationOptions = CsvFilteredOperationOptions | CsvStrictOperationOptions;
 
 /** Options for parsing an in-memory buffer into materialized rows. */
 export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> =
-  & CsvDistributiveOmit<
-    CsvOperationOptions<TColumns>,
-    'compression' | 'encoding'
-  >
-  & { readonly encoding?: CsvEncoding; };
+  & CsvOperationOptions<TColumns>
+  & CsvValidationOptions
+  & {
+    /** Input field encoding used when decoding bytes into JavaScript strings. Defaults to `'utf8'`. */
+    readonly encoding?: CsvEncoding;
+  };
 
 /** Options for streaming materialized rows in file order. */
-export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvOperationOptions<TColumns> & {
-  /** Refill the batch and its row arrays across iterations. Copy any row you want to keep. Defaults to false. */
-  readonly reuseArrays?: boolean;
-};
+export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
+  & CsvFileOperationOptions<TColumns>
+  & CsvValidationOptions
+  & {
+    /** Refill the batch and its row arrays across iterations. Copy any row you want to keep. Defaults to false. */
+    readonly reuseArrays?: boolean;
+  };
 
 /** Strict native batches require unfiltered, unprojected input. */
 export type CsvBatchesOptions =
-  & CsvOperationOptions<CsvColumns | undefined>
-  & (
-    | { readonly strict?: false | undefined; }
-    | { readonly columns?: undefined; }
-  );
+  | (CsvFileOperationOptions<CsvColumns | undefined> & CsvFilteredOperationOptions)
+  | (CsvFileOperationOptions<undefined> & CsvStrictOperationOptions);
 
 /** Options accepted by `csv.count()`. */
-export type CsvCountOptions = CsvOperationOptions<CsvColumns | undefined>;
+export type CsvCountOptions = CsvFileOperationOptions<CsvColumns | undefined> & CsvValidationOptions;
 
 /**
  * Materialized row type inferred from a literal projection tuple.
