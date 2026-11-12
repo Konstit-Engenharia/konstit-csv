@@ -24,6 +24,7 @@ describe('option identity helpers', () => {
 
 describe('strict schema validation', () => {
   test('validates rows, headers, minimum rows, and disabled mode', () => {
+    expect(() => new CsvStrictSchemaValidator({}).finish()).not.toThrow();
     const validator = new CsvStrictSchemaValidator({ expectedHeaders: ['a', 'b'], minDataRows: 1 });
     expect(validator.enabled).toBe(true);
     validator.validateRows([['a', 'b'], ['1', '2']]);

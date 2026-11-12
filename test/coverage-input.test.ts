@@ -32,15 +32,20 @@ import {
   u64ToSafeNumber,
 } from '../src/native.ts';
 import {
+  type CsvNativeFilterProgramEntry,
   encodingCode,
+  MAX_FILTER_PROGRAM_LENGTH,
   normalizeChunk,
   normalizeColumns,
   normalizeEqualsFilter,
   normalizeFixedColumnsCount,
   normalizeInFilter,
+  normalizeNativeFilterProgram,
   normalizeNativeFilters,
   normalizeRegex,
   normalizeStartsWithFilter,
+  projectionFilterProgram,
+  resolveInputEncoding,
   validateRegex,
 } from '../src/normalize.ts';
 import { requireBunRuntime } from '../src/runtime.ts';
@@ -66,6 +71,42 @@ async function rejectedError(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe('coverage input boundaries', () => {
+  test('distinguishes native encoding aliases from encodings that require transcoding', () => {
+    expect(resolveInputEncoding(' UTF-8 ')).toBe('utf8');
+    expect(resolveInputEncoding(' LATIN1 ')).toBe('latin1');
+    expect(() => resolveInputEncoding(12 as never)).toThrow('encoding must be a string');
+    expect(() => encodingCode('utf-16le' as never)).toThrow('unsupported encoding: utf-16le');
+    const failure = new Error('decoder initialization failed');
+    const Decoder = globalThis.TextDecoder;
+    try {
+      globalThis.TextDecoder = class extends Decoder {
+        constructor() {
+          super();
+          throw failure;
+        }
+      };
+      expect(() => resolveInputEncoding('utf-16le')).toThrow(failure);
+    } finally {
+      globalThis.TextDecoder = Decoder;
+    }
+  });
+
+  test('rejects ambiguous, sparse, or oversized filter configurations before FFI', () => {
+    expect(() => projectionFilterProgram({ equalsFilter: { column: 0, value: 'a' }, filters: [] })).toThrow('not both');
+    expect(() => normalizeNativeFilterProgram(Array<CsvNativeFilterProgramEntry>(MAX_FILTER_PROGRAM_LENGTH + 1))).toThrow(
+      'length out of range',
+    );
+    expect(() => normalizeNativeFilterProgram(Array<CsvNativeFilterProgramEntry>(1))).toThrow('entry missing at index 0');
+    expect(() => normalizeNativeFilterProgram([{ operator: 'all', operandCount: 0 }])).toThrow('operand count out of range');
+    const changing: CsvNativeFilterProgramEntry[] = [{
+      column: 0,
+      get value() {
+        Reflect.deleteProperty(changing, '0');
+        return 'a';
+      },
+    }];
+    expect(() => normalizeNativeFilterProgram(changing)).toThrow('entry missing at index 0');
+  });
   test('normalizes values, columns, filters, regexes and guards', () => {
     expect(encodingCode('utf8')).toBe(0);
     expect(encodingCode('iso-8859-1')).toBe(1);

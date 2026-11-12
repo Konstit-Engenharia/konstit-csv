@@ -18,7 +18,7 @@ function destroyNativeZipReader(handle: ZipReaderPointer): void {
   native.symbols.csv_zip_reader_destroy(handle);
 }
 
-class NativeZipReader {
+export class NativeZipReader {
   #handle: ZipReaderPointer | null;
 
   constructor(path: string, options: CsvZipCompression) {

@@ -160,6 +160,23 @@ describe('operation options snapshots', () => {
     expect(rows).toEqual([['id'], ['1'], ['2'], ['3']]);
   });
 
+  test('copies exclusions before reading and rejects invalid byte operands at invocation', async () => {
+    const state = Buffer.from('RJ');
+    const ids = [Buffer.from('id'), Buffer.from('3')];
+    const stream = parseCsvFileProjected(path, {
+      delimiter: ';',
+      columns: [0],
+      filters: [{ column: 2, notEquals: state }, { column: 0, notIn: ids }],
+    });
+    state.fill(0);
+    ids[0]?.fill(0);
+    ids.length = 0;
+    expect(await collect(stream)).toEqual([['1']]);
+    expect(() => parseCsvFileProjected(path, { equalsFilter: { column: 0, value: 1 as never } })).toThrow(
+      'filter value must be a string, Buffer, or Uint8Array',
+    );
+  });
+
   test('keeps explicit per-write parser reconfiguration between complete records', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     const columns = [0];

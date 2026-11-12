@@ -12,16 +12,15 @@ import {
 } from './native.js';
 import { normalizeChunk } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
-import { prepareNativeParser } from './parser.js';
+import {
+  nativeCsvParserFinalizer,
+  prepareNativeParser,
+} from './parser.js';
 import type {
   CsvColumns,
   CsvDelimiter,
   CsvRow,
 } from './types.js';
-
-const latin1RowsParserFinalizer = new FinalizationRegistry<NativePointer>((parser) => {
-  native.symbols.csv_parser_destroy(parser);
-});
 
 // These opaque batches contain Latin1 bytes and are never wrapped in NativeCsvBatch.
 export async function* latin1Rows(
@@ -42,9 +41,9 @@ export async function* latin1Rows(
   if (parser === null) {
     throw new Error('failed to create native CSV parser');
   }
-  // Preserve the public parser's GC fallback when a suspended iterator is abandoned.
+  // A suspended iterator can be abandoned before its finally block runs.
   const lifetime = {};
-  latin1RowsParserFinalizer.register(lifetime, parser, lifetime);
+  nativeCsvParserFinalizer.register(lifetime, parser, lifetime);
   try {
     const prepared = prepareNativeParser(parser, columns, filters);
     for await (const chunk of chunks) {
@@ -61,7 +60,7 @@ export async function* latin1Rows(
       yield rows;
     }
   } finally {
-    latin1RowsParserFinalizer.unregister(lifetime);
+    nativeCsvParserFinalizer.unregister(lifetime);
     native.symbols.csv_parser_destroy(parser);
   }
 }
@@ -141,7 +140,7 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
   }
 }
 
-function checkedOffset(words: Uint32Array, index: number, upperBound: number): number {
+export function checkedOffset(words: Uint32Array, index: number, upperBound: number): number {
   // Offsets are little-endian. Keep the common single-word read small enough to inline in the field loop.
   const low = words[index * 2];
   const high = words[index * 2 + 1];

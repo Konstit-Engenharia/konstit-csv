@@ -33,7 +33,7 @@ function destroyNativeCsvParser(handle: NativePointer): void {
   native.symbols.csv_parser_destroy(handle);
 }
 
-const nativeCsvParserFinalizer = new FinalizationRegistry<NativePointer>(destroyNativeCsvParser);
+export const nativeCsvParserFinalizer = new FinalizationRegistry<NativePointer>(destroyNativeCsvParser);
 
 /**
  * The fixed-configuration parser surface used by high-level streaming APIs.
@@ -982,10 +982,7 @@ export class NativeCsvParser {
   }
 
   #lastError(): string {
-    if (this.#handle === null) {
-      return 'parser is closed';
-    }
-    return native.symbols.csv_parser_last_error(this.#handle) ?? 'native parser error unavailable';
+    return native.symbols.csv_parser_last_error(this.#requireHandle()) ?? 'native parser error unavailable';
   }
 
   #throwIfNativeError(): void {

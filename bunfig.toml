@@ -10,3 +10,15 @@ minimumReleaseAgeExcludes = ["@types/node", "typescript", "@types/bun"]
 
 [console]
 depth = 4
+
+[test]
+root = "test"
+coverageThreshold = 1.0
+coveragePathIgnorePatterns = [
+  "**/*.bench.ts",
+  "**/*.test.ts",
+  "test/**",
+  "scripts/**",
+  "examples/**",
+  "bench/**",
+]

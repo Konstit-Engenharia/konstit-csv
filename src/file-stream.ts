@@ -192,13 +192,12 @@ async function* readAheadFileChunks(path: string, chunkSize: number): AsyncGener
   if (!(await file.stat()).isFile()) {
     // Pipes and devices can block indefinitely on a speculative read.
     const buffer = Buffer.allocUnsafe(chunkSize);
-    while (true) {
-      const { bytesRead } = await file.read(buffer);
-      if (bytesRead === 0) {
-        return;
-      }
+    let { bytesRead } = await file.read(buffer);
+    while (bytesRead > 0) {
       yield buffer.subarray(0, bytesRead);
+      bytesRead = (await file.read(buffer)).bytesRead;
     }
+    return;
   }
 
   let current = Buffer.allocUnsafe(chunkSize);

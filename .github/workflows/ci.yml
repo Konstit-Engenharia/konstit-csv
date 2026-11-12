@@ -41,8 +41,8 @@ jobs:
       - name: Lint
         run: bun run lint
 
-      - name: Test Bun API
-        run: bun run test
+      - name: Test Bun API and check coverage
+        run: bun test --dots --coverage
 
       - name: Benchmark regression smoke
         run: bun bench/regression-smoke.ts

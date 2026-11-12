@@ -422,16 +422,15 @@ const CSV_SYMBOLS = {
   },
 } as const;
 
-export const native = dlopen(resolveNativeLibraryPath(), CSV_SYMBOLS);
+export const native = dlopen(resolveNativeLibraryPath(process.env['CSV_NATIVE_LIBRARY_PATH']), CSV_SYMBOLS);
 
 export function latin1RowsParser(fixedColumns: number | undefined): (delimiter: number) => NativePointer | null {
   return (delimiter) => native.symbols.csv_parser_create_latin1_quoted_rows(delimiter, fixedColumns ?? 0);
 }
 
-function resolveNativeLibraryPath(): string {
+export function resolveNativeLibraryPath(configuredPath: string | undefined): string {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
   const target = `${process.platform}-${process.arch}`;
-  const configuredPath = process.env['CSV_NATIVE_LIBRARY_PATH'];
   const libraryPath = configuredPath === undefined
     ? requireNativeLibraryPath(nativeLibraryCandidates(root, target, suffix))
     : requireConfiguredNativeLibraryPath(configuredPath);

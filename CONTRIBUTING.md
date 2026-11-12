@@ -74,9 +74,12 @@ For corpus-specific encoding and download details, see the [benchmark guide](doc
 Run the tests and static checks while developing:
 
 ```sh
-bun run test
+bun test --dots --coverage
 bun run lint
 ```
+
+CI requires 100% line and function coverage for the Bun runtime code. The
+native C++ tests run separately.
 
 Install the repository's pre-push hook once per clone:
 
