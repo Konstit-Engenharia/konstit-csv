@@ -50,6 +50,7 @@ async function materializeWithKonstitCsv(): Promise<CsvParserMaterializeStats> {
         csv.column(19).doesNotEqual('EX'),
       ),
       reuseArrays: true,
+      fixedColumns: 30,
     })
   ) {
     rows += batch.length;
@@ -83,6 +84,7 @@ async function materializeWithKonstitCsvZip(): Promise<CsvParserMaterializeStats
         csv.column(19).doesNotEqual('EX'),
       ),
       reuseArrays: true,
+      fixedColumns: 30,
       compression: { format: 'zip', entry: 'example.csv' },
     })
   ) {
