@@ -1,6 +1,6 @@
 {
   "name": "@konstit/csv",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Bun-native CSV parser with streaming rows, filters, and low-allocation batches.",
   "keywords": [
     "AVX2",
