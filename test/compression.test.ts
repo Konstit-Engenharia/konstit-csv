@@ -322,6 +322,38 @@ describe('compressed CSV file streams', () => {
     ).toBe(4);
   });
 
+  test('ZIP counts replay the format probe and keep quoted records intact across buffers', async () => {
+    const prefix = 'id;value\r\n0;first\r\n1;"';
+    // Split the escaped quote between two 64 KiB reads.
+    const padding = 'a'.repeat(64 * 1024 - prefix.length - 1);
+    const middle = '2;middle\r\n'.repeat(16_384);
+    const data = Buffer.from(`${prefix}${padding}""quoted\r\nline"\r\n${middle}3;last`);
+    const path = join(temporaryDirectory, 'large-entry.zip');
+    const options = { delimiter: 'auto', chunkSize: 8192 } as const;
+    for (const method of [0, 8] as const) {
+      await Bun.write(path, createZip([{ data, name: 'records.csv', method }]));
+      expect(await csv.count(path, options)).toBe(16_388);
+      expect(await countCsvFile(path, { ...options, strict: true, chunkSize: 65_536 })).toBe(16_388);
+      expect(
+        await csv.count(path, {
+          ...options,
+          compression: { format: 'zip', entry: 'records.csv' },
+          where: csv.column(1).isOneOf(['first', 'last']),
+        }),
+      ).toBe(2);
+    }
+  });
+
+  test('ZIP counts propagate a late CRC error and can stop on an earlier parser error', async () => {
+    const path = join(temporaryDirectory, 'bad-large-entry.zip');
+    const data = Buffer.from(`bad\n${'1,abc\n'.repeat(64_000)}`);
+    const crc32 = (Bun.hash.crc32(data) ^ 1) >>> 0;
+    await Bun.write(path, createZip([{ data, method: 8, name: 'bad.csv', crc32 }]));
+    const options = { chunkSize: 65_536, delimiter: ',', encoding: 'utf8' } as const;
+    expect((await rejectedError(csv.count(path, { ...options, fixedColumns: 2 }))).message).toContain('column count mismatch');
+    expect((await rejectedError(csv.count(path, options))).message).toContain('CRC32');
+  });
+
   test('captures nested ZIP settings before iteration without freezing the caller', async () => {
     const compression = { entry: 'nested/input.tsv', format: 'zip' as const, maxDecompressedBytes: source.byteLength };
     const options = { chunkSize: 1, compression, delimiter: ';' };

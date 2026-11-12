@@ -328,7 +328,7 @@ async function* iterateCsvFileProjected(
 export async function countCsvFile(path: string, suppliedOptions: CsvFileOptions = {}): Promise<number> {
   const options = snapshotCsvOptions(suppliedOptions);
   rejectStrictSchemaUnsupported(options, 'count');
-  await using input = await prepareCsvFileInput(path, options);
+  await using input = await prepareCsvFileInput(path, options, 'count');
   using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
   let rows = 0;
   if (options.strict === true) {

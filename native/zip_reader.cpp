@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <new>
+#include <pthread.h>
 #include <string>
 #include <string_view>
 #include <sys/types.h>
@@ -100,6 +104,20 @@ struct zip_entry_metadata {
   uint64_t local_header_offset = 0;
 };
 
+struct zip_read_ahead {
+  std::unique_ptr<uint8_t[]> buffer;
+  uint32_t capacity = 0;
+  uint32_t offset = 0;
+  uint32_t size = 0;
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool ready = false;
+  bool stopping = false;
+  pthread_t thread{};
+  // Only the consumer updates this. A prefetched EOF or error belongs to its own chunk.
+  zip_reader_status delivered_status = zip_reader_status::reading;
+};
+
 } // namespace
 
 class zip_reader {
@@ -141,6 +159,7 @@ public:
   }
 
   ~zip_reader() {
+    stop_read_ahead();
     close_inflate();
     if (file_ != nullptr) {
       std::fclose(file_);
@@ -150,28 +169,99 @@ public:
   zip_reader(const zip_reader&) = delete;
   zip_reader& operator=(const zip_reader&) = delete;
 
+  void enable_read_ahead(uint32_t chunk_size) {
+    // Amortize the handoff even for consumers requesting a few bytes at a time.
+    const uint32_t capacity = std::max(chunk_size, uint32_t{64 * 1024});
+    if (ahead_ || status_ != zip_reader_status::reading || entry_.uncompressed_size <= capacity) {
+      return;
+    }
+    ahead_.reset(new (std::nothrow) zip_read_ahead);
+    if (!ahead_) {
+      return;
+    }
+    ahead_->capacity = capacity;
+    ahead_->buffer.reset(new (std::nothrow) uint8_t[capacity]);
+    // A count can still run synchronously if a spare buffer or thread is unavailable.
+    const auto produce = [](void* self) -> void* {
+      static_cast<zip_reader*>(self)->produce_chunks();
+      return nullptr;
+    };
+    if (!ahead_->buffer || pthread_create(&ahead_->thread, nullptr, produce, this) != 0) {
+      ahead_.reset();
+    }
+  }
+
   uint64_t read(uint8_t* output, uint64_t output_capacity) {
-    if (status_ != zip_reader_status::reading) {
+    if (status() != zip_reader_status::reading) {
       return 0;
     }
     if (output == nullptr || output_capacity == 0) {
+      stop_read_ahead();
       fail("ZIP output buffer must not be empty");
       return 0;
     }
 
     const uint32_t bounded_capacity =
         static_cast<uint32_t>(std::min<uint64_t>(output_capacity, std::numeric_limits<uint32_t>::max()));
-    if (entry_.method == stored_method) {
-      return read_stored(output, bounded_capacity);
+    if (!ahead_) {
+      return read_entry(output, bounded_capacity);
     }
-    return read_deflated(output, bounded_capacity);
+    auto& ahead = *ahead_;
+    std::unique_lock lock(ahead.mutex);
+    ahead.changed.wait(lock, [&] { return ahead.ready; });
+    const uint32_t size = std::min(bounded_capacity, ahead.size - ahead.offset);
+    // The producer owns its buffer and never holds a pointer into the Bun heap.
+    std::memcpy(output, ahead.buffer.get() + ahead.offset, size);
+    ahead.offset += size;
+    if (ahead.offset == ahead.size) {
+      ahead.delivered_status = status_;
+      ahead.ready = false;
+      lock.unlock();
+      ahead.changed.notify_one();
+    }
+    return size;
   }
 
-  int status() const { return static_cast<int>(status_); }
+  zip_reader_status status() const { return ahead_ ? ahead_->delivered_status : status_; }
 
-  const char* last_error() const { return error_.c_str(); }
+  const char* last_error() const { return status() == zip_reader_status::error ? error_.c_str() : ""; }
 
 private:
+  uint64_t read_entry(uint8_t* output, uint32_t capacity) {
+    return entry_.method == stored_method ? read_stored(output, capacity) : read_deflated(output, capacity);
+  }
+
+  void produce_chunks() {
+    auto& ahead = *ahead_;
+    std::unique_lock lock(ahead.mutex);
+    while (true) {
+      ahead.changed.wait(lock, [&] { return !ahead.ready || ahead.stopping; });
+      if (ahead.stopping) {
+        return;
+      }
+      const auto written = read_entry(ahead.buffer.get(), ahead.capacity);
+      ahead.size = status_ == zip_reader_status::error ? 0 : static_cast<uint32_t>(written);
+      ahead.offset = 0;
+      ahead.ready = true;
+      ahead.changed.notify_one();
+      if (status_ != zip_reader_status::reading) {
+        return;
+      }
+    }
+  }
+
+  void stop_read_ahead() {
+    if (ahead_) {
+      {
+        std::lock_guard lock(ahead_->mutex);
+        ahead_->stopping = true;
+      }
+      ahead_->changed.notify_one();
+      pthread_join(ahead_->thread, nullptr);
+      ahead_.reset();
+    }
+  }
+
   bool find_file_size() {
     if (::fseeko(file_, 0, SEEK_END) != 0) {
       return fail("failed to seek ZIP file");
@@ -616,6 +706,7 @@ private:
     return false;
   }
 
+  std::unique_ptr<zip_read_ahead> ahead_;
   std::FILE* file_ = nullptr;
   std::string entry_name_;
   std::string error_;
@@ -646,6 +737,12 @@ CSV_EXPORT void* csv_zip_reader_create(const char* path, const uint8_t* entry_na
 
 CSV_EXPORT void csv_zip_reader_destroy(void* reader) { delete static_cast<csv_native::zip_reader*>(reader); }
 
+CSV_EXPORT void csv_zip_reader_enable_read_ahead(void* reader, uint32_t chunk_size) {
+  if (reader != nullptr) {
+    static_cast<csv_native::zip_reader*>(reader)->enable_read_ahead(chunk_size);
+  }
+}
+
 CSV_EXPORT uint64_t csv_zip_reader_read(void* reader, uint8_t* output, uint64_t output_capacity) {
   if (reader == nullptr) {
     return 0;
@@ -657,7 +754,7 @@ CSV_EXPORT int csv_zip_reader_status(void* reader) {
   if (reader == nullptr) {
     return 2;
   }
-  return static_cast<csv_native::zip_reader*>(reader)->status();
+  return static_cast<int>(static_cast<csv_native::zip_reader*>(reader)->status());
 }
 
 CSV_EXPORT const char* csv_zip_reader_last_error(void* reader) {

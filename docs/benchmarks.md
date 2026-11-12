@@ -42,6 +42,28 @@ for await (
 
 This example demonstrates the input settings; it is not a benchmark. Printing every row adds substantial I/O work.
 
+## Count a ZIP entry
+
+The ZIP count benchmark uses `corpus/large/example.csv.zip`. Its DEFLATE-compressed `example.csv` entry occupies
+2,013,124,420 bytes and expands to 6,780,467,695 bytes. To compare revisions on macOS arm64, run this command
+from each checkout with the same archive at the input path.
+
+```sh
+CSV_NATIVE_LIBRARY_PATH="$PWD/prebuilds/darwin-arm64/libcsv_native.dylib" \
+  hyperfine --warmup 1 --runs 5 --show-output 'bun --silent src/cli.ts count corpus/large/example.csv.zip'
+```
+
+On an Apple M4 running macOS arm64 and Bun 1.4.4, both versions returned 29,093,533 records on every run.
+The table shows the mean and sample standard deviation over five timed runs per version.
+
+| ZIP count implementation  |        Wall time |        Peak RSS |
+| ------------------------- | ---------------: | --------------: |
+| Serial reader (`e169164`) | 12.454 ± 0.044 s | 103.3 ± 4.8 MiB |
+| Two-buffer reader         |  8.421 ± 0.102 s |  47.9 ± 0.6 MiB |
+
+The producer inflates and CRC-checks the next chunk while the CSV parser scans the current one.
+Copying each chunk into a reusable parser buffer keeps the background thread's memory independent of Bun's heap.
+
 ## Full-file filtered materialization
 
 Each command reads the complete ISO-8859-1 file at `corpus/large/example.csv` and materializes every field in rows

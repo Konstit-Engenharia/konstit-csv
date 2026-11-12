@@ -62,6 +62,10 @@ class NativeZipReader {
     return native.symbols.csv_zip_reader_status(this.#requireHandle());
   }
 
+  enableReadAhead(chunkSize: number): void {
+    native.symbols.csv_zip_reader_enable_read_ahead(this.#requireHandle(), chunkSize);
+  }
+
   read(output: Uint8Array): number {
     return u64ToSafeNumber(
       native.symbols.csv_zip_reader_read(this.#requireHandle(), output, output),
@@ -99,12 +103,18 @@ export async function* readZipEntryChunks(
   path: string,
   options: CsvZipCompression,
   chunkSize: number,
+  forCount = false,
 ): AsyncGenerator<Uint8Array, void> {
   const outputSize = positiveUint32(chunkSize, 'ZIP output chunk size');
   using reader = new NativeZipReader(path, options);
+  // Counts consume the output before advancing. Other readers may retain their chunks.
+  const countBuffer = forCount ? new Uint8Array(outputSize) : undefined;
+  if (forCount) {
+    reader.enableReadAhead(outputSize);
+  }
 
   while (true) {
-    const output = new Uint8Array(outputSize);
+    const output = countBuffer ?? new Uint8Array(outputSize);
     const written = reader.read(output);
     const status = reader.status;
     if (status === ZIP_READER_ERROR) {

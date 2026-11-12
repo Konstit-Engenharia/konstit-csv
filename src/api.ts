@@ -244,7 +244,7 @@ async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncG
 export async function count(path: string, suppliedOptions: CsvCountOptions = {}): Promise<number> {
   const options = snapshotCsvOptions(suppliedOptions);
   const filters = toNativeFilters(options.where);
-  await using input = await prepareCsvFileInput(path, options);
+  await using input = await prepareCsvFileInput(path, options, 'count');
   if (options.strict === true && filters !== undefined) {
     throw new Error('strict CSV validation is not supported for count filters');
   }

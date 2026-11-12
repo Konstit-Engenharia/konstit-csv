@@ -171,7 +171,8 @@ endfunction()
 csv_native_target_options(csv_native)
 target_compile_options(csv_native PRIVATE -fno-exceptions -fno-rtti)
 target_link_options(csv_native PRIVATE -fno-exceptions -fno-rtti)
-target_link_libraries(csv_native PRIVATE hwy re2::re2 unordered_dense::unordered_dense zlib-ng::zlibstatic)
+find_package(Threads REQUIRED)
+target_link_libraries(csv_native PRIVATE hwy re2::re2 unordered_dense::unordered_dense zlib-ng::zlibstatic Threads::Threads)
 
 set_target_properties(csv_native PROPERTIES
   CXX_VISIBILITY_PRESET hidden
