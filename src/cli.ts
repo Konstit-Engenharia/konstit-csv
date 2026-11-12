@@ -55,7 +55,6 @@ Parser options:
   --strict                         Enable strict RFC 4180 validation
   --fixed-columns <count>          Require this positive field count in strict mode
   --columns <indexes>              Validate indexes; does not change the count
-  --selected-columns <indexes>     Alias for --columns; do not use both
   --expected-header <value>        Expected header; repeat per column; requires --strict
   --require-header                 Require a header row; requires --strict
   --min-data-rows <count>          Require a non-negative data row count; requires --strict
@@ -111,7 +110,6 @@ Parser options:
   --strict                         Enable strict RFC 4180 validation
   --fixed-columns <count>          Require this positive field count in strict mode
   --columns <indexes>              Select zero-based input columns and output order
-  --selected-columns <indexes>     Alias for --columns; do not use both
   --expected-header <value>        Expected header; repeat per column; requires --strict
   --require-header                 Require a header row; requires --strict
   --min-data-rows <count>          Require a non-negative data row count; requires --strict
@@ -167,7 +165,6 @@ const countOptionDefinitions = {
   'max-decompressed-bytes': { type: 'string' },
   'min-data-rows': { type: 'string' },
   'require-header': { type: 'boolean' },
-  'selected-columns': { type: 'string' },
   'strict': { type: 'boolean' },
   'where': { type: 'string' },
   'where-eq': { multiple: true, type: 'string' },
@@ -333,7 +330,6 @@ interface CommonOptionValues {
   readonly 'max-decompressed-bytes'?: string;
   readonly 'min-data-rows'?: string;
   readonly 'require-header'?: boolean;
-  readonly 'selected-columns'?: string;
   readonly 'strict'?: boolean;
   readonly 'where'?: string;
   readonly 'where-eq'?: readonly string[];
@@ -441,12 +437,6 @@ function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): Mu
   }
   if (values.columns !== undefined) {
     options.columns = parseColumns(values.columns, 'columns');
-  }
-  if (values['selected-columns'] !== undefined) {
-    options.selectedColumns = parseColumns(values['selected-columns'], 'selected columns');
-  }
-  if (options.columns !== undefined && options.selectedColumns !== undefined) {
-    throw new Error('use --columns or --selected-columns, not both');
   }
   if (values['expected-header'] !== undefined) {
     options.expectedHeaders = values['expected-header'];
@@ -565,9 +555,6 @@ function validateCountOptionCombinations(options: CsvApiFileOptions): void {
 }
 
 function areFileOptionsCompatible(options: CsvApiFileOptions): options is CsvCountOptions {
-  if (options.columns !== undefined && options.selectedColumns !== undefined) {
-    return false;
-  }
   return options.strict !== true || options.where === undefined;
 }
 

@@ -174,7 +174,7 @@ describe('coverage input boundaries', () => {
       }
       expect(await Array.fromAsync(readCsvFileChunks(empty, { chunkSize: 64, compression: 'auto' }))).toEqual([]);
       const projectedSerial: unknown[] = [];
-      for await (const batch of parseCsvFileProjected(noNewline, { selectedColumns: [0] })) {
+      for await (const batch of parseCsvFileProjected(noNewline, { columns: [0] })) {
         projectedSerial.push(...batch);
       }
       expect(projectedSerial).toEqual([['a'], ['1']]);
@@ -220,7 +220,7 @@ describe('coverage input boundaries', () => {
       }
       expect(rows).toHaveLength(2);
       const projected: unknown[] = [];
-      for await (const batch of parseCsvFileProjected(path, { selectedColumns: [1] })) {
+      for await (const batch of parseCsvFileProjected(path, { columns: [1] })) {
         projected.push(...batch);
       }
       expect(projected).toEqual([['b'], ['2']]);

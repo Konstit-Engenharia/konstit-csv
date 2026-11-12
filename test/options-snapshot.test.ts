@@ -40,6 +40,18 @@ afterAll(async () => {
 });
 
 describe('operation options snapshots', () => {
+  test('rejects an unsupported projection before reading or returning fields', () => {
+    const options = { delimiter: ';', selectedColumns: [1] };
+    const message = 'selectedColumns is unsupported; use columns';
+    expect(() => csv.rows(path, options)).toThrow(message);
+    expect(() => parseCsvFileProjected(path, options)).toThrow(message);
+    expect(() => new NativeCsvParser(options)).toThrow(message);
+    using parser = new NativeCsvParser();
+    const projection = { columns: [0], selectedColumns: [1] };
+    expect(() => parser.writeProjectedBatch(Buffer.from(source), projection)).toThrow(message);
+    expect(() => parser.endProjectedBatch(projection)).toThrow(message);
+  });
+
   test('rejects oversized configuration lists before reading their entries', () => {
     const columns = Array<number>(2025);
     const filters = Array<{ column: number; value: string; }>(2025);
@@ -51,18 +63,17 @@ describe('operation options snapshots', () => {
       });
     }
     expect(() => csv.rows(path, { columns })).toThrow('selected column count out of range: 2025');
-    expect(() => csv.rows(path, { selectedColumns: columns })).toThrow('selected column count out of range: 2025');
     expect(() => parseCsvFileProjected(path, { filters })).toThrow('filter count out of range: 2025');
   });
 
   test('captures file parser options before the first next call', async () => {
-    const selectedColumns = [1];
-    const options = { chunkSize: 2, delimiter: ';', selectedColumns };
+    const columns = [1];
+    const options = { chunkSize: 2, delimiter: ';', columns };
     const stream = parseCsvFile(path, options);
-    selectedColumns[0] = 2;
+    columns[0] = 2;
     options.delimiter = ',';
     expect(await collect(stream)).toEqual([['name'], ['Ana\nMaria'], ['Bia'], ['Caio']]);
-    expect(options.selectedColumns).toBe(selectedColumns);
+    expect(options.columns).toBe(columns);
     expect(options.delimiter).toBe(',');
   });
 
@@ -108,12 +119,12 @@ describe('operation options snapshots', () => {
   test('copies raw projected filter objects and byte values at invocation', async () => {
     const value = Buffer.from('SP');
     const equalsFilter = { column: 2, value };
-    const selectedColumns = [1];
-    const options = { chunkSize: 1, delimiter: ';', equalsFilter, selectedColumns };
+    const columns = [1];
+    const options = { chunkSize: 1, delimiter: ';', equalsFilter, columns };
     const stream = parseCsvFileProjected(path, options);
     value.fill(0);
     equalsFilter.column = 0;
-    selectedColumns[0] = 2;
+    columns[0] = 2;
     expect(await collect(stream)).toEqual([['Ana\nMaria'], ['Caio']]);
     expect(options.equalsFilter).toBe(equalsFilter);
     expect(equalsFilter.value).toBe(value);
@@ -125,7 +136,7 @@ describe('operation options snapshots', () => {
     const values = [value];
     const membership = { column: 2, values };
     const filters = [membership, { column: 1, regex: csv.re(/^(Ana\nMaria|Caio)$/) }];
-    const options = { chunkSize: 1, delimiter: ';', filters, selectedColumns: [0] };
+    const options = { chunkSize: 1, delimiter: ';', filters, columns: [0] };
     const stream = parseCsvFileProjected(path, options);
     value.fill(0);
     values.length = 0;
@@ -136,48 +147,27 @@ describe('operation options snapshots', () => {
     expect(Object.isFrozen(values)).toBe(false);
   });
 
-  test('isolates row view projection metadata from caller mutations', async () => {
+  test('isolates unfiltered batch projection from caller mutations', async () => {
     const columns = [0];
     const options = { chunkSize: 1, columns, delimiter: ';' };
     const rows: string[][] = [];
-    const operation = csv.withRowViews(path, options, (row) => {
-      expect(row.selectedColumns).toEqual([0]);
-      expect(row.selectedColumns).not.toBe(columns);
-      rows.push([row.get(0) ?? '']);
-      columns.length = 0;
-      options.columns = [2];
-    });
+    const stream = csv.batches(path, options);
     columns[0] = 1;
-    await operation;
-    expect(rows).toEqual([['id'], ['1'], ['2'], ['3']]);
-  });
-
-  test('isolates columnar projection metadata from caller mutations', async () => {
-    const columns = [0];
-    const options = { chunkSize: 1, columns, delimiter: ';' };
-    const rows: string[][] = [];
-    const operation = csv.withColumnarBatches(path, options, (batch) => {
-      expect(batch.selectedColumns).toEqual([0]);
-      expect(batch.selectedColumns).not.toBe(columns);
-      for (let index = 0; index < batch.rowCount; ++index) {
-        rows.push([batch.fieldBuffer(index, 0)?.toString() ?? '']);
-      }
-      columns.length = 0;
-      options.columns = [2];
-    });
-    columns[0] = 1;
-    await operation;
+    for await (using batch of stream) {
+      rows.push(...batch.rows());
+      options.columns = [];
+    }
     expect(rows).toEqual([['id'], ['1'], ['2'], ['3']]);
   });
 
   test('keeps explicit per-write parser reconfiguration between complete records', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
-    const selectedColumns = [0];
+    const columns = [0];
     const equalsFilter = { column: 1, value: 'SP' };
-    const options = { equalsFilter, selectedColumns };
+    const options = { equalsFilter, columns };
     using first = parser.writeProjectedBatch(Buffer.from('1;SP\n'), options);
     expect(first.rows()).toEqual([['1']]);
-    selectedColumns[0] = 1;
+    columns[0] = 1;
     equalsFilter.value = 'RJ';
     using second = parser.writeProjectedBatch(Buffer.from('2;RJ\n'), options);
     expect(second.rows()).toEqual([['RJ']]);

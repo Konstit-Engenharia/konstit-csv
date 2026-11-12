@@ -320,7 +320,7 @@ describe('NativeCsvParser batches and materialization', () => {
   test('parseCsvBuffer materializes selected columns', () => {
     expect(parseCsvBuffer(readCsvFixture('native/quoted-semicolon-one-person-with-header.csv'), {
       delimiter: ';',
-      selectedColumns: [0, 2],
+      columns: [0, 2],
     })).toEqual([
       ['id', 'uf'],
       ['1', 'SP'],

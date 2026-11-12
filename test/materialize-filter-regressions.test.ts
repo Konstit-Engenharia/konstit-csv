@@ -151,7 +151,7 @@ describe('filtered row materialization regressions', () => {
   test('preserves ragged rows and missing projections', async () => {
     for (const [path, encoding,] of [[utf8Path, 'utf8'], [latin1Path, 'iso88591']] as const) {
       const input = Buffer.from(await Bun.file(path).arrayBuffer());
-      expect(parseCsvBuffer(input, { delimiter: ';', encoding, selectedColumns: REORDERED_COLUMNS })).toEqual(EXPECTED_ALL_ROWS);
+      expect(parseCsvBuffer(input, { delimiter: ';', encoding, columns: REORDERED_COLUMNS })).toEqual(EXPECTED_ALL_ROWS);
 
       const rows: string[][] = [];
       for await (
@@ -170,7 +170,7 @@ describe('filtered row materialization regressions', () => {
 
   test('keeps duplicate projection rejection before parsing', async () => {
     const input = Buffer.from(await Bun.file(utf8Path).arrayBuffer());
-    expect(() => parseCsvBuffer(input, { delimiter: ';', selectedColumns: [2, 2] })).toThrow('selected column repeated: 2');
+    expect(() => parseCsvBuffer(input, { delimiter: ';', columns: [2, 2] })).toThrow('selected column repeated: 2');
   });
 });
 

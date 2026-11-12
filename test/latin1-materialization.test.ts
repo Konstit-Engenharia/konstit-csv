@@ -119,40 +119,22 @@ async function collect(path: string, options: CsvRowsOptions<readonly number[] |
 describe('private Latin1 row materialization compatibility', () => {
   test('captures replaced projections before iteration and across split records and final rows', async () => {
     for (const encoding of ['utf8', 'latin1'] as const) {
-      for (const alias of ['columns', 'selectedColumns'] as const) {
-        // The first chunk ends inside the next record, including a UTF-8 character.
-        const chunkSize = Buffer.byteLength('é;ÿ\n', encoding) + 1;
-        const options = { chunkSize, [alias]: [0], delimiter: ';' as const, encoding };
-        const stream = csv.rows(join(directory, `mutation-${encoding}.csv`), options);
-        options[alias] = [1];
-        try {
-          expect((await stream.next()).value).toEqual([['é']]);
-          options[alias] = [];
-          expect((await stream.next()).value).toEqual([['é']]);
-          options[alias] = [1, 0];
-          expect((await stream.next()).value).toEqual([['é']]);
-          expect((await stream.next()).value).toEqual([['é']]);
-          expect((await stream.next()).done).toBe(true);
-        } finally {
-          await stream.return();
-        }
+      // The first chunk ends inside the next record, including a UTF-8 character.
+      const chunkSize = Buffer.byteLength('é;ÿ\n', encoding) + 1;
+      const options = { chunkSize, columns: [0], delimiter: ';' as const, encoding };
+      const stream = csv.rows(join(directory, `mutation-${encoding}.csv`), options);
+      options.columns = [1];
+      try {
+        expect((await stream.next()).value).toEqual([['é']]);
+        options.columns = [];
+        expect((await stream.next()).value).toEqual([['é']]);
+        options.columns = [1, 0];
+        expect((await stream.next()).value).toEqual([['é']]);
+        expect((await stream.next()).value).toEqual([['é']]);
+        expect((await stream.next()).done).toBe(true);
+      } finally {
+        await stream.return();
       }
-    }
-  });
-
-  test('ignores conflicting projection aliases introduced after the operation starts', async () => {
-    const options = { chunkSize: 4, columns: [0], delimiter: ';' as const, encoding: 'latin1' as const };
-    const stream = csv.rows(join(directory, 'mutation-latin1.csv'), options);
-    try {
-      expect((await stream.next()).value).toEqual([['é']]);
-      Object.assign(options, { selectedColumns: [1] });
-      const remaining: string[][] = [];
-      for await (const rows of stream) {
-        remaining.push(...rows);
-      }
-      expect(remaining).toEqual([['é'], ['é'], ['é']]);
-    } finally {
-      await stream.return();
     }
   });
 

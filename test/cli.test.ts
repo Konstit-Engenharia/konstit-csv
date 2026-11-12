@@ -432,15 +432,13 @@ describe('csv CLI', () => {
     expectCommandError(result, 'strict CSV schema error: expected at least 2 data row(s), got 1');
   });
 
-  for (const option of ['--columns', '--selected-columns']) {
-    test(`accepts ${option} for Count API parity`, () => {
-      const result = runCli('count', csvFixturePath('rfc4180/simple-lf.csv'), option, '0');
+  test('accepts --columns for count', () => {
+    const result = runCli('count', csvFixturePath('rfc4180/simple-lf.csv'), '--columns', '0');
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout.toString()).toBe('2\n');
-      expect(result.stderr.toString()).toBe('');
-    });
-  }
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('2\n');
+    expect(result.stderr.toString()).toBe('');
+  });
 
   test('reports strict syntax errors', () => {
     const result = runCli(
@@ -911,7 +909,6 @@ describe('csv CLI', () => {
         '--strict',
         '--fixed-columns',
         '--columns',
-        '--selected-columns',
         '--expected-header',
         '--require-header',
         '--min-data-rows',
@@ -1075,6 +1072,11 @@ describe('csv CLI', () => {
       arguments: ['--fixed-columns', '0'],
       message: 'fixed columns must be an integer greater than or equal to 1',
       name: 'a zero fixed column count',
+    },
+    {
+      arguments: ['--selected-columns', '0'],
+      message: 'Unknown option \'--selected-columns\'',
+      name: 'the removed column selection alias',
     },
     {
       arguments: ['--worker-count', '2'],
@@ -1251,11 +1253,6 @@ describe('csv CLI', () => {
     name: string;
   }[] = [
     {
-      arguments: ['--columns', '0', '--selected-columns', '1'],
-      message: 'use --columns or --selected-columns, not both',
-      name: 'both column option aliases',
-    },
-    {
       arguments: ['--fixed-columns', '3'],
       message: '--fixed-columns requires --strict',
       name: 'fixed columns without strict mode',
@@ -1321,7 +1318,6 @@ const countOptionNames = {
   '--max-decompressed-bytes': true,
   '--min-data-rows': true,
   '--require-header': true,
-  '--selected-columns': true,
   '--strict': true,
   '--where': true,
   '--where-eq': true,

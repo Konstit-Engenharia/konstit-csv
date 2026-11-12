@@ -1,4 +1,3 @@
-import { NativeCsvRowView } from './batches.js';
 import type { NativeCsvBatch } from './batches.js';
 import {
   prepareCsvFileInput,
@@ -21,7 +20,6 @@ import {
 import { latin1Rows } from './latin1-rows.js';
 import { latin1RowsParser } from './native.js';
 import {
-  normalizeColumns,
   normalizeFixedColumnsCount,
   prepareCsvBufferInput,
   resolveInputEncoding,
@@ -36,9 +34,6 @@ import {
 import type {
   CsvApiFileOptions,
   CsvBatchesOptions,
-  CsvColumnarBatchCallback,
-  CsvColumnarBatchOptions,
-  CsvColumnarBatchView,
   CsvColumns,
   CsvCountOptions,
   CsvFilter,
@@ -47,9 +42,6 @@ import type {
   CsvProjectedRow,
   CsvRow,
   CsvRowsOptions,
-  CsvRowView,
-  CsvRowViewCallback,
-  CsvRowViewsOptions,
   CsvShard,
   CsvShardingOptions,
 } from './types.js';
@@ -59,7 +51,7 @@ import type {
  *
  * Use this when the input is already buffered and a single promise containing all rows is suitable.
  * The buffer is parsed as one complete input, so a record may not be split across calls. Use
- * {@link rows} for file streaming. `columns`/`selectedColumns` projects the
+ * {@link rows} for file streaming. `columns` projects the
  * returned rows, while strict validation (when enabled) still validates the complete row.
  *
  * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
@@ -82,7 +74,7 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
   }
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
-  const columns = selectedColumns(options);
+  const columns = options.columns;
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   const input = prepareCsvBufferInput(buffer, options.encoding, options.delimiter);
   using parser = createPreparedParser(toParserOptions(options, input.parserEncoding), projected ? columns : undefined, filters);
@@ -126,7 +118,7 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
 ): AsyncGenerator<CsvProjectedRow<TColumns>[], void> {
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
-  const columns = selectedColumns(options);
+  const columns = options.columns;
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   await using input = await prepareCsvFileInput(path, options, 'read-ahead', probeFormat);
   const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
@@ -182,15 +174,15 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
  *
  * Use this when you want low-allocation access to row views, byte ranges, and native-backed
  * column data. Every yielded batch owns native memory and must be closed after use; prefer
- * `for await (using batch of csv.batches(...))` or {@link withBatches} when possible.
- * Options are captured at invocation time. Accessor indexes refer to fields stored in the batch;
- * when filtering is combined with a projection, those stored fields are the projected output.
+ * `for await (using batch of csv.batches(...))` to close each batch at the end of the iteration.
+ * Options are captured at invocation time. Projection selects the stored fields in the requested
+ * order. Accessors use output positions and filters use physical input indexes.
  *
  * @param path - Path to the CSV file.
  * @param options - File and parser options.
  * @returns An async generator of disposable native batches.
- * @throws {Error} During iteration when the file or validation fails, or when filtered strict
- * validation is requested.
+ * @throws {Error} During iteration when the file or validation fails, or when strict validation
+ * is combined with projection or filtering.
  */
 export function batches(path: string, options: CsvBatchesOptions = {}): AsyncGenerator<NativeCsvBatch, void> {
   return iterateBatches(path, snapshotCsvOptions(options));
@@ -199,7 +191,10 @@ export function batches(path: string, options: CsvBatchesOptions = {}): AsyncGen
 async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncGenerator<NativeCsvBatch, void> {
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
-  const columns = filters === undefined ? undefined : selectedColumns(options);
+  const columns = options.columns;
+  if (options.strict === true && columns !== undefined) {
+    throw new Error('strict CSV validation is not supported for projected batches; use csv.rows() for strict projection');
+  }
   await using input = await prepareCsvFileInput(path, options);
   using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters);
   const validator = strictSchemaValidator(options);
@@ -229,264 +224,9 @@ async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncG
     }
     yield batch;
   } else {
-    validator?.finish();
     batch.close();
-  }
-}
-
-/**
- * Process native CSV batches while managing each batch's lifetime.
- *
- * The callback may be asynchronous. Its batch remains valid until the callback settles and is
- * closed in a `finally` block afterward, including when the callback throws.
- *
- * @param path - Path to the CSV file.
- * @param options - File and parser options.
- * @param callback - Function invoked once per non-empty batch.
- * @returns A promise that resolves after all batches have been processed.
- * @throws {Error} The callback error, file error, or parser/validation error.
- */
-export async function withBatches(
-  path: string,
-  options: CsvBatchesOptions,
-  callback: (batch: NativeCsvBatch) => void | Promise<void>,
-): Promise<void> {
-  for await (const batch of batches(path, options)) {
-    try {
-      await callback(batch);
-    } finally {
-      batch.close();
-    }
-  }
-}
-
-/**
- * Visit reusable columnar batch views without materializing one JavaScript string per field.
- *
- * The callback must be synchronous. A single view object is rebound for each batch and becomes
- * invalid as soon as the callback returns, so copy any data that must outlive the callback. When
- * `columns` is defined, batch column indexes are relative to the projected output order.
- * Strict validation requires all columns.
- *
- * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
- * @param path - Path to the CSV file.
- * @param options - File and columnar projection options.
- * @param callback - Synchronous function invoked with a reusable view and batch index.
- * @returns A promise that resolves after all batches have been visited.
- * @throws {TypeError} If the callback returns a promise.
- * @throws {Error} If strict validation is combined with a projection.
- */
-export function forEachColumnarBatches<TColumns extends CsvColumns | undefined = undefined>(
-  path: string,
-  options: CsvColumnarBatchOptions<TColumns>,
-  callback: CsvColumnarBatchCallback<TColumns>,
-): Promise<void>;
-/**
- * Visit columnar batches when the selected-column tuple is not statically known.
- * The callback must be synchronous and the reusable view is valid only during the callback.
- *
- * @param path - Path to the CSV file.
- * @param options - Columnar options, or `undefined` for defaults.
- * @param callback - Synchronous batch handler.
- * @returns A promise that resolves after all batches are visited.
- */
-export function forEachColumnarBatches(
-  path: string,
-  options: CsvColumnarBatchOptions | undefined,
-  callback: CsvColumnarBatchCallback,
-): Promise<void>;
-export async function forEachColumnarBatches<TColumns extends CsvColumns | undefined = undefined>(
-  path: string,
-  suppliedOptions: CsvColumnarBatchOptions<TColumns> = {} as CsvColumnarBatchOptions<TColumns>,
-  callback: CsvColumnarBatchCallback<TColumns>,
-): Promise<void> {
-  const options = snapshotCsvOptions(suppliedOptions);
-  ensureColumnarBatchesSupported(options);
-  const filters = toNativeFilters(options.where);
-  const columns = selectedColumns(options);
-  const scopedBatch = new ScopedCsvColumnarBatchView(columns as TColumns);
-  let batchIndex = 0;
-  await using input = await prepareCsvFileInput(path, options);
-  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters);
-  const validator = strictSchemaValidator(options);
-  for await (const chunk of input.chunks()) {
-    const batch = parser.writeBatch(chunk);
-    if (batch.rowCount > 0) {
-      try {
-        validator?.validateBatch(batch);
-        scopedBatch.bind(batch);
-        try {
-          const result = callback(scopedBatch, batchIndex);
-          if (isPromiseLike(result)) {
-            throw new TypeError('columnar batch callback must be synchronous');
-          }
-        } finally {
-          scopedBatch.release();
-        }
-        ++batchIndex;
-      } finally {
-        batch.close();
-      }
-    } else {
-      batch.close();
-    }
-  }
-
-  const batch = parser.endBatch();
-  if (batch.rowCount > 0) {
-    try {
-      validator?.validateBatch(batch);
-      validator?.finish();
-      scopedBatch.bind(batch);
-      try {
-        const result = callback(scopedBatch, batchIndex);
-        if (isPromiseLike(result)) {
-          throw new TypeError('columnar batch callback must be synchronous');
-        }
-      } finally {
-        scopedBatch.release();
-      }
-    } finally {
-      batch.close();
-    }
-  } else {
     validator?.finish();
-    batch.close();
   }
-}
-
-/**
- * Visit reusable columnar batch views with the same lifetime guarantees as
- * {@link forEachColumnarBatches}. The callback is synchronous and the view is invalid after it
- * returns.
- *
- * @typeParam TColumns - Literal projected column indexes, when a projection is supplied.
- * @param path - Path to the CSV file.
- * @param options - File and columnar projection options.
- * @param callback - Synchronous function invoked for each batch.
- * @returns A promise that resolves after all batches have been visited.
- */
-export function withColumnarBatches<TColumns extends CsvColumns | undefined = undefined>(
-  path: string,
-  options: CsvColumnarBatchOptions<TColumns>,
-  callback: CsvColumnarBatchCallback<TColumns>,
-): Promise<void>;
-/**
- * Visit columnar batches with runtime-selected columns and managed view lifetime.
- * The callback must be synchronous.
- *
- * @param path - Path to the CSV file.
- * @param options - Columnar options, or `undefined` for defaults.
- * @param callback - Synchronous batch handler.
- * @returns A promise that resolves after all batches are visited.
- */
-export function withColumnarBatches(
-  path: string,
-  options: CsvColumnarBatchOptions | undefined,
-  callback: CsvColumnarBatchCallback,
-): Promise<void> {
-  return forEachColumnarBatches(path, options, callback);
-}
-
-/**
- * Visit reusable row views without materializing row arrays.
- *
- * The callback must be synchronous. A single view object is rebound for each row and becomes
- * invalid when the callback returns, so copy strings or bytes that must be retained. The
- * `selectedColumns` property records the requested source columns. Without `where`, accessors
- * use physical CSV indexes. With both `where` and a projection, only projected fields may be
- * stored, so accessor indexes are projected positions; use the metadata to map them back to
- * source indexes.
- *
- * @typeParam TColumns - Literal projected column indexes recorded in `selectedColumns`.
- * @param path - Path to the CSV file.
- * @param options - File, projection, filter, and validation options.
- * @param callback - Synchronous function invoked once per row.
- * @returns A promise that resolves after all rows have been visited.
- * @throws {TypeError} If the callback returns a promise.
- * @throws {Error} If reading or parsing the file fails.
- */
-export function forEachRowViews<TColumns extends CsvColumns | undefined = undefined>(
-  path: string,
-  options: CsvRowViewsOptions<TColumns>,
-  callback: CsvRowViewCallback<TColumns>,
-): Promise<void>;
-/**
- * Visit row views when the selected-column tuple is not statically known.
- * The callback must be synchronous and the reusable view is valid only during the callback.
- *
- * @param path - Path to the CSV file.
- * @param options - Row-view options, or `undefined` for defaults.
- * @param callback - Synchronous row handler.
- * @returns A promise that resolves after all rows are visited.
- */
-export function forEachRowViews(
-  path: string,
-  options: CsvRowViewsOptions | undefined,
-  callback: CsvRowViewCallback,
-): Promise<void>;
-export async function forEachRowViews<TColumns extends CsvColumns | undefined = undefined>(
-  path: string,
-  suppliedOptions: CsvRowViewsOptions<TColumns> = {} as CsvRowViewsOptions<TColumns>,
-  callback: CsvRowViewCallback<TColumns>,
-): Promise<void> {
-  const options = snapshotCsvOptions(suppliedOptions);
-  const scopedRowView = new ScopedCsvRowView(selectedColumns(options) as TColumns);
-  for await (const batch of batches(path, options)) {
-    try {
-      const rowCount = batch.rowCount;
-      if (rowCount === 0) {
-        continue;
-      }
-      const reusable = new NativeCsvRowView(batch.data(), batch.rowOffsets(), batch.fieldOffsets());
-      for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-        scopedRowView.bind(reusable.moveTo(rowIndex));
-        try {
-          const result = callback(scopedRowView, rowIndex);
-          if (isPromiseLike(result)) {
-            throw new TypeError('row view callback must be synchronous');
-          }
-        } finally {
-          scopedRowView.release();
-        }
-      }
-    } finally {
-      batch.close();
-    }
-  }
-}
-
-/**
- * Visit reusable row views with the same lifetime guarantees as {@link forEachRowViews}.
- *
- * The callback is synchronous and the view is invalid after it returns.
- *
- * @typeParam TColumns - Literal projected column indexes recorded in `selectedColumns`.
- * @param path - Path to the CSV file.
- * @param options - File, projection, filter, and validation options.
- * @param callback - Synchronous function invoked once per row.
- * @returns A promise that resolves after all rows have been visited.
- */
-export function withRowViews<TColumns extends CsvColumns | undefined = undefined>(
-  path: string,
-  options: CsvRowViewsOptions<TColumns>,
-  callback: CsvRowViewCallback<TColumns>,
-): Promise<void>;
-/**
- * Visit row views with runtime-selected columns and managed view lifetime.
- * The callback must be synchronous.
- *
- * @param path - Path to the CSV file.
- * @param options - Row-view options, or `undefined` for defaults.
- * @param callback - Synchronous row handler.
- * @returns A promise that resolves after all rows are visited.
- */
-export function withRowViews(
-  path: string,
-  options: CsvRowViewsOptions | undefined,
-  callback: CsvRowViewCallback,
-): Promise<void> {
-  return forEachRowViews(path, options, callback);
 }
 
 /**
@@ -589,7 +329,7 @@ function shardingDelimiter(options: CsvShardingOptions, operation: string): stri
 /**
  * The package's file-oriented API namespace.
  *
- * The namespace combines materialization, counting, filtering, batch, row-view, and
+ * The namespace combines materialization, counting, filtering, native batches, and
  * record-safe sharding helpers in one discoverable object.
  */
 export const csv = {
@@ -656,55 +396,13 @@ export const csv = {
   rows,
   /**
    * Stream disposable native-backed batches.
-   * Close every yielded batch, or use `for await (using batch of ...)`.
+   * Columns select stored fields in output order. Filters address the input record.
+   * Close each yielded batch, or use `for await (using batch of ...)`.
    * @param path - Path to the CSV file.
    * @param options - File and parser options.
    * @returns An async generator of `NativeCsvBatch` objects.
    */
   batches,
-  /**
-   * Process native batches and close each one after the callback settles.
-   * @param path - Path to the CSV file.
-   * @param options - File and parser options.
-   * @param callback - Synchronous or asynchronous batch handler.
-   * @returns A promise that resolves after all batches are processed.
-   */
-  withBatches,
-  /**
-   * Visit reusable columnar batch views with a synchronous callback.
-   * The view is invalid after the callback returns; selected indexes are relative to projection.
-   * @param path - Path to the CSV file.
-   * @param options - File and columnar projection options.
-   * @param callback - Synchronous batch handler.
-   * @returns A promise that resolves after all batches are visited.
-   */
-  forEachColumnarBatches,
-  /**
-   * Visit reusable columnar batch views, closing native storage after each callback.
-   * The callback is synchronous and the view cannot be retained.
-   * @param path - Path to the CSV file.
-   * @param options - Columnar options.
-   * @param callback - Synchronous batch handler.
-   * @returns A promise that resolves after all batches are visited.
-   */
-  withColumnarBatches,
-  /**
-   * Visit reusable row views with a synchronous callback.
-   * The view is valid only during the callback.
-   * @param path - Path to the CSV file.
-   * @param options - Row-view options.
-   * @param callback - Synchronous row handler.
-   * @returns A promise that resolves after all rows are visited.
-   */
-  forEachRowViews,
-  /**
-   * Visit reusable row views with the same lifetime rules as `forEachRowViews`.
-   * @param path - Path to the CSV file.
-   * @param options - Row-view options.
-   * @param callback - Synchronous row handler.
-   * @returns A promise that resolves after all rows are visited.
-   */
-  withRowViews,
   /**
    * Count CSV records without materializing them.
    * Counting supports compression and automatic encoding and delimiter detection. Filters require non-strict parsing.
@@ -743,28 +441,13 @@ function toParserOptions(
   encoding: CsvParserOptions['encoding'],
   delimiter: CsvParserOptions['delimiter'] = options.delimiter,
 ): CsvParserOptions {
-  const selectedColumns = 'columns' in options && options.columns !== undefined
-    ? options.columns
-    : options.selectedColumns;
-  if ('columns' in options && options.columns !== undefined && options.selectedColumns !== undefined) {
-    throw new Error('use columns or selectedColumns, not both');
-  }
   return {
     delimiter,
     encoding,
     strict: options.strict,
-    selectedColumns,
+    columns: options.columns,
     fixedColumns: options.fixedColumns,
   };
-}
-
-function selectedColumns(options: CsvApiFileOptions): CsvColumns | undefined {
-  if (options.columns !== undefined && options.selectedColumns !== undefined) {
-    throw new Error('use columns or selectedColumns, not both');
-  }
-  const columns = options.columns ?? options.selectedColumns;
-  normalizeColumns(columns);
-  return columns;
 }
 
 function materializeRows<TColumns extends CsvColumns | undefined>(
@@ -776,198 +459,9 @@ function materializeRows<TColumns extends CsvColumns | undefined>(
   return batch.rowsInto(target, projected ? undefined : columns) as CsvProjectedRow<TColumns>[];
 }
 
-function ensureColumnarBatchesSupported(options: CsvApiFileOptions): void {
-  if (options.strict === true && selectedColumns(options) !== undefined) {
-    throw new Error(
-      'columnar batch callbacks do not support strict selectedColumns; use rows() for projected validation or withBatches() for manual low-level handling',
-    );
-  }
-}
-
 function rejectFilteredStrictSchema(options: CsvApiFileOptions): void {
   if (options.where !== undefined) {
     rejectStrictSchemaUnsupported(options, 'filtered rows');
-  }
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return typeof value === 'object' && value !== null && 'then' in value && typeof value.then === 'function';
-}
-
-class ScopedCsvRowView<TSelectedColumns extends CsvColumns | undefined = undefined> implements CsvRowView<TSelectedColumns> {
-  readonly #selectedColumns: TSelectedColumns;
-  #rowView: NativeCsvRowView | null = null;
-
-  constructor(selectedColumns: TSelectedColumns) {
-    this.#selectedColumns = selectedColumns;
-  }
-
-  bind(rowView: NativeCsvRowView): this {
-    this.#rowView = rowView;
-    return this;
-  }
-
-  release(): void {
-    this.#rowView = null;
-  }
-
-  get rowIndex(): number {
-    return this.#requireRowView().rowIndex;
-  }
-
-  get fieldCount(): number {
-    return this.#requireRowView().fieldCount;
-  }
-
-  get selectedColumns(): TSelectedColumns {
-    return this.#selectedColumns;
-  }
-
-  fieldRange(columnIndex: number) {
-    return this.#requireRowView().fieldRange(columnIndex);
-  }
-
-  range(columnIndex: number) {
-    return this.#requireRowView().range(columnIndex);
-  }
-
-  fieldBytes(columnIndex: number) {
-    return this.#requireRowView().fieldBytes(columnIndex);
-  }
-
-  bytes(columnIndex: number) {
-    return this.#requireRowView().bytes(columnIndex);
-  }
-
-  fieldBuffer(columnIndex: number) {
-    return this.#requireRowView().fieldBuffer(columnIndex);
-  }
-
-  buffer(columnIndex: number) {
-    return this.#requireRowView().buffer(columnIndex);
-  }
-
-  fieldString(columnIndex: number) {
-    return this.#requireRowView().fieldString(columnIndex);
-  }
-
-  getPhysical(columnIndex: number) {
-    return this.#requireRowView().getPhysical(columnIndex);
-  }
-
-  get(columnIndex: number) {
-    return this.#requireRowView().get(columnIndex);
-  }
-
-  pickPhysical(columns: CsvColumns): string[] {
-    return this.#requireRowView().pickPhysical(columns);
-  }
-
-  pick(columns: CsvColumns): string[] {
-    return this.#requireRowView().pick(columns);
-  }
-
-  #requireRowView(): NativeCsvRowView {
-    if (this.#rowView === null) {
-      throw new Error('row view is only valid during row view callback');
-    }
-    return this.#rowView;
-  }
-}
-
-class ScopedCsvColumnarBatchView<TSelectedColumns extends CsvColumns | undefined = undefined>
-  implements CsvColumnarBatchView<TSelectedColumns> {
-  readonly #selectedColumns: TSelectedColumns;
-  #batch: NativeCsvBatch | null = null;
-
-  constructor(selectedColumns: TSelectedColumns) {
-    this.#selectedColumns = selectedColumns;
-  }
-
-  bind(batch: NativeCsvBatch): this {
-    this.#batch = batch;
-    return this;
-  }
-
-  release(): void {
-    this.#batch = null;
-  }
-
-  get rowCount(): number {
-    return this.#requireBatch().rowCount;
-  }
-
-  get totalFields(): number {
-    return this.#requireBatch().totalFields;
-  }
-
-  get dataLength(): number {
-    return this.#requireBatch().dataLength;
-  }
-
-  get selectedColumns(): TSelectedColumns {
-    return this.#selectedColumns;
-  }
-
-  data(): Buffer {
-    return this.#requireBatch().data();
-  }
-
-  dataView(): Uint8Array {
-    return this.#requireBatch().dataView();
-  }
-
-  rowOffsets(): BigUint64Array {
-    return this.#requireBatch().rowOffsets();
-  }
-
-  fieldOffsets(): BigUint64Array {
-    return this.#requireBatch().fieldOffsets();
-  }
-
-  rowFieldCount(rowIndex: number): number {
-    return this.#requireBatch().rowFieldCount(rowIndex);
-  }
-
-  fieldRange(rowIndex: number, columnIndex: number) {
-    return this.#requireBatch().fieldRange(rowIndex, columnIndex);
-  }
-
-  fieldBytes(rowIndex: number, columnIndex: number) {
-    return this.#requireBatch().fieldBytes(rowIndex, columnIndex);
-  }
-
-  fieldBuffer(rowIndex: number, columnIndex: number) {
-    return this.#requireBatch().fieldBuffer(rowIndex, columnIndex);
-  }
-
-  forEachColumnRange(
-    columnIndex: number,
-    callback: (rowIndex: number, start: number, end: number) => void,
-    startRow?: number,
-    endRow?: number,
-  ) {
-    return this.#requireBatch().forEachColumnRange(columnIndex, callback, startRow, endRow);
-  }
-
-  forEachColumnBytes(columnIndex: number, callback: (rowIndex: number, bytes: Uint8Array) => void, startRow?: number, endRow?: number) {
-    return this.#requireBatch().forEachColumnBytes(columnIndex, callback, startRow, endRow);
-  }
-
-  scanColumns(
-    columns: CsvColumns,
-    callback: (rowIndex: number, ranges: Float64Array, data: Buffer) => void,
-    startRow?: number,
-    endRow?: number,
-  ) {
-    return this.#requireBatch().scanColumns(columns, callback, startRow, endRow);
-  }
-
-  #requireBatch(): NativeCsvBatch {
-    if (this.#batch === null) {
-      throw new Error('columnar batch view is only valid during columnar batch callback');
-    }
-    return this.#batch;
   }
 }
 

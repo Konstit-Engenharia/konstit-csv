@@ -79,8 +79,7 @@ bunx @konstit/csv count data.csv --delimiter ',' --chunk-size 262144
 
 `count` also accepts the parser, compression, schema, projection, and filter
 options described below. `--columns` validates the requested zero-based
-indexes but does not change the count. `--selected-columns` is an alias;
-provide only one of the two options.
+indexes but does not change the count.
 
 ## Stream records
 
@@ -205,8 +204,7 @@ remain zero-based and refer to the input, even when the output is reordered:
 bunx @konstit/csv lines data.csv --columns 2,1,0
 ```
 
-The header and rows are projected in the same order. `--selected-columns` is a
-legacy alias for `--columns`; the two options cannot be combined.
+The header and rows are projected in the same order.
 
 ## Friendly filters
 

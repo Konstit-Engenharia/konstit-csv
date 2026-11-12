@@ -22,6 +22,8 @@ import type {
   NativeCsvRowCallback,
 } from './types.js';
 
+const visitBatchRows = Symbol('visitBatchRows');
+
 /**
  * A reusable, low-allocation view over one row in a {@link NativeCsvBatch}.
  *
@@ -37,6 +39,8 @@ export class NativeCsvRowView {
   #fieldOffsets: BigUint64Array;
   #fieldOffsetWords: Uint32Array;
   #rowIndex: number;
+  // Standalone views borrow caller-owned arrays. Callback views borrow an open batch until release.
+  #owner: NativeCsvBatch | null | undefined;
 
   /**
    * Creates a row view over packed batch storage.
@@ -63,6 +67,7 @@ export class NativeCsvRowView {
 
   /** Zero-based index of the row currently selected by this view. */
   get rowIndex(): number {
+    this.#requireActive();
     return this.#rowIndex;
   }
 
@@ -202,8 +207,7 @@ export class NativeCsvRowView {
   /**
    * Reads a field from the current row as UTF-8 text.
    *
-   * This is the concise accessor; use `getPhysical()` when the source-column
-   * interpretation should be explicit at the call site.
+   * Both `get()` and `getPhysical()` use positions in the stored row.
    *
    * @param columnIndex Zero-based field index in the current row.
    * @returns Decoded text, or `null` when the field is absent.
@@ -222,6 +226,7 @@ export class NativeCsvRowView {
    * @returns A newly allocated array of decoded UTF-8 strings.
    */
   pickPhysical(columns: CsvColumns): string[] {
+    this.#requireActive();
     const values: string[] = [];
     values.length = columns.length;
     for (let index = 0; index < columns.length; ++index) {
@@ -242,6 +247,7 @@ export class NativeCsvRowView {
   }
 
   #rowRange(rowIndex: number): readonly [number, number] {
+    this.#requireActive();
     const maxFieldIndex = this.#fieldOffsets.length - 1;
     const rowStart = offsetAt(this.#rowOffsetWords, rowIndex, `row ${rowIndex} offset`, maxFieldIndex);
     const rowEnd = offsetAt(this.#rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, maxFieldIndex);
@@ -249,6 +255,37 @@ export class NativeCsvRowView {
       throw new RangeError(`row ${rowIndex} offsets are not monotonic`);
     }
     return [rowStart, rowEnd];
+  }
+
+  #requireActive(): void {
+    if (this.#owner === null) {
+      throw new Error('row view is only valid during row view callback');
+    }
+    if (this.#owner?.closed) {
+      throw new Error('native CSV batch is closed');
+    }
+  }
+
+  static [visitBatchRows](batch: NativeCsvBatch, callback: NativeCsvRowCallback): void {
+    const rowCount = batch.rowCount;
+    const view = new NativeCsvRowView(batch.data(), batch.rowOffsets(), batch.fieldOffsets());
+    for (let index = 0; index < rowCount; ++index) {
+      view.#owner = batch;
+      let result: unknown;
+      try {
+        result = callback(view.moveTo(index), index);
+      } finally {
+        view.#owner = null;
+      }
+      if (
+        result !== null && (typeof result === 'object' || typeof result === 'function')
+        && 'then' in result && typeof result.then === 'function'
+      ) {
+        // The synchronous contract error takes precedence over a later rejection from the callback.
+        void Promise.resolve(result).catch(() => {});
+        throw new TypeError('row view callback must be synchronous');
+      }
+    }
   }
 }
 
@@ -322,18 +359,13 @@ export class NativeCsvBatch {
   /**
    * Visits each row through one reusable {@link NativeCsvRowView}.
    *
-   * The callback is invoked synchronously. The view object and its borrowed
-   * byte results must not be retained for use after the callback or batch
-   * lifetime.
+   * The callback must be synchronous. Row access is valid only during its call.
+   * Copy borrowed bytes before closing the batch.
    *
    * @param callback Function invoked with the reusable row view and its row index.
    */
   forEachRow(callback: NativeCsvRowCallback): void {
-    const rowCount = this.rowCount;
-    const rowView = new NativeCsvRowView(this.data(), this.rowOffsets(), this.fieldOffsets());
-    for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-      callback(rowView.moveTo(rowIndex), rowIndex);
-    }
+    NativeCsvRowView[visitBatchRows](this, callback);
   }
 
   /**
@@ -610,6 +642,7 @@ export class NativeCsvBatch {
     this.#validateRowRange(startRow, resolvedEndRow);
 
     for (let rowIndex = startRow; rowIndex < resolvedEndRow; ++rowIndex) {
+      this.#requireHandle(); // A callback can close the batch between rows.
       const rowStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
       const rowEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
 
@@ -683,6 +716,7 @@ export class NativeCsvBatch {
     const ranges = new Float64Array(columns.length * 2);
 
     for (let rowIndex = startRow; rowIndex < resolvedEndRow; ++rowIndex) {
+      this.#requireHandle(); // A callback can close the batch between rows.
       const rowStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
       const rowEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
 

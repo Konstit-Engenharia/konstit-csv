@@ -34,6 +34,23 @@ describe('native resource lifecycle', () => {
     expect(parser.closed).toBe(true);
   });
 
+  test('stops visiting native storage if a callback closes the batch', () => {
+    using parser = new NativeCsvParser();
+    const input = readCsvFixture('native/unquoted-comma-two-rows.csv');
+    using rows = parser.writeBatch(input);
+    expect(() =>
+      rows.forEachRow((row) => {
+        rows.close();
+        expect(() => row.get(0)).toThrow('native CSV batch is closed');
+      })
+    ).toThrow('native CSV batch is closed');
+
+    using ranges = parser.writeBatch(input);
+    expect(() => ranges.forEachColumnRange(0, () => ranges.close())).toThrow('native CSV batch is closed');
+    using scan = parser.writeBatch(input, true);
+    expect(() => scan.scanColumns([0], () => scan.close())).toThrow('native CSV batch is closed');
+  });
+
   test('Bun using closes parser and row batches', () => {
     let parserRef: NativeCsvParser | undefined;
     let batchRef: ReturnType<NativeCsvParser['writeBatch']> | undefined;

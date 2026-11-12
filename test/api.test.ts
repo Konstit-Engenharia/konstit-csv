@@ -6,9 +6,12 @@ import {
 import {
   csv,
   type CsvApiFileOptions,
+  type CsvBatchesOptions,
   type CsvCountOptions,
   type CsvFilter,
   type CsvRowsOptions,
+  type NativeCsvBatch,
+  type NativeCsvRowView,
   parseCsvFileProjected,
 } from '../src/index.ts';
 import {
@@ -76,31 +79,23 @@ describe('csv high-level API', () => {
     ).toEqual([['3', 'Bia']]);
 
     const batchRows: string[][] = [];
-    for await (const batch of csv.batches(path, { columns: [0, 1], delimiter: ';', where })) {
-      try {
-        batchRows.push(...batch.rows());
-      } finally {
-        batch.close();
-      }
-    }
-    expect(batchRows).toEqual([['3', 'Bia']]);
-
     const rowViewRows: string[][] = [];
-    await csv.withRowViews(path, { columns: [0, 1] as const, delimiter: ';', where }, (row) => {
-      rowViewRows.push([row.get(0) ?? '', row.get(1) ?? '']);
-    });
-    expect(rowViewRows).toEqual([['3', 'Bia']]);
-
     const columnarRows: string[][] = [];
-    await csv.withColumnarBatches(path, { columns: [0, 1] as const, delimiter: ';', where }, (batch) => {
+    for await (using batch of csv.batches(path, { columns: [0, 1], delimiter: ';', where })) {
+      batchRows.push(...batch.rows());
+      batch.forEachRow((row) => {
+        rowViewRows.push([row.get(0) ?? '', row.get(1) ?? '']);
+      });
       for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
         columnarRows.push([
           batch.fieldBuffer(rowIndex, 0)?.toString() ?? '',
           batch.fieldBuffer(rowIndex, 1)?.toString() ?? '',
         ]);
       }
-    });
-    expect(columnarRows).toEqual([['3', 'Bia']]);
+    }
+    expect(batchRows).toEqual([['3', 'Bia']]);
+    expect(rowViewRows).toEqual(batchRows);
+    expect(columnarRows).toEqual(batchRows);
 
     const projectedRows: string[][] = [];
     for await (
@@ -110,7 +105,7 @@ describe('csv high-level API', () => {
           { column: 2, value: 'SP' },
           { column: 1, prefix: 'B' },
         ],
-        selectedColumns: [0, 1],
+        columns: [0, 1],
       })
     ) {
       projectedRows.push(...rows);
@@ -267,66 +262,38 @@ describe('csv high-level API', () => {
     expect(await csv.count(path, { delimiter: ';', where: csv.column(20).isNoneOf(['']) })).toBe(0);
   });
 
-  test('runs safe row view callbacks through both aliases', async () => {
-    const path = csvFixturePath('api/unquoted-people-no-header.csv');
-    const seen: string[][] = [];
-    const aliasSeen: string[][] = [];
-    const physicalSeen: string[][] = [];
-    let firstRowView: unknown;
-    let escapedRowView: Parameters<Parameters<typeof csv.withRowViews>[2]>[0] | undefined;
-
-    await csv.forEachRowViews(path, { delimiter: ';' }, (row, rowIndex) => {
-      if (rowIndex === 0) {
-        firstRowView = row;
-      } else {
-        expect(row === firstRowView).toBe(true);
+  test('projects row views in the same order with and without a filter', async () => {
+    const path = csvFixturePath('api/quoted-people-two-rows.csv');
+    for (const where of [undefined, csv.column(1).startsWith('')]) {
+      const seen: string[][] = [];
+      for await (using batch of csv.batches(path, { columns: [2, 0], delimiter: ';', where })) {
+        batch.forEachRow((row) => {
+          expect(row.fieldCount).toBe(2);
+          expect(row.get(2)).toBeNull();
+          seen.push(row.pick([0, 1]));
+        });
       }
-      escapedRowView = row;
-      seen.push([row.get(0) ?? '', row.bytes(1)?.toString() ?? '', ...row.pick([2])]);
-      physicalSeen.push([row.getPhysical(0) ?? '', ...row.pickPhysical([2])]);
-      expect(row.range(2)).not.toBeNull();
-    });
-
-    await csv.withRowViews(path, { delimiter: ';' }, (row) => {
-      aliasSeen.push([row.get(0) ?? '', row.get(2) ?? '']);
-    });
-
-    expect(seen).toEqual([
-      ['1', 'Ana', 'SP'],
-      ['2', 'Joao', 'RJ'],
-    ]);
-    expect(aliasSeen).toEqual([
-      ['1', 'SP'],
-      ['2', 'RJ'],
-    ]);
-    expect(physicalSeen).toEqual([
-      ['1', 'SP'],
-      ['2', 'RJ'],
-    ]);
-    expect(escapedRowView).toBeDefined();
-    expect(() => escapedRowView?.getPhysical(0)).toThrow('row view is only valid during row view callback');
+      expect(seen).toEqual([['uf', 'id'], ['SP', '1'], ['RJ', '2']]);
+    }
   });
 
-  test('streams row views without materializing arrays', async () => {
+  test('an empty projection keeps every record with zero stored fields', async () => {
     const path = csvFixturePath('api/quoted-people-two-rows.csv');
-    const seen: string[] = [];
-    const selectedColumnsSeen: Array<readonly number[] | undefined> = [];
+    const rows: string[][] = [];
+    for await (using batch of csv.batches(path, { columns: [], delimiter: ';', chunkSize: 1 })) {
+      expect(batch.totalFields).toBe(0);
+      rows.push(...batch.rows());
+    }
+    expect(rows).toEqual([[], [], []]);
+  });
 
-    await csv.withRowViews(path, { columns: [0, 2] as const, delimiter: ';' }, (row) => {
-      selectedColumnsSeen.push(row.selectedColumns);
-      seen.push(`${row.get(0)}|${row.get(2)}`);
-    });
-
-    expect(seen).toEqual([
-      'id|uf',
-      '1|SP',
-      '2|RJ',
-    ]);
-    expect(selectedColumnsSeen).toEqual([
-      [0, 2],
-      [0, 2],
-      [0, 2],
-    ]);
+  test('rejects strict native batch projection, including an empty selection', async () => {
+    const path = csvFixturePath('api/strict-selected-columns.csv');
+    for (const columns of [[0], []]) {
+      const options = { columns, strict: true } as unknown as CsvBatchesOptions;
+      const error = await rejectedError(csv.batches(path, options).next());
+      expect(error.message).toContain('use csv.rows() for strict projection');
+    }
   });
 
   test('streams columnar batches without per-field strings', async () => {
@@ -335,11 +302,10 @@ describe('csv high-level API', () => {
     const ranged: string[] = [];
     const scanned: string[] = [];
     const partial: string[] = [];
-    let retained: unknown;
+    let retained: NativeCsvBatch | undefined;
 
-    await csv.withColumnarBatches(path, { columns: [0, 2] as const, delimiter: ';' }, (batch) => {
+    for await (using batch of csv.batches(path, { columns: [0, 2], delimiter: ';' })) {
       retained = batch;
-      expect(batch.selectedColumns).toEqual([0, 2]);
       expect(batch.rowCount).toBeGreaterThan(0);
       const data = batch.data();
       for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
@@ -363,7 +329,7 @@ describe('csv high-level API', () => {
         1,
         3,
       );
-    });
+    }
 
     expect(seen).toEqual([
       'id|uf',
@@ -384,13 +350,8 @@ describe('csv high-level API', () => {
       '1',
       '2',
     ]);
-    expect(() => (retained as { rowOffsets(): BigUint64Array; }).rowOffsets()).toThrow(
-      'columnar batch view is only valid during columnar batch callback',
-    );
-    expect(() => (retained as { forEachColumnRange(columnIndex: number, callback: () => void): void; }).forEachColumnRange(0, () => {}))
-      .toThrow(
-        'columnar batch view is only valid during columnar batch callback',
-      );
+    expect(() => retained?.rowOffsets()).toThrow('native CSV batch is closed');
+    expect(() => retained?.forEachColumnRange(0, () => {})).toThrow('native CSV batch is closed');
   });
 
   test('validates filters when they are constructed', () => {
@@ -459,15 +420,31 @@ describe('csv high-level API', () => {
     );
   });
 
-  test('keeps row view callback limits explicit', async () => {
+  test('invalidates row views on callback errors and rejects asynchronous callbacks', async () => {
     const path = csvFixturePath('api/unquoted-one-person-no-header.csv');
-    const asyncCallback = (async () => {
-    }) as unknown as Parameters<typeof csv.withRowViews>[2];
+    for await (using batch of csv.batches(path, { delimiter: ';' })) {
+      let retained: NativeCsvRowView | undefined;
+      const failure = new Error('callback failed');
+      expect(() =>
+        batch.forEachRow((row) => {
+          retained = row;
+          throw failure;
+        })
+      ).toThrow(failure);
+      expect(() => retained?.moveTo(0)).toThrow('row view is only valid during row view callback');
 
-    const callbackError = await rejectedError(
-      csv.withRowViews(path, { delimiter: ';' }, asyncCallback),
-    );
-    expect(callbackError.message).toContain('row view callback must be synchronous');
+      let afterAwait: Promise<string | null> | undefined;
+      expect(() =>
+        batch.forEachRow((row) => {
+          afterAwait = Promise.resolve().then(() => row.get(0));
+          return afterAwait;
+        })
+      ).toThrow('row view callback must be synchronous');
+      expect(afterAwait).toBeDefined();
+      if (afterAwait !== undefined) {
+        expect((await rejectedError(afterAwait)).message).toContain('row view is only valid during row view callback');
+      }
+    }
   });
 
   test('propagates strict mode to high-level row parsing', async () => {

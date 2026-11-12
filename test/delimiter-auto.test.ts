@@ -106,18 +106,18 @@ describe('automatic delimiter detection', () => {
     expect(index).toBe(10_001);
   });
 
-  test('supports batch callbacks, filtered counts, and direct file helpers', async () => {
+  test('supports projected batches, filtered counts, and direct file helpers', async () => {
     const batchRows: string[][] = [];
     for await (using batch of csv.batches(semicolonPath, { delimiter: 'auto' })) {
       batchRows.push(...batch.rows());
     }
 
     const projected: string[] = [];
-    await csv.withColumnarBatches(semicolonPath, { columns: [0, 2] as const, delimiter: 'auto' }, (batch) => {
+    for await (using batch of csv.batches(semicolonPath, { columns: [0, 2], delimiter: 'auto' })) {
       for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
         projected.push(`${batch.fieldBuffer(rowIndex, 0)?.toString()}|${batch.fieldBuffer(rowIndex, 1)?.toString()}`);
       }
-    });
+    }
 
     const directRows: string[][] = [];
     for await (const batch of parseCsvFile(semicolonPath, { delimiter: 'auto' })) {
@@ -127,7 +127,7 @@ describe('automatic delimiter detection', () => {
     for await (
       const batch of parseCsvFileProjected(semicolonPath, {
         delimiter: 'auto',
-        selectedColumns: [0, 2],
+        columns: [0, 2],
       })
     ) {
       directProjected.push(...batch);

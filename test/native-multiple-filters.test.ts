@@ -117,7 +117,7 @@ describe('NativeCsvParser multiple native filters', () => {
         { column: 1, prefix: 'A' },
         { column: 0, value: '1' },
       ],
-      selectedColumns: [2, 1],
+      columns: [2, 1],
     } satisfies Parameters<NativeCsvParser['writeProjectedBatch']>[1];
     const input = readCsvFixture('native/quoted-semicolon-people-with-mg.csv');
     using parser = new NativeCsvParser({ delimiter: ';' });

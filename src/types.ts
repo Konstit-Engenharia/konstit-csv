@@ -239,7 +239,7 @@ export interface CsvParserOptions<TEncoding extends CsvFileEncoding = CsvNativeE
   /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
   readonly delimiter?: CsvDelimiter;
   /** Physical columns to emit from each row, in the requested output order. */
-  readonly selectedColumns?: CsvColumns;
+  readonly columns?: CsvColumns;
   /** Require exactly this many fields per row; malformed rows fail instead of being padded or truncated. */
   readonly fixedColumns?: number;
   /** Enable RFC-style quote and schema validation. Defaults to `false`. */
@@ -351,53 +351,30 @@ export type CsvNativeFilter =
  */
 export interface CsvNativeProjectionOptions {
   /** Physical columns to emit, in output order. */
-  readonly selectedColumns?: CsvColumns;
+  readonly columns?: CsvColumns;
   /** One equality predicate for the direct native fast path. */
   readonly equalsFilter?: CsvEqualsFilter;
   /** Native predicates combined for the operation. */
   readonly filters?: readonly CsvNativeFilter[];
 }
 
-/**
- * Common file options for the high-level `csv` API.
- *
- * Use `columns` for the preferred projection spelling. `selectedColumns` is a
- * legacy alias; supplying both is rejected.
- */
+/** Common file options for the high-level `csv` API. */
 export interface CsvApiFileOptions extends CsvFileOptions {
-  /** Preferred physical-column projection for materialized row APIs. */
-  readonly columns?: CsvColumns;
   /** Opaque filter created by `csv.column()`, `csv.all()`, `csv.any()`, or `csv.not()`. */
   readonly where?: CsvFilter;
 }
 
-/**
- * Type-safe mutually exclusive projection fields.
- *
- * The generic preserves a literal tuple such as `readonly [0, 2]`, allowing
- * materialized rows and row views to retain their projected positions in the
- * resulting TypeScript type.
- */
-export type CsvColumnSelection<TColumns extends CsvColumns | undefined> =
-  | {
-    /** Preferred projection spelling; indexes are emitted in this order. */
-    readonly columns?: TColumns;
-    /** Deliberately excluded when `columns` is supplied. */
-    readonly selectedColumns?: never;
-  }
-  | {
-    /** Deliberately excluded when the legacy alias is supplied. */
-    readonly columns?: never;
-    /** Legacy projection spelling; indexes are emitted in this order. */
-    readonly selectedColumns?: TColumns;
-  };
+/** Retains the literal input indexes and their order for projected row types. */
+export interface CsvColumnSelection<TColumns extends CsvColumns | undefined> {
+  readonly columns?: TColumns;
+}
 
 /** Apply `Omit` to each member of a union independently. */
 type CsvDistributiveOmit<T, TKeys extends PropertyKey> = T extends unknown ? Omit<T, TKeys> : never;
 
-/** A projection can use either column spelling. Strict validation requires unfiltered input. */
+/** Strict validation requires unfiltered input. */
 type CsvOperationOptions<TColumns extends CsvColumns | undefined> =
-  & Omit<CsvApiFileOptions, 'columns' | 'selectedColumns' | 'strict' | 'where'>
+  & Omit<CsvApiFileOptions, 'columns' | 'strict' | 'where'>
   & CsvColumnSelection<TColumns>
   & (
     | { readonly strict?: false | undefined; readonly where?: CsvFilter | undefined; }
@@ -418,19 +395,13 @@ export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> 
   readonly reuseArrays?: boolean;
 };
 
-/** Alias for the options accepted by `csv.rows()`. */
-export type CsvSingleThreadRowsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvRowsOptions<TColumns>;
-
-/** Options accepted by `csv.batches()` and `csv.withBatches()`. */
-export type CsvBatchesOptions = CsvOperationOptions<CsvColumns | undefined>;
-
-/** Options accepted by reusable row-view callbacks. */
-export type CsvRowViewsOptions<TColumns extends CsvColumns | undefined = undefined> = CsvOperationOptions<TColumns>;
-
-/** Projected columnar batches expose raw bytes and require non-strict parsing. */
-export type CsvColumnarBatchOptions<TColumns extends CsvColumns | undefined = undefined> = [TColumns] extends [undefined]
-  ? CsvOperationOptions<TColumns>
-  : CsvOperationOptions<TColumns> & { readonly strict?: false | undefined; };
+/** Strict native batches require unfiltered, unprojected input. */
+export type CsvBatchesOptions =
+  & CsvOperationOptions<CsvColumns | undefined>
+  & (
+    | { readonly strict?: false | undefined; }
+    | { readonly columns?: undefined; }
+  );
 
 /** Options accepted by `csv.count()`. */
 export type CsvCountOptions = CsvOperationOptions<CsvColumns | undefined>;
@@ -445,55 +416,6 @@ export type CsvCountOptions = CsvOperationOptions<CsvColumns | undefined>;
 export type CsvProjectedRow<TColumns extends CsvColumns | undefined> = TColumns extends readonly unknown[]
   ? { -readonly [Index in keyof TColumns]: string; }
   : CsvRow;
-
-/**
- * Reusable, low-allocation view of one materialized row.
- *
- * The view is valid only during the synchronous callback that receives it. Its
- * accessors address the fields stored in the current batch: unfiltered rows
- * use physical CSV indexes, while a filtered operation with a projection uses
- * projected output positions. `selectedColumns` maps those output positions
- * back to physical indexes. Missing fields return `null` from scalar accessors
- * and become empty strings in `pick()` and `pickPhysical()`.
- *
- * @typeParam TSelectedColumns - Literal selected-column indexes, when supplied.
- */
-export type CsvRowView<TSelectedColumns extends CsvColumns | undefined = undefined> =
-  & Pick<
-    NativeCsvRowView,
-    | 'rowIndex'
-    | 'fieldCount'
-    | 'fieldRange'
-    | 'range'
-    | 'fieldBytes'
-    | 'bytes'
-    | 'fieldBuffer'
-    | 'buffer'
-    | 'fieldString'
-    | 'getPhysical'
-    | 'get'
-    | 'pickPhysical'
-    | 'pick'
-  >
-  & {
-    /** Selected output columns requested for the stream, when present. */
-    readonly selectedColumns: TSelectedColumns;
-  };
-
-/**
- * Synchronous callback invoked for each reusable row view.
- *
- * Copy values that must outlive the callback; the view is rebound for the next
- * row and released when the callback returns.
- *
- * @typeParam TSelectedColumns - Literal selected-column indexes, when supplied.
- * @param row - Reusable view positioned at `rowIndex`.
- * @param rowIndex - Zero-based row index within the current batch.
- */
-export type CsvRowViewCallback<TSelectedColumns extends CsvColumns | undefined = undefined> = (
-  row: CsvRowView<TSelectedColumns>,
-  rowIndex: number,
-) => void;
 
 /**
  * Synchronous callback invoked by `NativeCsvBatch.forEachRow()`.
@@ -531,64 +453,3 @@ export type CsvColumnBytesCallback = (rowIndex: number, bytes: Uint8Array) => vo
  * array and buffer are reused for each row.
  */
 export type CsvScanColumnsCallback = (rowIndex: number, ranges: Float64Array, data: Buffer) => void;
-
-/**
- * Reusable raw-data view over one columnar batch.
- *
- * This view is valid only during the synchronous callback that receives it and
- * is rebound for the next batch. Its arrays and byte views alias native batch
- * storage, so copy data that must outlive the callback.
- *
- * @typeParam TSelectedColumns - Literal selected-column indexes, when supplied.
- */
-export interface CsvColumnarBatchView<TSelectedColumns extends CsvColumns | undefined = undefined> {
-  /** Number of rows represented by the batch. */
-  readonly rowCount: number;
-  /** Total number of fields across all rows in the batch. */
-  readonly totalFields: number;
-  /** Number of bytes in the backing field-data buffer. */
-  readonly dataLength: number;
-  /**
-   * Selected output columns requested for this batch, mapping output positions
-   * to physical CSV indexes.
-   *
-   * Column indexes passed to this view's methods address stored batch fields;
-   * when this property is defined, those indexes are projected output
-   * positions.
-   */
-  readonly selectedColumns: TSelectedColumns;
-  /** Return the batch's field bytes as a `Buffer` view. */
-  data(): Buffer;
-  /** Return the batch's field bytes as a `Uint8Array` view. */
-  dataView(): Uint8Array;
-  /** Return `rowCount + 1` cumulative field indexes for row boundaries. */
-  rowOffsets(): BigUint64Array;
-  /** Return `totalFields + 1` cumulative byte offsets for field boundaries. */
-  fieldOffsets(): BigUint64Array;
-  /** Return the number of fields in one row. */
-  rowFieldCount(rowIndex: number): number;
-  /** Return a field's half-open byte range, or `null` when the column is missing. */
-  fieldRange(rowIndex: number, columnIndex: number): CsvFieldRange | null;
-  /** Return a field's raw bytes, or `null` when the column is missing. */
-  fieldBytes(rowIndex: number, columnIndex: number): Uint8Array | null;
-  /** Return a field's `Buffer` view, or `null` when the column is missing. */
-  fieldBuffer(rowIndex: number, columnIndex: number): Buffer | null;
-  /** Visit byte ranges for one column in the half-open row interval `[startRow, endRow)`. */
-  forEachColumnRange(columnIndex: number, callback: CsvColumnRangeCallback, startRow?: number, endRow?: number): void;
-  /** Visit raw bytes for one column in the half-open row interval `[startRow, endRow)`. */
-  forEachColumnBytes(columnIndex: number, callback: CsvColumnBytesCallback, startRow?: number, endRow?: number): void;
-  /** Visit several column ranges per row; missing fields are reported as `[-1, -1]`. */
-  scanColumns(columns: CsvColumns, callback: CsvScanColumnsCallback, startRow?: number, endRow?: number): void;
-}
-
-/**
- * Synchronous callback invoked for each reusable columnar batch view.
- *
- * @typeParam TSelectedColumns - Literal selected-column indexes, when supplied.
- * @param batch - Reusable raw-data view for the current batch.
- * @param batchIndex - Zero-based batch index for the operation.
- */
-export type CsvColumnarBatchCallback<TSelectedColumns extends CsvColumns | undefined = undefined> = (
-  batch: CsvColumnarBatchView<TSelectedColumns>,
-  batchIndex: number,
-) => void;

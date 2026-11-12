@@ -166,7 +166,7 @@ async function countJsProjectedMultipleFilters(): Promise<number> {
     const batch of parseCsvFileProjected(FILE, {
       chunkSize: CHUNK_SIZE,
       delimiter: DELIMITER,
-      selectedColumns: MULTIPLE_FILTER_COLUMNS,
+      columns: MULTIPLE_FILTER_COLUMNS,
     })
   ) {
     try {
@@ -190,7 +190,7 @@ async function countJsProjected(predicate: (value: string) => boolean): Promise<
     const batch of parseCsvFileProjected(FILE, {
       chunkSize: CHUNK_SIZE,
       delimiter: DELIMITER,
-      selectedColumns: SELECTED_COLUMNS,
+      columns: SELECTED_COLUMNS,
     })
   ) {
     try {

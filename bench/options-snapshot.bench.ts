@@ -57,12 +57,12 @@ for (const encoding of ['utf8', 'latin1'] as const) {
         let rows = 0;
         let chars = 0;
         for await (const chunk of createReadStream(path, { highWaterMark: chunkSize })) {
-          using batch = parser.writeProjectedBatch(chunk as Buffer, { selectedColumns: columns, filters });
+          using batch = parser.writeProjectedBatch(chunk as Buffer, { columns, filters });
           const materialized = batch.rows();
           rows += materialized.length;
           chars += consumeRows(materialized);
         }
-        using batch = parser.endProjectedBatch({ selectedColumns: columns, filters });
+        using batch = parser.endProjectedBatch({ columns, filters });
         const materialized = batch.rows();
         rows += materialized.length;
         chars += consumeRows(materialized);

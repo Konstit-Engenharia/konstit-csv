@@ -5,9 +5,6 @@ requireBunRuntime();
 export type {
   CsvApiFileOptions,
   CsvBatchesOptions,
-  CsvColumnarBatchCallback,
-  CsvColumnarBatchOptions,
-  CsvColumnarBatchView,
   CsvColumnBytesCallback,
   CsvColumnRangeCallback,
   CsvColumns,
@@ -36,28 +33,16 @@ export type {
   CsvRegexFilter,
   CsvRow,
   CsvRowsOptions,
-  CsvRowView,
-  CsvRowViewCallback,
-  CsvRowViewsOptions,
   CsvScanColumnsCallback,
   CsvShard,
   CsvShardingOptions,
-  CsvSingleThreadRowsOptions,
   CsvStartsWithFilter,
   CsvZipCompression,
   NativeCsvRowCallback,
 } from './types.js';
 
-export {
-  csv,
-  findCsvSafeShards,
-  findCsvSafeSplitOffsets,
-  forEachColumnarBatches,
-  forEachRowViews,
-  withColumnarBatches,
-  withRowViews,
-} from './api.js';
+export { csv, findCsvSafeShards, findCsvSafeSplitOffsets } from './api.js';
 export { NativeCsvBatch, NativeCsvRowView } from './batches.js';
 export { countCsvFile, countTrustedNewlineRows, parseCsvBuffer, parseCsvFile, parseCsvFileProjected } from './files.js';
-export { defineColumnarOptions, defineCountOptions, defineRowsOptions, defineRowViewOptions } from './options.js';
+export { defineCountOptions, defineRowsOptions } from './options.js';
 export { NativeCsvParser } from './parser.js';

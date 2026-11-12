@@ -240,7 +240,7 @@ describe('compressed CSV file streams', () => {
     expect((await rejectedError(csv.count(invalid))).message).not.toBe('');
   });
 
-  test('streams compressed input through batch and callback APIs', async () => {
+  test('streams full and projected native batches from compressed input', async () => {
     const path = compressedPath('gzip');
     const batchRows: string[][] = [];
     for await (using batch of csv.batches(path, { chunkSize: 9, compression: 'gzip', delimiter: ';' })) {
@@ -248,17 +248,13 @@ describe('compressed CSV file streams', () => {
     }
 
     const columnarRows: string[] = [];
-    await csv.withColumnarBatches(
-      path,
-      { chunkSize: 7, columns: [0, 2] as const, compression: 'gzip', delimiter: ';' },
-      (batch) => {
-        for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
-          columnarRows.push(
-            `${batch.fieldBuffer(rowIndex, 0)?.toString()}|${batch.fieldBuffer(rowIndex, 1)?.toString()}`,
-          );
-        }
-      },
-    );
+    for await (using batch of csv.batches(path, { chunkSize: 7, columns: [0, 2], compression: 'gzip', delimiter: ';' })) {
+      for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
+        columnarRows.push(
+          `${batch.fieldBuffer(rowIndex, 0)?.toString()}|${batch.fieldBuffer(rowIndex, 1)?.toString()}`,
+        );
+      }
+    }
 
     expect(batchRows).toEqual(expectedRows);
     expect(columnarRows).toEqual(['id|state', '1|SP', '2|RJ', '3|SP']);
@@ -277,7 +273,7 @@ describe('compressed CSV file streams', () => {
         chunkSize: 7,
         compression: 'gzip',
         delimiter: ';',
-        selectedColumns: [0, 2],
+        columns: [0, 2],
       })
     ) {
       projectedRows.push(...batch);

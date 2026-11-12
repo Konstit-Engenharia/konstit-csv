@@ -1,11 +1,9 @@
 import {
   csv,
-  type CsvColumnarBatchOptions,
+  type CsvBatchesOptions,
   type CsvCountOptions,
   type CsvDelimiter,
   type CsvRowsOptions,
-  type CsvRowViewsOptions,
-  type CsvSingleThreadRowsOptions,
   defineRowsOptions,
 } from '../src/index.ts';
 
@@ -30,12 +28,9 @@ const projectedRowsOptions = {
 const projectedTopLevelRows: AsyncGenerator<[string, string][], void> = csv.rows(path, projectedRowsOptions);
 void projectedTopLevelRows;
 
-const selectedColumnsOptions = defineRowsOptions({
-  reuseArrays: true,
-  selectedColumns: [0, 2] as const,
-});
-const selectedColumnsRows: AsyncGenerator<[string, string][], void> = csv.rows(path, selectedColumnsOptions);
-void selectedColumnsRows;
+const reusableOptions = defineRowsOptions({ reuseArrays: true, columns: [0, 2] as const });
+const reusableRows: AsyncGenerator<[string, string][], void> = csv.rows(path, reusableOptions);
+void reusableRows;
 
 const strictSchema = {
   strict: true,
@@ -48,7 +43,7 @@ const strictRowsOptions = {
   delimiter: ';',
   reuseArrays: true,
   ...strictSchema,
-} satisfies CsvSingleThreadRowsOptions;
+} satisfies CsvRowsOptions;
 
 const strictCountOptions = {
   chunkSize: 64 * 1024,
@@ -83,29 +78,11 @@ void csv.rows(path, multipleFilterRowsOptions);
 // @ts-expect-error parser options do not support string caching
 void csv.rows(path, { stringCache: { columns: [0] } });
 
-const rowViewOptions = {
+const batchOptions = {
   columns,
   delimiter: ';',
-} satisfies CsvRowViewsOptions<typeof columns>;
-
-const columnarBatchOptions = {
-  columns,
-  delimiter: ';',
-} satisfies CsvColumnarBatchOptions<typeof columns>;
-
-void csv.withRowViews(path, rowViewOptions, (row) => {
-  const selectedColumns: readonly [0, 2] = row.selectedColumns;
-  void selectedColumns;
-});
-
-void csv.withColumnarBatches(path, columnarBatchOptions, (batch) => {
-  const selectedColumns: readonly [0, 2] = batch.selectedColumns;
-  const rowOffsets: BigUint64Array = batch.rowOffsets();
-  const fieldOffsets: BigUint64Array = batch.fieldOffsets();
-  void selectedColumns;
-  void rowOffsets;
-  void fieldOffsets;
-});
+} satisfies CsvBatchesOptions;
+void csv.batches(path, batchOptions);
 
 // @ts-expect-error strict count supports no filters
 const invalidStrictCountWhere = { strict: true, where: csv.column(1).isOneOf(['SP']) } satisfies CsvCountOptions;
@@ -119,17 +96,13 @@ void invalidStrictCountEquals;
 const invalidStrictRowsWhere = { strict: true, where: csv.column(1).equals('SP') } satisfies CsvRowsOptions;
 void invalidStrictRowsWhere;
 
-// @ts-expect-error columns and selectedColumns are mutually exclusive
-const invalidColumnAliases = { columns, selectedColumns: columns } satisfies CsvRowsOptions<typeof columns>;
-void invalidColumnAliases;
-
 // @ts-expect-error option factories preserve strict/filter constraints
 defineRowsOptions({ strict: true, where: csv.column(1).equals('SP') });
 
-// @ts-expect-error strict columnar batches do not support projected columns
-const invalidStrictColumnarOptions = { columns, strict: true } satisfies CsvColumnarBatchOptions<typeof columns>;
-void invalidStrictColumnarOptions;
+// @ts-expect-error strict batches do not support projection
+const invalidStrictBatchOptions = { columns, strict: true } satisfies CsvBatchesOptions;
+void invalidStrictBatchOptions;
 
-// @ts-expect-error strict columnar batches do not support filters
-const invalidStrictFilteredColumnar = { strict: true, where: csv.column(1).equals('SP') } satisfies CsvColumnarBatchOptions;
-void invalidStrictFilteredColumnar;
+// @ts-expect-error strict batches do not support filters
+const invalidStrictFilteredBatch = { strict: true, where: csv.column(1).equals('SP') } satisfies CsvBatchesOptions;
+void invalidStrictFilteredBatch;

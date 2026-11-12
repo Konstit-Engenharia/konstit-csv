@@ -34,7 +34,7 @@ import type {
  * Parse one complete in-memory CSV buffer into materialized rows.
  *
  * The buffer is treated as the complete input, so quoted records may span the
- * buffer but parser state is not retained after this call. `selectedColumns`
+ * buffer but parser state is not retained after this call. `columns`
  * projects zero-based physical columns in the returned rows. The supplied
  * options are captured when the function is called; changing an options array
  * while parsing cannot change the operation.
@@ -67,7 +67,7 @@ export function parseCsvBuffer(
   try {
     validator?.validateBatch(batch);
     validator?.finish();
-    return batch.rowsInto([], options.selectedColumns);
+    return batch.rowsInto([], options.columns);
   } finally {
     batch.close();
   }
@@ -185,7 +185,7 @@ export function findCsvSafeShards(path: string, shardCount: number, delimiter = 
  * generator to reconfigure the stream.
  *
  * @param path Path to the CSV file (or compressed/ZIP input selected by `options.compression`).
- * @param options File and parser options. `selectedColumns` selects physical columns for each row.
+ * @param options File and parser options. `columns` selects physical columns for each row.
  * @returns An async generator of non-empty row batches.
  * @throws When iteration encounters an I/O, decompression, parsing, or strict-schema error.
  *
@@ -193,7 +193,7 @@ export function findCsvSafeShards(path: string, shardCount: number, delimiter = 
  * ```ts
  * import { parseCsvFile } from '@konstit/csv';
  *
- * for await (const rows of parseCsvFile('data.csv', { selectedColumns: [0, 2] })) {
+ * for await (const rows of parseCsvFile('data.csv', { columns: [0, 2] })) {
  *   for (const row of rows) console.log(row);
  * }
  * ```
@@ -210,7 +210,7 @@ async function* iterateCsvFile(path: string, options: CsvFileOptions): AsyncGene
     const batch = parser.writeBatch(chunk);
     try {
       validator?.validateBatch(batch);
-      const rows = batch.rowsInto([], options.selectedColumns);
+      const rows = batch.rowsInto([], options.columns);
       if (rows.length > 0) {
         yield rows;
       }
@@ -223,7 +223,7 @@ async function* iterateCsvFile(path: string, options: CsvFileOptions): AsyncGene
   try {
     validator?.validateBatch(batch);
     validator?.finish();
-    const rows = batch.rowsInto([], options.selectedColumns);
+    const rows = batch.rowsInto([], options.columns);
     if (rows.length > 0) {
       yield rows;
     }
@@ -236,7 +236,7 @@ async function* iterateCsvFile(path: string, options: CsvFileOptions): AsyncGene
  * Stream rows using native projection and native filter evaluation.
  *
  * This lower-level file API is useful when the selected columns or native
- * filter descriptors are already prepared. `selectedColumns` is the returned
+ * filter descriptors are already prepared. `columns` is the returned
  * projection, while `equalsFilter` and `filters` are evaluated against
  * physical columns before materialization. Options are snapshotted at call
  * time, including nested filter values.
@@ -255,7 +255,7 @@ async function* iterateCsvFile(path: string, options: CsvFileOptions): AsyncGene
  * import { parseCsvFileProjected } from '@konstit/csv';
  *
  * for await (const rows of parseCsvFileProjected('data.csv', {
- *   selectedColumns: [2, 0],
+ *   columns: [2, 0],
  *   equalsFilter: { column: 1, value: 'active' },
  * })) {
  *   console.log(rows);
@@ -277,7 +277,7 @@ async function* iterateCsvFileProjected(
   await using input = await prepareCsvFileInput(path, options);
   using parser = createPreparedParser(
     { ...options, encoding: input.parserEncoding, delimiter: input.delimiter },
-    options.selectedColumns,
+    options.columns,
     projectionFilterProgram(options),
     true,
   );

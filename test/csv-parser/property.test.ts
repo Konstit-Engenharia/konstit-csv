@@ -45,7 +45,7 @@ describe('generated CSV property tests', () => {
       const expected = fixture.rows.map((row) => [row[0] ?? '', row[2] ?? '']);
       expect(parseCsvBuffer(Buffer.from(fixture.csv), {
         delimiter: fixture.delimiter,
-        selectedColumns: selected,
+        columns: selected,
         strict: true,
       })).toEqual(expected);
     }

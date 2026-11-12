@@ -90,7 +90,7 @@ async function countNativeProjectedRows(): Promise<number> {
     const batch of parseCsvFileProjected(FILE, {
       chunkSize: CHUNK_SIZE,
       delimiter: DELIMITER,
-      selectedColumns: SELECTED_COLUMNS,
+      columns: SELECTED_COLUMNS,
     })
   ) {
     rows += batch.length;
@@ -104,7 +104,7 @@ async function countNativeProjectedFilteredRows(): Promise<number> {
     const batch of parseCsvFileProjected(FILE, {
       chunkSize: CHUNK_SIZE,
       delimiter: DELIMITER,
-      selectedColumns: SELECTED_COLUMNS,
+      columns: SELECTED_COLUMNS,
       equalsFilter: {
         column: FILTER_COLUMN,
         value: FILTER_VALUE,

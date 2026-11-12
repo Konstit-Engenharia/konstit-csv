@@ -72,13 +72,12 @@ describe('fixed columns with projection and filters', () => {
       })(),
       mismatch,
     );
-    await rejects(csv.withColumnarBatches(invalidPath, options, () => {}), mismatch);
     await rejects(
       collect(parseCsvFileProjected(invalidPath, {
         chunkSize: 2,
         delimiter: ';',
         fixedColumns: 3,
-        selectedColumns: [2, 0],
+        columns: [2, 0],
         filters: [{ column: 0, value: 'keep' }],
       })),
       mismatch,

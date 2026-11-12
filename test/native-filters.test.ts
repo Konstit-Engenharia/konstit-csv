@@ -43,7 +43,7 @@ describe('NativeCsvParser native filters', () => {
 
     {
       using parser = new NativeCsvParser({ delimiter: ';' });
-      const options = { equalsFilter: { column: 1, value: '' }, selectedColumns: [0] } as const;
+      const options = { equalsFilter: { column: 1, value: '' }, columns: [0] } as const;
       const rows: string[][] = [];
       using batch = parser.writeProjectedBatch(input, options);
       rows.push(...batch.rows());
@@ -63,7 +63,7 @@ describe('NativeCsvParser native filters', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     const rows: string[][] = [];
     const options = {
-      selectedColumns: [2, 0],
+      columns: [2, 0],
       equalsFilter: { column: 2, value: 'SP' },
     };
 
@@ -92,7 +92,7 @@ describe('NativeCsvParser native filters', () => {
     const input = readCsvFixture('native/projected-rows.csv');
     const rows: string[][] = [];
     const options = {
-      selectedColumns: [0, 2],
+      columns: [0, 2],
       equalsFilter: { column: 1, value: '5' },
     };
 
@@ -108,15 +108,15 @@ describe('NativeCsvParser native filters', () => {
 
   test('streams ordered projections across tiny chunks', () => {
     const input = readCsvFixture('native/projected-multiline-rows.csv');
-    const selectedColumns = [2, 0];
+    const columns = [2, 0];
     using parser = new NativeCsvParser();
     const rows: string[][] = [];
     for (let offset = 0; offset < input.byteLength; ++offset) {
-      using batch = parser.writeProjectedBatch(input.subarray(offset, offset + 1), { selectedColumns });
+      using batch = parser.writeProjectedBatch(input.subarray(offset, offset + 1), { columns });
       rows.push(...batch.rows());
     }
 
-    using batch = parser.endProjectedBatch({ selectedColumns });
+    using batch = parser.endProjectedBatch({ columns });
     rows.push(...batch.rows());
     expect(rows).toEqual([['c', 'a'], ['z', 'x\nx'], ['3', '1']]);
   });
@@ -124,26 +124,26 @@ describe('NativeCsvParser native filters', () => {
   test('enforces projected column uniqueness and configured limits', () => {
     {
       using parser = new NativeCsvParser();
-      expect(() => parser.writeProjectedBatch(readCsvFixture('native/three-column-header.csv'), { selectedColumns: [2, 2] })).toThrow(
+      expect(() => parser.writeProjectedBatch(readCsvFixture('native/three-column-header.csv'), { columns: [2, 2] })).toThrow(
         'selected column repeated: 2',
       );
-      expect(() => parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { selectedColumns: [2025] })).toThrow(
+      expect(() => parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { columns: [2025] })).toThrow(
         'selected column out of range: 2025',
       );
       expect(() =>
         parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), {
-          selectedColumns: Array.from({ length: 2025 }, (_, index) => index),
+          columns: Array.from({ length: 2025 }, (_, index) => index),
         })
       ).toThrow('selected column count out of range: 2025');
 
-      using maximumIndex = parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { selectedColumns: [2024] }, true);
+      using maximumIndex = parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { columns: [2024] }, true);
       expect(maximumIndex.rows()).toEqual([['']]);
     }
 
     {
       using maximumProjectionParser = new NativeCsvParser();
-      const selectedColumns = Array.from({ length: 2024 }, (_, index) => index);
-      using batch = maximumProjectionParser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { selectedColumns }, true);
+      const columns = Array.from({ length: 2024 }, (_, index) => index);
+      using batch = maximumProjectionParser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { columns }, true);
       const rows = batch.rows();
       expect(rows[0]).toHaveLength(2024);
       expect(rows[0]?.[0]).toBe('a');

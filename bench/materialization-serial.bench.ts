@@ -5,8 +5,8 @@ import {
 } from 'node:fs';
 import {
   csv,
-  type CsvRowView,
   NativeCsvParser,
+  type NativeCsvRowCallback,
 } from '../src/index.ts';
 import { matchesBenchmarkName } from './benchmark-filter.ts';
 import {
@@ -23,15 +23,16 @@ interface BenchResult {
 }
 
 const PROJECTED_COLUMNS = SELECTED_COLUMNS.map((_, index) => index);
+const BATCH_OPTIONS = { chunkSize: CHUNK_SIZE, columns: SELECTED_COLUMNS, delimiter: DELIMITER };
 const BYTES = statSync(FILE).size;
 const CASES = [
   ['csv.rows projected selected columns', () => consumeMaterializedRowsFromApi()],
   ['native projected rowsInto(reused js arrays)', () => consumeMaterializedRowsFromRowsInto()],
-  ['csv.withColumnarBatches projected selected columns(scanColumns)', () => consumeScannedColumns()],
-  ['csv.withColumnarBatches projected selected columns(ranges)', () => consumeColumnarBatchRanges()],
-  ['csv.withColumnarBatches projected selected columns(bytes)', () => consumeColumnarBatchBytes()],
-  ['csv.withRowViews projected selected columns(bytes)', () => consumeProjectedRowViewsBytes()],
-  ['csv.withRowViews projected selected columns(strings)', () => consumeProjectedRowViewsStrings()],
+  ['csv.batches projected selected columns(scanColumns)', () => consumeScannedColumns()],
+  ['csv.batches projected selected columns(ranges)', () => consumeColumnarBatchRanges()],
+  ['csv.batches projected selected columns(bytes)', () => consumeColumnarBatchBytes()],
+  ['batch.forEachRow projected selected columns(bytes)', () => consumeProjectedRowViewsBytes()],
+  ['batch.forEachRow projected selected columns(strings)', () => consumeProjectedRowViewsStrings()],
 ] as const;
 
 if (SELECTED_COLUMNS.length === 0) {
@@ -93,11 +94,11 @@ async function consumeMaterializedRowsFromRowsInto(): Promise<BenchResult> {
   const rowsBuffer: string[][] = [];
   const result = emptyResult();
   for await (const chunk of createReadStream(FILE, { highWaterMark: CHUNK_SIZE })) {
-    using batch = parser.writeProjectedBatch(chunk as Buffer, { selectedColumns: SELECTED_COLUMNS });
+    using batch = parser.writeProjectedBatch(chunk as Buffer, { columns: SELECTED_COLUMNS });
     consumeMaterializedRows(batch.rowsInto(rowsBuffer), result);
   }
 
-  using batch = parser.endProjectedBatch({ selectedColumns: SELECTED_COLUMNS });
+  using batch = parser.endProjectedBatch({ columns: SELECTED_COLUMNS });
   consumeMaterializedRows(batch.rowsInto(rowsBuffer), result);
   return result;
 }
@@ -106,7 +107,7 @@ async function consumeProjectedRowViewsBytes(): Promise<BenchResult> {
   const result = emptyResult();
   await withProjectedRowViews((row) => {
     ++result.rows;
-    for (const column of row.selectedColumns) {
+    for (const column of PROJECTED_COLUMNS) {
       const bytes = row.fieldBytes(column);
       if (bytes !== null) {
         ++result.fields;
@@ -119,76 +120,52 @@ async function consumeProjectedRowViewsBytes(): Promise<BenchResult> {
 
 async function consumeColumnarBatchBytes(): Promise<BenchResult> {
   const result = emptyResult();
-  await csv.withColumnarBatches(
-    FILE,
-    {
-      chunkSize: CHUNK_SIZE,
-      columns: SELECTED_COLUMNS,
-      delimiter: DELIMITER,
-    },
-    (batch) => {
-      result.rows += batch.rowCount;
-      for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
-        const fieldCount = batch.rowFieldCount(rowIndex);
-        result.fields += fieldCount;
-        for (let columnIndex = 0; columnIndex < fieldCount; ++columnIndex) {
-          const bytes = batch.fieldBytes(rowIndex, columnIndex);
-          if (bytes !== null) {
-            result.bytes += bytes.byteLength;
-          }
+  for await (using batch of csv.batches(FILE, BATCH_OPTIONS)) {
+    result.rows += batch.rowCount;
+    for (let rowIndex = 0; rowIndex < batch.rowCount; ++rowIndex) {
+      const fieldCount = batch.rowFieldCount(rowIndex);
+      result.fields += fieldCount;
+      for (let columnIndex = 0; columnIndex < fieldCount; ++columnIndex) {
+        const bytes = batch.fieldBytes(rowIndex, columnIndex);
+        if (bytes !== null) {
+          result.bytes += bytes.byteLength;
         }
       }
-    },
-  );
+    }
+  }
   return result;
 }
 
 async function consumeColumnarBatchRanges(): Promise<BenchResult> {
   const result = emptyResult();
-  await csv.withColumnarBatches(
-    FILE,
-    {
-      chunkSize: CHUNK_SIZE,
-      columns: SELECTED_COLUMNS,
-      delimiter: DELIMITER,
-    },
-    (batch) => {
-      result.rows += batch.rowCount;
-      for (let columnIndex = 0; columnIndex < PROJECTED_COLUMNS.length; ++columnIndex) {
-        batch.forEachColumnRange(columnIndex, (_rowIndex, start, end) => {
-          ++result.fields;
-          result.bytes += end - start;
-        });
-      }
-    },
-  );
+  for await (using batch of csv.batches(FILE, BATCH_OPTIONS)) {
+    result.rows += batch.rowCount;
+    for (let columnIndex = 0; columnIndex < PROJECTED_COLUMNS.length; ++columnIndex) {
+      batch.forEachColumnRange(columnIndex, (_rowIndex, start, end) => {
+        ++result.fields;
+        result.bytes += end - start;
+      });
+    }
+  }
   return result;
 }
 
 async function consumeScannedColumns(): Promise<BenchResult> {
   const result = emptyResult();
-  await csv.withColumnarBatches(
-    FILE,
-    {
-      chunkSize: CHUNK_SIZE,
-      columns: SELECTED_COLUMNS,
-      delimiter: DELIMITER,
-    },
-    (batch) => {
-      result.rows += batch.rowCount;
-      batch.scanColumns(PROJECTED_COLUMNS, (_rowIndex, ranges) => {
-        for (let columnIndex = 0; columnIndex < PROJECTED_COLUMNS.length; ++columnIndex) {
-          const rangeIndex = columnIndex * 2;
-          const start = ranges[rangeIndex] ?? -1;
-          const end = ranges[rangeIndex + 1] ?? -1;
-          if (start !== -1 && end !== -1) {
-            ++result.fields;
-            result.bytes += end - start;
-          }
+  for await (using batch of csv.batches(FILE, BATCH_OPTIONS)) {
+    result.rows += batch.rowCount;
+    batch.scanColumns(PROJECTED_COLUMNS, (_rowIndex, ranges) => {
+      for (let columnIndex = 0; columnIndex < PROJECTED_COLUMNS.length; ++columnIndex) {
+        const rangeIndex = columnIndex * 2;
+        const start = ranges[rangeIndex] ?? -1;
+        const end = ranges[rangeIndex + 1] ?? -1;
+        if (start !== -1 && end !== -1) {
+          ++result.fields;
+          result.bytes += end - start;
         }
-      });
-    },
-  );
+      }
+    });
+  }
   return result;
 }
 
@@ -196,7 +173,7 @@ async function consumeProjectedRowViewsStrings(): Promise<BenchResult> {
   const result = emptyResult();
   await withProjectedRowViews((row) => {
     ++result.rows;
-    for (const column of row.selectedColumns) {
+    for (const column of PROJECTED_COLUMNS) {
       const value = row.fieldString(column);
       if (value !== null) {
         ++result.fields;
@@ -207,17 +184,10 @@ async function consumeProjectedRowViewsStrings(): Promise<BenchResult> {
   return result;
 }
 
-async function withProjectedRowViews(callback: (row: CsvRowView<typeof SELECTED_COLUMNS>) => void): Promise<void> {
-  // Future high-level row-view integration belongs here if API shape changes.
-  await csv.withRowViews(
-    FILE,
-    {
-      chunkSize: CHUNK_SIZE,
-      delimiter: DELIMITER,
-      columns: SELECTED_COLUMNS,
-    },
-    callback,
-  );
+async function withProjectedRowViews(callback: NativeCsvRowCallback): Promise<void> {
+  for await (using batch of csv.batches(FILE, BATCH_OPTIONS)) {
+    batch.forEachRow(callback);
+  }
 }
 
 function consumeMaterializedRows(rows: string[][], result: BenchResult): void {

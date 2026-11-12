@@ -1,6 +1,7 @@
 import {
   MAX_FILTER_COUNT,
   MAX_PROJECTION_LENGTH,
+  rejectSelectedColumns,
 } from './normalize.js';
 import type {
   CsvApiFileOptions,
@@ -17,6 +18,7 @@ export function snapshotCsvOptions<TOptions extends CsvApiFileOptions & CsvNativ
   if (snapshots.has(options)) {
     return options;
   }
+  rejectSelectedColumns(options);
   const captured = { ...options };
   if (captured.filters !== undefined && captured.filters.length > MAX_FILTER_COUNT) {
     throw new RangeError(`filter count out of range: ${captured.filters.length}`);
@@ -24,7 +26,6 @@ export function snapshotCsvOptions<TOptions extends CsvApiFileOptions & CsvNativ
   const snapshot = Object.freeze({
     ...captured,
     columns: snapshotColumns(captured.columns),
-    selectedColumns: snapshotColumns(captured.selectedColumns),
     expectedHeaders: captured.expectedHeaders === undefined ? undefined : Object.freeze([...captured.expectedHeaders]),
     compression: typeof captured.compression === 'object' && captured.compression !== null
       ? Object.freeze({ ...captured.compression })

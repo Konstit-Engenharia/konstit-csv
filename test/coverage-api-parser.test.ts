@@ -5,34 +5,33 @@ import {
 } from 'bun:test';
 import {
   csv,
+  type NativeCsvBatch,
   NativeCsvParser,
+  type NativeCsvRowView,
 } from '../src/index.ts';
-import type {
-  CsvColumnarBatchView,
-  CsvRowView,
-} from '../src/types.ts';
 import { csvFixturePath } from './fixtures.ts';
 
 const path = csvFixturePath('api/quoted-people-two-rows.csv');
 
 describe('API and native coverage contracts', () => {
   test('exposes every row-view accessor during its callback', async () => {
-    let escaped: Pick<CsvRowView, 'get'> | undefined;
-    await csv.forEachRowViews(path, { delimiter: ';', columns: [0, 2] }, (row) => {
-      expect(row.selectedColumns).toEqual([0, 2]);
-      expect(row.rowIndex).toBeGreaterThanOrEqual(0);
-      expect(row.fieldCount).toBe(3);
-      expect(row.fieldRange(0)).not.toBeNull();
-      expect(row.range(0)).not.toBeNull();
-      expect(row.fieldBytes(0)).not.toBeNull();
-      expect(row.bytes(0)).not.toBeNull();
-      expect(row.fieldBuffer(0)?.toString()).toBe(row.buffer(0)?.toString());
-      expect(row.fieldString(0)).toBe(row.getPhysical(0));
-      expect(row.get(0)).toBe(row.fieldString(0));
-      expect(row.pickPhysical([0, 1])).toEqual([row.get(0) ?? '', row.get(1) ?? '']);
-      expect(row.pick([0])).toEqual([row.get(0) ?? '']);
-      escaped = row;
-    });
+    let escaped: Pick<NativeCsvRowView, 'get'> | undefined;
+    for await (using batch of csv.batches(path, { delimiter: ';', columns: [0, 2] })) {
+      batch.forEachRow((row) => {
+        expect(row.rowIndex).toBeGreaterThanOrEqual(0);
+        expect(row.fieldCount).toBe(2);
+        expect(row.fieldRange(0)).not.toBeNull();
+        expect(row.range(0)).not.toBeNull();
+        expect(row.fieldBytes(0)).not.toBeNull();
+        expect(row.bytes(0)).not.toBeNull();
+        expect(row.fieldBuffer(0)?.toString()).toBe(row.buffer(0)?.toString());
+        expect(row.fieldString(0)).toBe(row.getPhysical(0));
+        expect(row.get(0)).toBe(row.fieldString(0));
+        expect(row.pickPhysical([0, 1])).toEqual([row.get(0) ?? '', row.get(1) ?? '']);
+        expect(row.pick([0])).toEqual([row.get(0) ?? '']);
+        escaped = row;
+      });
+    }
     const retained = escaped;
     if (retained === undefined) {
       throw new Error('row callback did not run');
@@ -41,10 +40,9 @@ describe('API and native coverage contracts', () => {
   });
 
   test('exposes every columnar accessor and skips missing columns', async () => {
-    let escaped: Pick<CsvColumnarBatchView, 'dataView'> | undefined;
+    let escaped: NativeCsvBatch | undefined;
     const bytes: string[] = [];
-    await csv.forEachColumnarBatches(path, { delimiter: ';', columns: [0, 2] }, (batch) => {
-      expect(batch.selectedColumns).toEqual([0, 2]);
+    for await (using batch of csv.batches(path, { delimiter: ';', columns: [0, 2] })) {
       expect(batch.rowCount).toBeGreaterThan(0);
       expect(batch.totalFields).toBeGreaterThan(0);
       expect(batch.dataLength).toBeGreaterThan(0);
@@ -61,29 +59,24 @@ describe('API and native coverage contracts', () => {
         throw new Error('missing field callback');
       });
       escaped = batch;
-    });
+    }
     expect(bytes).toEqual(['id', '1', '2']);
     const retained = escaped;
     if (retained === undefined) {
-      throw new Error('columnar callback did not run');
+      throw new Error('no native batches yielded');
     }
-    expect(() => retained.dataView()).toThrow('columnar batch view is only valid during columnar batch callback');
-  });
-
-  test('closes batches after asynchronous callbacks', async () => {
-    let count = 0;
-    await csv.withBatches(path, { delimiter: ';' }, async (batch) => {
-      expect(batch.closed).toBe(false);
-      count += batch.rowCount;
-    });
-    expect(count).toBe(3);
+    expect(() => retained.dataView()).toThrow('native CSV batch is closed');
   });
 
   test('supports explicit disposable cleanup aliases', async () => {
-    await csv.withBatches(path, { delimiter: ';' }, (batch) => {
+    let count = 0;
+    for await (using batch of csv.batches(path, { delimiter: ';' })) {
+      expect(batch.closed).toBe(false);
+      count += batch.rowCount;
       batch.dispose();
       expect(batch.closed).toBe(true);
-    });
+    }
+    expect(count).toBe(3);
     const parser = new NativeCsvParser();
     parser.dispose();
     expect(parser.closed).toBe(true);

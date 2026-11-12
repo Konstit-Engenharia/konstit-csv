@@ -25,25 +25,14 @@ void autoDelimiter;
 const tupleRows: AsyncGenerator<[string, string][], void> = csv.rows(path, {
   columns: [0, 2] as const,
 });
-const tupleSelectedColumnsRows: AsyncGenerator<[string, string][], void> = csv.rows(path, {
-  selectedColumns: [0, 2] as const,
-});
 void tupleRows;
-void tupleSelectedColumnsRows;
 
-void csv.withRowViews(path, { columns: [0, 2] as const }, (row) => {
-  const columns: readonly [0, 2] = row.selectedColumns;
-  void columns;
-});
-
-void csv.withColumnarBatches(path, { columns: [0, 2] as const }, (batch) => {
-  const columns: readonly [0, 2] = batch.selectedColumns;
+for await (using batch of csv.batches(path, { columns: [0, 2] })) {
   const rowOffsets: BigUint64Array = batch.rowOffsets();
   const fieldOffsets: BigUint64Array = batch.fieldOffsets();
-  void columns;
   void rowOffsets;
   void fieldOffsets;
-});
+}
 
 const state: CsvFilterColumn = csv.column(1);
 const stateEquals: CsvFilter = state.equals('SP');
@@ -120,15 +109,15 @@ void csv.count(path, { strict: true, where: stateEquals });
 // @ts-expect-error strict rows do not support filters
 void csv.rows(path, { strict: true, where: stateEquals });
 
-// @ts-expect-error columns and selectedColumns are mutually exclusive
-void csv.rows(path, { columns: [0] as const, selectedColumns: [1] as const });
-
-void csv.withRowViews(path, { where: stateIsOneOf }, () => {});
+// @ts-expect-error columns is the only projection option
+void csv.rows(path, { selectedColumns: [1] });
 
 void csv.batches(path, { where: stateIsOneOf });
 
-// @ts-expect-error columnar batches do not support strict selected columns
-void csv.withColumnarBatches(path, { columns: [0] as const, strict: true }, () => {});
+// @ts-expect-error strict batches require unprojected input
+void csv.batches(path, { columns: [0], strict: true });
+
+void csv.batches(path, { strict: dynamicStrict });
 
 // @ts-expect-error count() with strict mode does not support filters
 void csv.count(path, { strict: true, where: stateIsOneOf });

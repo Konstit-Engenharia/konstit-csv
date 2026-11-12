@@ -55,13 +55,13 @@ test('probes the decompressed ZIP entry and uses its extension to break delimite
   const options = { compression: { format: 'zip', entry: 'table.psv' }, delimiter: 'auto', chunkSize: 1 } as const;
   const expected = [['id', 'name,unit'], ['1', '€|x,y']];
   expect((await Array.fromAsync(parseCsvFile(path, options))).flat()).toEqual(expected);
-  expect((await Array.fromAsync(parseCsvFileProjected(path, { ...options, selectedColumns: [1] }))).flat())
+  expect((await Array.fromAsync(parseCsvFileProjected(path, { ...options, columns: [1] }))).flat())
     .toEqual([['name,unit'], ['€|x,y']]);
   expect(await csv.count(path, { ...options, where: csv.column(1).equals('€|x,y') })).toBe(1);
   const names: (string | null)[] = [];
-  await csv.withRowViews(path, options, (row) => {
-    names.push(row.fieldString(1));
-  });
+  for await (using batch of csv.batches(path, options)) {
+    batch.forEachRow((row) => names.push(row.fieldString(1)));
+  }
   expect(names).toEqual(['name,unit', '€|x,y']);
 });
 

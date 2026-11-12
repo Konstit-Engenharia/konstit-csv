@@ -69,7 +69,7 @@ for (const { encoding, bytes, names } of inputs) {
     const options = { chunkSize: 1, delimiter: 'auto', encoding } as const;
     expect(await collectRows(csv.rows(path, options))).toEqual(rows);
     expect(await collectRows(parseCsvFile(path, options))).toEqual(rows);
-    expect(await collectRows(parseCsvFileProjected(path, { ...options, selectedColumns: [1] }))).toEqual([
+    expect(await collectRows(parseCsvFileProjected(path, { ...options, columns: [1] }))).toEqual([
       ['name'],
       [names[0]],
       [names[1]],

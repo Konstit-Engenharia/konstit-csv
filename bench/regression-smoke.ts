@@ -71,7 +71,7 @@ async function collectProjectedHotRows(path: string): Promise<number> {
   for await (
     const batch of parseCsvFileProjected(path, {
       chunkSize: 4_096,
-      selectedColumns: [0, 3],
+      columns: [0, 3],
       equalsFilter: { column: 3, value: 'hot' },
     })
   ) {

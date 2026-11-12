@@ -4,10 +4,8 @@ import {
   test,
 } from 'bun:test';
 import {
-  defineColumnarOptions,
   defineCountOptions,
   defineRowsOptions,
-  defineRowViewOptions,
 } from '../src/options.ts';
 import {
   CsvStrictSchemaValidator,
@@ -19,12 +17,8 @@ describe('option identity helpers', () => {
   test('preserve each options object', () => {
     const rows = defineRowsOptions({ delimiter: ';' });
     const count = defineCountOptions({ strict: true });
-    const columnar = defineColumnarOptions({ columns: [0] as const });
-    const views = defineRowViewOptions({ columns: [0] as const });
     expect(rows.delimiter).toBe(';');
     expect(count.strict).toBe(true);
-    expect(columnar.columns).toEqual([0]);
-    expect(views.columns).toEqual([0]);
   });
 });
 

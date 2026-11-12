@@ -82,14 +82,10 @@ The `csv` namespace provides these helpers:
 - `csv.rows(path, options)` streams materialized row batches.
 - `csv.count(path, options)` counts records, optionally through a native filter.
 - `csv.batches(path, options)` streams disposable `NativeCsvBatch` objects.
-- `csv.withBatches(path, options, callback)` closes each native batch after the callback settles.
-- `csv.withRowViews(path, options, callback)` visits reusable row views without allocating one string array per row.
-- `csv.withColumnarBatches(path, options, callback)` visits reusable columnar batch views.
 - `csv.findCsvSafeSplitOffsets(path, count, options)` and `csv.findCsvSafeShards(path, count, options)` find record-safe
   byte boundaries for advanced applications that process file ranges themselves.
 
-`columns` contains zero-based physical input indexes and preserves the requested output order. The legacy
-`selectedColumns` spelling is still accepted, but the two properties cannot be supplied together.
+`columns` contains zero-based physical input indexes and preserves the requested output order.
 
 ## Filters
 
@@ -239,15 +235,6 @@ console.log(shards);
 These helpers scan source-file bytes and require uncompressed UTF-8 or Latin-1 input with a fixed one-character
 delimiter. A small file can produce fewer non-empty shards than requested.
 
-## Migration from removed worker APIs
-
-Replace `parallelRows()` and `parallelCount()` with `csv.rows()` and `csv.count()`, and remove `workerCount` from
-their options. For a `workerPool()` or `CsvWorkerPool` call site, pass the file path and options directly to
-`csv.rows()` or `csv.count()` each time. Row batches arrive in file order.
-
-Replace `CsvParallelRowsOptions`, `CsvParallelCountOptions`, and `CsvWorkerPoolOptions` with `CsvRowsOptions` or
-`CsvCountOptions` for the corresponding operation. `CsvSingleThreadRowsOptions` is an alias for `CsvRowsOptions`.
-
 ## Strict validation
 
 Set `strict: true` to validate RFC-style quote syntax. This applies to `csv.parse()`, `csv.rows()`, batches, and
@@ -290,9 +277,8 @@ const checked = await csv.parse(source, {
 `minDataRows` counts records after the first row. The header remains in the returned rows and in `csv.count()`; these
 options validate it rather than remove it.
 
-Strict validation cannot be combined with `where`. Strict selected columns are supported by materialized rows. Native
-projected-batch methods do not support strict mode, and columnar-batch callbacks reject strict mode when
-`columns` is supplied.
+Strict validation cannot be combined with `where`. Use `csv.rows()` for strict parsing with column selection.
+Native batches support strict validation only when `columns` is omitted.
 
 ## Typed options and configuration snapshots
 
@@ -321,8 +307,7 @@ for await (const batch of csv.rows('data.csv', rowOptions)) {
 console.log(await csv.count('data.csv', countOptions));
 ```
 
-The public option types reject unsupported combinations, including strict filters and using both `columns` and
-`selectedColumns`. Projection and filter indexes are integers from `0` through `2024`; a
+The public option types reject strict filters and strict projected batches. Projection and filter indexes are integers from `0` through `2024`; a
 projection may contain at most 2024 unique columns. A filter program may contain at most 2024 predicates and 4096 total
 predicates and Boolean operators. Invalid values fail before parsing starts.
 
@@ -334,11 +319,11 @@ reusable. Start a new operation to apply changed settings.
 
 ## Native batches and reusable views
 
-Use `withBatches()` when you need native-backed row access, byte ranges, or low-allocation materialization while keeping
-batch cleanup automatic:
+Use `csv.batches()` for native-backed row access, byte ranges, or low-allocation materialization.
+Each batch owns native memory. The `using` declaration closes it when the iteration ends, including on `break` or error:
 
 ```ts
-await csv.withBatches('data.csv', {}, (batch) => {
+for await (using batch of csv.batches('data.csv')) {
   batch.forEachRow((row) => {
     console.log({
       id: row.getPhysical(0),
@@ -348,44 +333,28 @@ await csv.withBatches('data.csv', {}, (batch) => {
       stateRange: row.range(2),
     });
   });
-});
-```
-
-The callback may be asynchronous; its batch is closed after the callback settles. If you use `csv.batches()` directly,
-close every yielded batch or use explicit resource management:
-
-```ts
-for await (using batch of csv.batches('data.csv')) {
-  console.log(batch.rowCount, batch.totalFields);
 }
 ```
 
+`batch.forEachRow()` reuses one row view and requires a synchronous callback. The view is valid only during
+the callback. You can keep decoded strings. Copy borrowed bytes before closing the batch.
+
 `NativeCsvBatch` provides `rowCount`, `totalFields`, `dataLength`, `closed`, `rows()`, `rowsInto(target, columns?)`,
 `forEachRow()`, `data()`, `dataView()`, `rowOffsets()`, `fieldOffsets()`, `rowFieldCount()`, `fieldRange()`, `fieldBytes()`,
-`fieldBuffer()`, `fieldString()`, `countWhereEquals()`, `close()`, `dispose()`, and `[Symbol.dispose]`.
+`fieldBuffer()`, `fieldString()`, `scanColumns()`, `forEachColumnRange()`, `forEachColumnBytes()`,
+`countWhereEquals()`, `close()`, `dispose()`, and `[Symbol.dispose]`.
 
-The row methods `get()`, `getPhysical()`, `pick()`, and `pickPhysical()` index the fields stored in the current batch.
-In `csv.batches()` and its callback helpers, unfiltered batches retain all source fields. When a filter is combined
-with a projection, the batch stores projected fields, so `get(0)` and `getPhysical(0)` both refer to projected position
-`0`; neither translates an original source index. Use `row.selectedColumns` to map projected positions back to input columns:
+In `csv.batches()`, `columns` selects the stored fields in the requested order.
+Filters always use physical input indexes. Row accessors, including `getPhysical()` and `pickPhysical()`,
+and batch methods such as `scanColumns()` use positions in the resulting batch.
 
 ```ts
-await csv.withRowViews(
-  'data.csv',
-  { columns: [0, 2] as const, where: csv.column(2).equals('SP') },
-  (row) => {
-    console.log(row.selectedColumns); // [0, 2]
-    console.log(row.get(0), row.get(1)); // '1', 'SP'
-  },
-);
+for await (using batch of csv.batches('data.csv', { columns: [2, 0], where: csv.column(2).equals('SP') })) {
+  batch.forEachRow((row) => {
+    console.log(row.get(0), row.get(1)); // state (source 2), id (source 0)
+  });
+}
 ```
-
-`withRowViews()` invokes a synchronous callback for each row. Its reusable view is invalid when the callback returns.
-Read strings or copy raw bytes before returning if the values must outlive the callback; do not retain the view.
-
-`withColumnarBatches()` follows the same lifetime rule for a reusable columnar view. Its callback must be synchronous,
-its raw buffers may alias native storage, and data that must outlive the callback must be copied. It does not support
-strict validation with selected columns.
 
 `rowOffsets()` and `fieldOffsets()` return `BigUint64Array`. Convert an offset to `number` only after checking it is within
 `Number.MAX_SAFE_INTEGER` and the associated backing data. Columnar `scanColumns()` supplies JavaScript-safe numeric
@@ -419,7 +388,7 @@ convenience `write()` and `end()` methods materialize rows and close their tempo
 
 The parser also exposes projected-batch methods and direct native count-filter methods. Projection and filter settings
 apply at the current stream position. Keep them consistent across chunks that may belong to one logical row; complete
-that row or call `reset()` before changing them. `selectedColumns` passed to the constructor is validated but does not
+that row or call `reset()` before changing them. `columns` passed to the constructor is validated but does not
 configure `writeBatch()`; use the explicit projected methods for low-level projection.
 
 `NativeCsvParser` accepts native UTF-8 and Latin-1 labels. It captures `encoding`, `delimiter`, `strict`, and

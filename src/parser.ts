@@ -15,6 +15,7 @@ import {
   normalizeNativeFilterProgram,
   normalizeNativeFilters,
   normalizeStartsWithFilter,
+  rejectSelectedColumns,
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import type {
@@ -57,7 +58,7 @@ export type PreparedCsvParser = Pick<
  *
  * @param options Base parser settings such as encoding, delimiter, strictness,
  * and fixed column count.
- * @param selectedColumns Optional zero-based columns to emit in each batch.
+ * @param columns Optional zero-based columns to emit in each batch.
  * @param program Optional postfix sequence of filter predicates and boolean
  * operators. The parser validates and normalizes it before preparation.
  * @param projected Whether the caller is explicitly requesting a projected
@@ -69,21 +70,21 @@ export type PreparedCsvParser = Pick<
  */
 export function createPreparedParser(
   options: CsvParserOptions,
-  selectedColumns?: CsvColumns,
+  columns?: CsvColumns,
   program?: readonly CsvNativeFilterProgramEntry[],
   projected = false,
 ): PreparedCsvParser {
-  if (!projected && selectedColumns === undefined && program === undefined) {
+  if (!projected && columns === undefined && program === undefined) {
     return new NativeCsvParser(options);
   }
   if (options.strict === true) {
     throw new Error('strict CSV validation is not supported for projected batches');
   }
-  if (options.selectedColumns !== selectedColumns) {
-    normalizeColumns(options.selectedColumns);
+  if (options.columns !== columns) {
+    normalizeColumns(options.columns);
   }
   normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
-  return new PreparedNativeCsvParser(options, selectedColumns, program);
+  return new PreparedNativeCsvParser(options, columns, program);
 }
 
 interface PreparedNativeWriter {
@@ -99,7 +100,7 @@ interface PreparedNativeWriter {
  * responsible for closing the handle.
  *
  * @param handle Open native parser handle.
- * @param selectedColumns Optional zero-based output columns.
+ * @param columns Optional zero-based output columns.
  * @param program Optional postfix sequence of filter predicates and boolean
  * operators. It is validated and normalized before preparation.
  * @returns Prepared write functions for batches and counts.
@@ -107,12 +108,12 @@ interface PreparedNativeWriter {
  */
 export function prepareNativeParser(
   handle: NativePointer,
-  selectedColumns: CsvColumns | undefined,
+  columns: CsvColumns | undefined,
   program: readonly CsvNativeFilterProgramEntry[] | undefined,
 ): PreparedNativeWriter {
-  const columns = normalizeColumns(selectedColumns);
-  const hasProjection = selectedColumns !== undefined;
-  const columnCount = BigInt(selectedColumns?.length ?? 0);
+  const normalizedColumns = normalizeColumns(columns);
+  const hasProjection = columns !== undefined;
+  const columnCount = BigInt(columns?.length ?? 0);
   const normalized = program === undefined ? normalizeNativeFilters(undefined) : normalizeNativeFilterProgram(program);
   const filterCount = BigInt(normalized.filterCount);
   const valueCount = BigInt(normalized.valueCount);
@@ -120,7 +121,7 @@ export function prepareNativeParser(
     !native.symbols.csv_parser_prepare(
       handle,
       hasProjection,
-      columns,
+      normalizedColumns,
       columnCount,
       normalized.descriptors,
       filterCount,
@@ -152,12 +153,12 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
 
   constructor(
     options: CsvParserOptions,
-    selectedColumns: CsvColumns | undefined,
+    columns: CsvColumns | undefined,
     program: readonly CsvNativeFilterProgramEntry[] | undefined,
   ) {
     const handle = createNativeCsvParser(options);
     try {
-      this.#writer = prepareNativeParser(handle, selectedColumns, program);
+      this.#writer = prepareNativeParser(handle, columns, program);
       this.#fixedValidator = options.fixedColumns === undefined ? undefined : new NativeCsvParser(options);
     } catch (error) {
       destroyNativeCsvParser(handle);
@@ -268,7 +269,7 @@ export class NativeCsvParser {
    * @param options Base parser settings. `encoding`, `delimiter`, `strict`, and
    * `fixedColumns` are captured by this parser; the delimiter defaults to `,`.
    * Automatic delimiter detection (`"auto"`) is available through file APIs,
-   * not this manual parser. `selectedColumns` is validated for compatibility
+   * not this manual parser. `columns` is validated for compatibility
    * but does not configure `writeBatch()`; apply projection with one of the
    * explicit projected methods instead. `expectedHeaders`, `requireHeader`,
    * and `minDataRows` are schema metadata for higher-level APIs and have no
@@ -278,8 +279,9 @@ export class NativeCsvParser {
    * @throws {RangeError} If selected or fixed column settings are out of range.
    */
   constructor(options: CsvParserOptions = {}) {
+    rejectSelectedColumns(options);
     this.#strict = options.strict === true;
-    normalizeColumns(options.selectedColumns);
+    normalizeColumns(options.columns);
     this.#fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
 
     const handle = createNativeCsvParser(options);
@@ -361,7 +363,7 @@ export class NativeCsvParser {
   /**
    * Parses a chunk with explicit projection and optional native filters.
    *
-   * Returned fields follow `selectedColumns` order. `equalsFilter` and
+   * Returned fields follow `columns` order. `equalsFilter` and
    * `filters` are mutually exclusive. Keep the same projection and filter
    * configuration for chunks that may belong to one logical row.
    *
@@ -379,14 +381,14 @@ export class NativeCsvParser {
     final = false,
   ): NativeCsvBatch {
     this.#rejectStrictUnsupported('projected batches');
-    this.#rejectProjectionFilterConflict(options);
+    this.#validateProjectionOptions(options);
     if (chunk.byteLength === 0 && final) {
       return this.endProjectedBatch(options);
     }
 
     const handle = this.#requireHandle();
     const input = normalizeChunk(chunk);
-    const columns = normalizeColumns(options.selectedColumns);
+    const columns = normalizeColumns(options.columns);
     const filter = normalizeEqualsFilter(options.equalsFilter);
     const filters = normalizeNativeFilters(options.filters);
     const batch = options.filters === undefined
@@ -395,9 +397,9 @@ export class NativeCsvParser {
         input,
         input,
         final,
-        options.selectedColumns !== undefined,
+        options.columns !== undefined,
         columns,
-        BigInt(options.selectedColumns?.length ?? 0),
+        BigInt(options.columns?.length ?? 0),
         filter.enabled,
         filter.column,
         filter.value,
@@ -408,9 +410,9 @@ export class NativeCsvParser {
         input,
         input,
         final,
-        options.selectedColumns !== undefined,
+        options.columns !== undefined,
         columns,
-        BigInt(options.selectedColumns?.length ?? 0),
+        BigInt(options.columns?.length ?? 0),
         filters.descriptors,
         BigInt(filters.filterCount),
         filters.valuesData,
@@ -475,16 +477,16 @@ export class NativeCsvParser {
    */
   endProjectedBatch(options: CsvNativeProjectionOptions = {}): NativeCsvBatch {
     this.#rejectStrictUnsupported('projected batches');
-    this.#rejectProjectionFilterConflict(options);
-    const columns = normalizeColumns(options.selectedColumns);
+    this.#validateProjectionOptions(options);
+    const columns = normalizeColumns(options.columns);
     const filter = normalizeEqualsFilter(options.equalsFilter);
     const filters = normalizeNativeFilters(options.filters);
     const batch = options.filters === undefined
       ? native.symbols.csv_parser_finish_projected_batch(
         this.#requireHandle(),
-        options.selectedColumns !== undefined,
+        options.columns !== undefined,
         columns,
-        BigInt(options.selectedColumns?.length ?? 0),
+        BigInt(options.columns?.length ?? 0),
         filter.enabled,
         filter.column,
         filter.value,
@@ -492,9 +494,9 @@ export class NativeCsvParser {
       )
       : native.symbols.csv_parser_finish_projected_batch_where_all(
         this.#requireHandle(),
-        options.selectedColumns !== undefined,
+        options.columns !== undefined,
         columns,
-        BigInt(options.selectedColumns?.length ?? 0),
+        BigInt(options.columns?.length ?? 0),
         filters.descriptors,
         BigInt(filters.filterCount),
         filters.valuesData,
@@ -515,7 +517,7 @@ export class NativeCsvParser {
    * that want to provide predicate and boolean-operator entries directly.
    *
    * @param chunk Input bytes.
-   * @param selectedColumns Optional zero-based output columns.
+   * @param columns Optional zero-based output columns.
    * @param program Filter predicates and boolean operators in postfix order.
    * The method validates and normalizes the entries before the native call.
    * @param final Whether this is the final input chunk.
@@ -525,27 +527,27 @@ export class NativeCsvParser {
    */
   writeProjectedBatchWhere(
     chunk: NodeJS.TypedArray | DataView,
-    selectedColumns: readonly number[] | undefined,
+    columns: readonly number[] | undefined,
     program: readonly CsvNativeFilterProgramEntry[],
     final = false,
   ): NativeCsvBatch {
     this.#rejectStrictUnsupported('projected batches');
     if (chunk.byteLength === 0 && final) {
-      return this.endProjectedBatchWhere(selectedColumns, program);
+      return this.endProjectedBatchWhere(columns, program);
     }
 
     const handle = this.#requireHandle();
     const input = normalizeChunk(chunk);
-    const columns = normalizeColumns(selectedColumns);
+    const normalizedColumns = normalizeColumns(columns);
     const normalized = normalizeNativeFilterProgram(program);
     const batch = native.symbols.csv_parser_write_projected_batch_where_all(
       handle,
       input,
       input,
       final,
-      selectedColumns !== undefined,
-      columns,
-      BigInt(selectedColumns?.length ?? 0),
+      columns !== undefined,
+      normalizedColumns,
+      BigInt(columns?.length ?? 0),
       normalized.descriptors,
       BigInt(normalized.filterCount),
       normalized.valuesData,
@@ -562,7 +564,7 @@ export class NativeCsvParser {
   /**
    * Flushes buffered state with a postfix native filter program.
    *
-   * @param selectedColumns Optional zero-based output columns.
+   * @param columns Optional zero-based output columns.
    * @param program Filter predicates and boolean operators in postfix order.
    * The method validates and normalizes the entries before the native call.
    * @returns An owned projected batch; close or dispose it after use.
@@ -570,17 +572,17 @@ export class NativeCsvParser {
    * parsing rejects the program or final row.
    */
   endProjectedBatchWhere(
-    selectedColumns: readonly number[] | undefined,
+    columns: readonly number[] | undefined,
     program: readonly CsvNativeFilterProgramEntry[],
   ): NativeCsvBatch {
     this.#rejectStrictUnsupported('projected batches');
-    const columns = normalizeColumns(selectedColumns);
+    const normalizedColumns = normalizeColumns(columns);
     const normalized = normalizeNativeFilterProgram(program);
     const batch = native.symbols.csv_parser_finish_projected_batch_where_all(
       this.#requireHandle(),
-      selectedColumns !== undefined,
-      columns,
-      BigInt(selectedColumns?.length ?? 0),
+      columns !== undefined,
+      normalizedColumns,
+      BigInt(columns?.length ?? 0),
       normalized.descriptors,
       BigInt(normalized.filterCount),
       normalized.valuesData,
@@ -1004,7 +1006,8 @@ export class NativeCsvParser {
     }
   }
 
-  #rejectProjectionFilterConflict(options: CsvNativeProjectionOptions): void {
+  #validateProjectionOptions(options: CsvNativeProjectionOptions): void {
+    rejectSelectedColumns(options);
     if (options.equalsFilter !== undefined && options.filters !== undefined) {
       throw new Error('use equalsFilter or filters, not both');
     }

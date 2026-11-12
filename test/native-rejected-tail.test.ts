@@ -33,10 +33,10 @@ test('rejected row tails preserve tolerant quotes, CRLF, and chunk boundaries', 
         count += counter.endCountWhereAll(filters);
         expect(count).toBe(expected.length);
 
-        for (const selectedColumns of projections) {
+        for (const columns of projections) {
           using parser = new NativeCsvParser({ encoding });
           const rows: string[][] = [];
-          const options = selectedColumns === undefined ? { filters } : { filters, selectedColumns };
+          const options = columns === undefined ? { filters } : { filters, columns };
           for (let offset = 0; offset < input.length; offset += chunkSize) {
             using batch = parser.writeProjectedBatch(input.subarray(offset, offset + chunkSize), options);
             rows.push(...batch.rows());
@@ -44,7 +44,7 @@ test('rejected row tails preserve tolerant quotes, CRLF, and chunk boundaries', 
           using finalBatch = parser.endProjectedBatch(options);
           rows.push(...finalBatch.rows());
           expect(rows).toEqual(
-            selectedColumns === undefined ? expected : expected.map((row) => selectedColumns.map((column) => row[column] ?? '')),
+            columns === undefined ? expected : expected.map((row) => columns.map((column) => row[column] ?? '')),
           );
         }
       }

@@ -1,20 +1,22 @@
 # @konstit/csv
 
-A CSV toolkit for Bun with native parsing, streaming file access, filtering, and column selection.
-The parser reads RFC 4180 CSV and passes the csv-spectrum compatibility tests and selected W3C CSVW parsing tests.
+A high-performance streaming CSV parsing library for Bun using a native C++ parser with SIMD acceleration (AVX2/NEON), streaming file access, filtering, and column selection.
 
 [Quick start](#quick-start) · [Choose an API](#choose-an-api) · [CLI](#cli) · [Documentation](#documentation)
 
 - Stream large files in batches, or parse a buffer you already have in memory.
 - Filter records and select columns before materializing results as JavaScript rows.
-- Read compressed input
+- Reads [RFC 4180](https://www.rfc-editor.org/info/rfc4180) CSV. Set `strict: true` to reject malformed quoting.
+- Tested against [csv-spectrum](https://github.com/maxogden/csv-spectrum), selected [W3C CSVW](https://w3c.github.io/csvw/tests/) cases,
+  and fixtures derived from [csvkit](https://github.com/wireservice/csvkit).
+- Stream compressed files:
   - zip
   - gzip
   - brotli
   - zstd
   - deflate
-- Auto detect delimiters.
-- UTF-8 and Latin-1 use native fast paths.
+- Auto detect delimiters, encoding and compression.
+- UTF-8 and Latin-1 have specialized native fast paths.
   - More encodings are supported out of the box, including Windows-1252, UTF-16LE, and Shift_JIS.
 
 ## Installation
@@ -95,17 +97,15 @@ console.log(await csv.count('data.csv')); // 3, including the header
 
 ## Choose an API
 
-| Task                         | API                                                 | Result or lifecycle                                    |
-| ---------------------------- | --------------------------------------------------- | ------------------------------------------------------ |
-| Parse an in-memory buffer    | `await csv.parse(buffer)`                           | All rows as arrays of strings                          |
-| Stream a file                | `csv.rows(path)`                                    | Async stream of row batches                            |
-| Count records                | `await csv.count(path)`                             | Record count, optionally filtered                      |
-| Access native batches        | `csv.withBatches(path, options, callback)`          | Callback with automatic batch disposal                 |
-| Reuse row or columnar views  | `csv.withRowViews()` / `csv.withColumnarBatches()`  | Synchronous callback; views are scoped to the callback |
-| Supply your own input chunks | `NativeCsvParser`                                   | Manual parser and batch disposal                       |
-| Find record-safe boundaries  | `findCsvSafeSplitOffsets()` / `findCsvSafeShards()` | Advanced byte-range processing                         |
-
-For code that uses workers, see the [migration guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#migration-from-removed-worker-apis).
+| Task                         | API                                                 | Result or lifecycle                                 |
+| ---------------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| Parse an in-memory buffer    | `await csv.parse(buffer)`                           | All rows as arrays of strings                       |
+| Stream a file                | `csv.rows(path)`                                    | Async stream of row batches                         |
+| Count records                | `await csv.count(path)`                             | Record count, optionally filtered                   |
+| Access native batches        | `csv.batches(path, options)`                        | Use `using` to close each batch after its iteration |
+| Visit rows or scan columns   | `batch.forEachRow()` / `batch.scanColumns()`        | Read projected fields by position within the batch  |
+| Supply your own input chunks | `NativeCsvParser`                                   | Manual parser and batch disposal                    |
+| Find record-safe boundaries  | `findCsvSafeSplitOffsets()` / `findCsvSafeShards()` | Advanced byte-range processing                      |
 
 Start with `csv.rows()` for streaming records. Use batches or views when you need byte access or lower allocation
 overhead. Advanced applications can use the record-safe boundary helpers to divide an uncompressed CSV file into

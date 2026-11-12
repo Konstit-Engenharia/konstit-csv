@@ -161,6 +161,13 @@ export function normalizeFixedColumnsCount(value: number | undefined, label: str
   return value;
 }
 
+/** Reject stale JavaScript options before a requested projection can silently return all fields. */
+export function rejectSelectedColumns(options: object): void {
+  if ('selectedColumns' in options) {
+    throw new TypeError('selectedColumns is unsupported; use columns');
+  }
+}
+
 export function normalizeColumns(columns: CsvColumns | undefined): Uint32Array {
   if (columns === undefined) {
     return EMPTY_U32;
