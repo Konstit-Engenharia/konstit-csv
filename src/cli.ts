@@ -45,7 +45,7 @@ File options:
   --delimiter <value>              One safe ASCII character or auto (default: auto)
   --encoding <value>               A Bun.Encoding label or auto (default: auto)
   --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
-  --compression <format>           auto, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: none)
+  --compression <format>           auto, none, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: auto)
   --zip-entry <path>               Entry used with --compression zip
   --max-compression-ratio <ratio>  ZIP expansion ratio integer from 1 through 4294967295
   --max-decompressed-bytes <bytes> Positive ZIP output byte limit
@@ -95,7 +95,7 @@ File options:
   --delimiter <value>              Input delimiter: one safe ASCII character or auto (default: auto)
   --encoding <value>               A Bun.Encoding label or auto (default: auto)
   --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
-  --compression <format>           auto, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: none)
+  --compression <format>           auto, none, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: auto)
   --zip-entry <path>               Entry used with --compression zip
   --max-compression-ratio <ratio>  ZIP expansion ratio integer from 1 through 4294967295
   --max-decompressed-bytes <bytes> Positive ZIP output byte limit
@@ -142,7 +142,7 @@ Compatibility:
   --json cannot be combined with --output-delimiter.
   --limit cannot be combined with --min-data-rows.
   --strict with --limit defaults to comma and UTF-8 and uses --chunk-size 1; auto is unavailable.
-  --strict with --limit cannot use --compression, including auto.
+  --strict with --limit uses --compression none; compression detection is unavailable.
   ZIP options require --compression zip and --zip-entry.
 
 Examples:
@@ -184,7 +184,7 @@ const linesOptionDefinitions = {
   'output-delimiter': { type: 'string' },
 } as const;
 
-const compressionFormats = new Set(['auto', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd']);
+const compressionFormats = new Set(['auto', 'none', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd']);
 const probeHelp = `Usage: csv probe <path> [--zip-entry <path>]
 
 Print the on-disk file size and compression, plus the encoding, delimiter,
@@ -384,7 +384,7 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
     throw new Error('--limit cannot be combined with --min-data-rows');
   }
   if (limit !== undefined && options.strict === true) {
-    if (options.compression !== undefined) {
+    if (options.compression !== 'none') {
       throw new Error('--strict with --limit does not support compressed input');
     }
     if (options.delimiter === 'auto') {
@@ -456,7 +456,7 @@ function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): Mu
   }
   options.where = parseWhereOptions(values);
 
-  options.compression = parseCompression(values);
+  options.compression = parseCompression(values) ?? (fixedFormat ? 'none' : 'auto');
   validateCountOptionCombinations(options);
   return options;
 }
@@ -528,7 +528,7 @@ function parseCompression(values: CommonOptionValues): CsvCompression | undefine
     if (zipEntry !== undefined || maxCompressionRatio !== undefined || maxDecompressedBytes !== undefined) {
       throw new Error('ZIP options require --compression zip');
     }
-    return compression as Bun.CompressionFormat | 'auto';
+    return compression as Bun.CompressionFormat | 'auto' | 'none';
   }
   if (typeof zipEntry !== 'string' || zipEntry.length === 0) {
     throw new Error('--compression zip requires --zip-entry <path>');

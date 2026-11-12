@@ -8,7 +8,7 @@ import {
 type BenchmarkTarget = 'csv-parser' | 'konstit-csv';
 
 const FILE = Bun.env['CSV_BENCH_FILE'] ?? 'corpus/large/example.csv';
-const CHUNK_SIZE = Number(Bun.env['CSV_BENCH_CHUNK_SIZE'] ?? 2 * 1024 * 1024);
+const CHUNK_SIZE = Number(Bun.env['CSV_BENCH_CHUNK_SIZE'] ?? 1 * 1024 * 1024);
 const DELIMITER = Bun.env['CSV_BENCH_DELIMITER'] ?? ';';
 const bytes = statSync(FILE).size;
 

@@ -133,7 +133,7 @@ only NDJSON records to stdout and cannot be combined with
 | `--delimiter <value>`              | One safe ASCII character, or `auto` (the default) to infer the input delimiter. |
 | `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding. |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                   |
-| `--compression <format>`           | `auto`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                  |
+| `--compression <format>`           | `auto` (default), `none`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`. |
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file entry. |
 | `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.          |
 | `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.   |
@@ -143,7 +143,10 @@ from a bounded prefix while ignoring separators inside quoted fields. Pass a fix
 delimiter for empty, single-column, ragged, or ambiguous input. To force the traditional
 comma and UTF-8 settings, use `--delimiter ',' --encoding utf8`.
 
-Compressed input is streamed into the parser. The advanced byte-boundary helpers
+With automatic compression, `csv count data.csv.gz` decompresses gzip and `csv count data.csv` reads plain text.
+Plain CSV, TSV, and text MIME types are recognized, as are `.psv`, `.ssv`, and `.tab`. Use `--compression none`
+to read a known plain file with an unrecognized name, or to read plain input from `/dev/stdin`.
+The advanced byte-boundary helpers
 in the TypeScript API require uncompressed input. ZIP input
 supports stored and DEFLATE entries; encrypted entries and other compression
 methods fail. ZIP options must be used together with `--compression zip` and a
@@ -302,7 +305,7 @@ only the consumed input prefix, `--limit` cannot be combined with
 `--min-data-rows`.
 
 When `--strict` and `--limit` are used together, the input delimiter and encoding must be
-fixed (defaulting to comma and UTF-8), compressed input (including `--compression auto`) is not supported, and
+fixed (defaulting to comma and UTF-8), compression defaults to `none` and must stay disabled, and
 the chunk size must be omitted or set to `1`. The CLI uses one-byte chunks in
 this mode to avoid read-ahead. A later input error can occur after earlier
 records have already been written.

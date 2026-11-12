@@ -195,6 +195,31 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
+  test('defaults to auto compression for compressed and plain paths, with an explicit raw mode', async () => {
+    const gzip = runCli('lines', join(temporaryDirectory, 'input.csv.gz'), '--limit', '1');
+    expect(gzip.exitCode).toBe(0);
+    expect(gzip.stdout.toString()).toBe('id,name\n');
+    const plain = runCli('count', join(temporaryDirectory, 'equals.csv'), '--compression', 'auto');
+    expect(plain.exitCode).toBe(0);
+    expect(plain.stdout.toString()).toBe('3\n');
+    const unknown = join(temporaryDirectory, 'records');
+    await Bun.write(unknown, 'x,y\n1,2\n');
+    expectCommandError(runCli('count', unknown), 'no supported signature');
+    expect(runCli('count', unknown, '--compression', 'none').stdout.toString()).toBe('2\n');
+  });
+
+  test('auto replays a split signature and decompresses non-seekable input', () => {
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, cliPath, 'lines', '/dev/stdin', '--chunk-size', '1'],
+      stdin: Bun.gzipSync(Buffer.from('id;name\n1;Ada\n')),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    expect(result.stderr.toString()).toBe('');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('id,name\n1,Ada\n');
+  });
+
   test('supports ZIP entry and safety options', () => {
     const result = runCli(
       'count',

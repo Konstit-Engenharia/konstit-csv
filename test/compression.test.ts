@@ -155,10 +155,44 @@ describe('compressed CSV file streams', () => {
     );
     expect(invalidGzip.message).toContain('extension .gz does not match the file signature');
 
-    const unknown = await rejectedError(
-      csv.count(join(temporaryDirectory, 'plain.tsv'), { compression: 'auto', delimiter: ';' }),
-    );
+    const unknownPath = join(temporaryDirectory, 'plain.bin');
+    await Bun.write(unknownPath, source);
+    const unknown = await rejectedError(csv.count(unknownPath, { delimiter: ';' }));
     expect(unknown.message).toContain('no supported signature or extension');
+    expect(await csv.count(unknownPath, { compression: 'none', delimiter: ';' })).toBe(4);
+  });
+
+  test('auto reads uncompressed delimited text and plain text MIME types', async () => {
+    for (const suffix of ['csv', 'tsv', 'txt', 'text', 'psv', 'tab', 'ssv', 'CSV']) {
+      const path = join(temporaryDirectory, `plain.${suffix}`);
+      await Bun.write(path, source);
+      expect((await Array.fromAsync(csv.rows(path, { compression: 'auto', delimiter: ';', chunkSize: 2 }))).flat())
+        .toEqual(expectedRows);
+      expect(await countCsvFile(path, { delimiter: ';' })).toBe(4);
+    }
+  });
+
+  test('compressed signatures take precedence over text MIME types with tiny reads', async () => {
+    const path = join(temporaryDirectory, 'signature.csv');
+    for (const format of ['gzip', 'zstd', 'deflate'] as const) {
+      await Bun.write(path, compress(source, format));
+      expect((await Array.fromAsync(csv.rows(path, { delimiter: ';', chunkSize: 1 }))).flat()).toEqual(expectedRows);
+    }
+    await Bun.write(path, compress(source, 'gzip').subarray(0, 8));
+    expect((await rejectedError(csv.count(path))).message).not.toBe('');
+    await Bun.write(path, createZip([{ data: source, name: 'input.csv', method: 0 }]));
+    expect((await rejectedError(csv.count(path))).message).toContain('ZIP');
+  });
+
+  test('reads printable zlib-header collisions as plain CSV without hiding invalid compressed files', async () => {
+    const path = join(temporaryDirectory, 'header.csv');
+    for (const first of ['H,name', 'x^,name', '80,name']) {
+      await Bun.write(path, `${first}\n1,Ana\n`);
+      expect((await Array.fromAsync(csv.rows(path, { chunkSize: 1 }))).flat()).toEqual([first.split(','), ['1', 'Ana']]);
+    }
+    const invalid = join(temporaryDirectory, 'header.zlib');
+    await Bun.write(invalid, 'H,name\n1,Ana\n');
+    expect((await rejectedError(csv.count(invalid))).message).not.toBe('');
   });
 
   test('streams compressed input through batch and callback APIs', async () => {

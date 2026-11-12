@@ -54,11 +54,11 @@ export interface CsvZipCompression {
 /**
  * Compression accepted for file input.
  *
- * `'auto'` detects the supported compression format from the input prefix and
- * filename. A ZIP object selects one archive entry. Byte-offset sharding
+ * The default, `'auto'`, detects compression and reads recognized text files
+ * directly. Use `'none'` to read raw bytes. A ZIP object selects one archive entry. Byte-offset sharding
  * requires an uncompressed file.
  */
-export type CsvCompression = Bun.CompressionFormat | 'auto' | CsvZipCompression;
+export type CsvCompression = Bun.CompressionFormat | 'auto' | 'none' | CsvZipCompression;
 
 /**
  * Field delimiter used by the CSV parser.
@@ -259,7 +259,7 @@ export interface CsvFileOptions extends CsvParserOptions<CsvFileEncoding> {
   readonly encoding?: CsvFileEncoding;
   /** Read-stream chunk size in bytes. Defaults to 1 MiB. */
   readonly chunkSize?: number;
-  /** Optional compression format or ZIP entry selection. */
+  /** Compression format or ZIP entry selection. Defaults to `'auto'`; `'none'` skips detection. */
   readonly compression?: CsvCompression;
 }
 

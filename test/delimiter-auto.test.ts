@@ -35,13 +35,13 @@ let semicolonPath: string;
 beforeAll(async () => {
   temporaryDirectory = await mkdtemp(join(tmpdir(), 'csv-parser-delimiter-auto-'));
   tabPath = join(temporaryDirectory, 'input.tsv');
-  semicolonPath = join(temporaryDirectory, 'input.data');
+  semicolonPath = join(temporaryDirectory, 'input.txt');
   await Promise.all([
     Bun.write(tabPath, tabSource),
     Bun.write(semicolonPath, semicolonSource),
     Bun.write(join(temporaryDirectory, 'input.tsv.gz'), Bun.gzipSync(tabSource)),
     Bun.write(join(temporaryDirectory, 'tie.csv'), 'left,right;value\n1,2;3\n'),
-    Bun.write(join(temporaryDirectory, 'tie.data'), 'left,right;value\n1,2;3\n'),
+    Bun.write(join(temporaryDirectory, 'tie.txt'), 'left,right;value\n1,2;3\n'),
     Bun.write(join(temporaryDirectory, 'single-column.txt'), 'alpha\nbeta\n'),
     Bun.write(join(temporaryDirectory, 'empty.csv'), ''),
     Bun.write(
@@ -49,7 +49,7 @@ beforeAll(async () => {
       `id\tvalue\n${Array.from({ length: 10_000 }, (_, index) => `${String(index)}\tvalue-${String(index)}\n`).join('')}`,
     ),
     ...detectedDelimiters.map((delimiter, index) =>
-      Bun.write(join(temporaryDirectory, `delimiter-${String(index)}.data`), `left${delimiter}right\n1${delimiter}2\n`)
+      Bun.write(join(temporaryDirectory, `delimiter-${String(index)}.txt`), `left${delimiter}right\n1${delimiter}2\n`)
     ),
   ]);
 });
@@ -63,7 +63,7 @@ describe('automatic delimiter detection', () => {
     for (let index = 0; index < detectedDelimiters.length; ++index) {
       const rows: string[][] = [];
       for await (
-        const batch of csv.rows(join(temporaryDirectory, `delimiter-${String(index)}.data`), { delimiter: 'auto' })
+        const batch of csv.rows(join(temporaryDirectory, `delimiter-${String(index)}.txt`), { delimiter: 'auto' })
       ) {
         rows.push(...batch);
       }
@@ -163,7 +163,7 @@ describe('automatic delimiter detection', () => {
   });
 
   test('rejects ambiguous, empty, and single-column probes', async () => {
-    expect((await rejectedError(csv.count(join(temporaryDirectory, 'tie.data'), { delimiter: 'auto' }))).message)
+    expect((await rejectedError(csv.count(join(temporaryDirectory, 'tie.txt'), { delimiter: 'auto' }))).message)
       .toContain('delimiter auto-detection is ambiguous');
     expect(
       (await rejectedError(csv.count(join(temporaryDirectory, 'single-column.txt'), { delimiter: 'auto' }))).message,

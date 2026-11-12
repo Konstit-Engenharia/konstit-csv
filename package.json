@@ -107,7 +107,8 @@
     "fmt:native:check": "find native bench test -type f -name '*.cpp' -print0 | xargs -0 clang-format --dry-run --Werror",
     "prepush": "bun run build:native && bun run build:native:linux && bun run fmt:check && bun run fmt:native:check && bun run lint && bun run test:source-native && bun scripts/test-native.ts",
     "bench": "bun run build:native && bun run scripts/bench.ts",
-    "test": "bun test --parallel"
+    "test": "bun test --parallel",
+    "csv": "bun --silent src/cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",

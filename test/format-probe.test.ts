@@ -112,7 +112,7 @@ test('both probed streams replay the original bytes through the selected decoder
       [utf16, 'São\n東京😀'],
       [Buffer.from(utf16).swap16(), 'São\n東京😀'],
     ] as const;
-    const path = join(directory, 'input.data');
+    const path = join(directory, 'input.txt');
     for (const [bytes, value,] of cases) {
       await Bun.write(path, bytes);
       for (const probe of probes) {

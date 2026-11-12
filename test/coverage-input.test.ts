@@ -172,7 +172,7 @@ describe('coverage input boundaries', () => {
       expect(autoNoNewline.delimiter).toBe(',');
       for await (const _ of autoNoNewline.chunks()) {
       }
-      expect((await rejectedError(consume(readCsvFileChunks(empty, { chunkSize: 64, compression: 'auto' })))).message).not.toBe('');
+      expect(await Array.fromAsync(readCsvFileChunks(empty, { chunkSize: 64, compression: 'auto' }))).toEqual([]);
       const projectedSerial: unknown[] = [];
       for await (const batch of parseCsvFileProjected(noNewline, { selectedColumns: [0] })) {
         projectedSerial.push(...batch);

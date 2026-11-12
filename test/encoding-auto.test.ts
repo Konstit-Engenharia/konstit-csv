@@ -69,7 +69,7 @@ test('honors split Unicode signatures and quotes on both automatic and explicit 
   const text = '\ufeffid;name\r\n1;"主;😀\n""café"""';
   const utf16 = Buffer.from(text, 'utf16le');
   for (const [name, bytes,] of [['utf8', Buffer.from(text)], ['le', utf16], ['be', Buffer.from(utf16).swap16()]] as const) {
-    const path = join(directory, name);
+    const path = join(directory, `${name}.csv`);
     await Bun.write(path, bytes);
     for (const delimiter of [';', 'auto'] as const) {
       const options = { delimiter, encoding: 'auto', chunkSize: 1, strict: true, expectedHeaders: ['id', 'name'] } as const;

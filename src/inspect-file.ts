@@ -4,6 +4,7 @@ import {
   compressionFromPrefix,
   DELIMITER_CANDIDATES,
   FILE_PROBE_SIZE,
+  isZipSignature,
   readCsvFileChunks,
   scanCsvFileFormat,
   selectDelimiter,
@@ -27,8 +28,7 @@ export async function inspectCsvFile(path: string, zipEntry?: string): Promise<F
     throw new Error('probe requires a regular file');
   }
   const raw = await Bun.file(path).slice(0, FILE_PROBE_SIZE + 1).bytes();
-  const zip = raw[0] === 0x50 && raw[1] === 0x4b
-    && ((raw[2] === 3 && raw[3] === 4) || (raw[2] === 5 && raw[3] === 6));
+  const zip = isZipSignature(raw);
   if (zipEntry !== undefined && !zip) {
     throw new Error('--zip-entry requires a ZIP archive');
   }

@@ -138,11 +138,11 @@ full-field match. Patterns are limited to 4096 UTF-8 bytes, and one operation ca
 
 ## Compression and delimiter detection
 
-File operations stream `gzip`, `deflate`, `deflate-raw`, Brotli, Zstandard, and ZIP input into the parser. Use an explicit
-format or `compression: 'auto'`:
+File operations default to `compression: 'auto'`. They stream gzip, deflate, raw deflate, Brotli, and Zstandard input
+into the parser and read recognized plain text files directly. For ZIP, select an entry explicitly:
 
 ```ts
-for await (const batch of csv.rows('data.csv.gz', { compression: 'auto' })) {
+for await (const batch of csv.rows('data.csv.gz')) {
   console.log(batch);
 }
 
@@ -177,9 +177,13 @@ selects Windows-1252, and other legacy samples select Latin-1. BOM-less NUL byte
 Detection is a best guess for the entire file. For example, if the sample is all ASCII and later rows use Latin-1 accents,
 pass `encoding: 'latin1'` explicitly. Supply an explicit label for other encodings such as Shift_JIS.
 
-`compression: 'auto'` reads at most four prefix bytes and combines supported signatures with `.gz`, `.gzip`, `.zst`,
-`.zstd`, `.br`, `.zz`, `.zlib`, `.deflate`, and `.deflate-raw` extensions. Signature and extension mismatches fail. A
-`.deflate` file without a zlib wrapper requires explicit `compression: 'deflate-raw'`.
+Compression detection checks the signature and the `.gz`, `.gzip`, `.zst`, `.zstd`, `.br`, `.zz`, `.zlib`, `.deflate`,
+and `.deflate-raw` suffixes. When neither identifies compression, the reader checks `Bun.file(path).type`.
+It reads `text/csv`, `text/tab-separated-values`, and `text/plain` directly, ignoring MIME parameters such as the charset.
+It also recognizes `.psv`, `.ssv`, and `.tab` when Bun reports a generic binary type.
+Pass `compression: 'none'` for known plain input with an unknown MIME type, such as an extensionless file or stdin.
+Signature and extension mismatches and corrupt compressed streams still fail. A `.deflate` file without a zlib wrapper
+requires explicit `compression: 'deflate-raw'`.
 
 Compressed input and automatic delimiter detection are supported by the file APIs. The byte-boundary helpers require an
 uncompressed file and a fixed one-character delimiter.

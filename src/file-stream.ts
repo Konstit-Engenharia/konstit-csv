@@ -2,6 +2,11 @@ import { ptr } from 'bun:ffi';
 import { createReadStream } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { extname } from 'node:path';
+import { ReadableStream as WebReadableStream } from 'node:stream/web';
+import {
+  constants,
+  inflateSync,
+} from 'node:zlib';
 import {
   DEFAULT_CHUNK_SIZE,
   EMPTY_BUFFER,
@@ -76,11 +81,8 @@ export async function prepareCsvFileInput(
   // The encoding probe needs the original bytes after decompression.
   const inputEncoding = autoEncoding ? 'utf8' : resolveInputEncoding(options.encoding, options.delimiter);
   const parserEncoding = typeof inputEncoding === 'string' ? inputEncoding : 'utf8';
-  const readAhead = readMode === 'read-ahead' && options.compression === undefined
-    ? readAheadFileChunks(path, options.chunkSize ?? DEFAULT_CHUNK_SIZE)
-    : undefined;
   const source = (): AsyncIterable<Uint8Array> => {
-    const chunks = readAhead ?? readCsvFileChunks(path, options);
+    const chunks = readCsvFileChunks(path, options, readMode);
     return typeof inputEncoding === 'string' ? chunks : transcodeCsvChunks(chunks, inputEncoding);
   };
   const configuredDelimiter = options.delimiter ?? ',';
@@ -103,7 +105,8 @@ export async function prepareCsvFileInput(
   }
 
   const iterator = source()[Symbol.asyncIterator]();
-  const reusesReadBuffer = readAhead !== undefined && typeof inputEncoding === 'string';
+  const reusesReadBuffer = readMode === 'read-ahead' && typeof inputEncoding === 'string'
+    && (options.compression === undefined || options.compression === 'none' || options.compression === 'auto');
   const bufferedChunks: Uint8Array[] = [];
   let bufferedByteLength = 0;
   let sourceEnded = false;
@@ -173,7 +176,7 @@ export async function prepareCsvFileInput(
 }
 
 // The row parser consumes each chunk before advancing this iterator.
-async function* readAheadFileChunks(path: string, chunkSize: number): AsyncGenerator<Buffer, void> {
+async function* readAheadFileChunks(path: string, chunkSize: number): AsyncGenerator<Buffer<ArrayBuffer>, void> {
   if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
     throw new RangeError('chunkSize must be a positive safe integer');
   }
@@ -207,19 +210,20 @@ async function* readAheadFileChunks(path: string, chunkSize: number): AsyncGener
 export function readCsvFileChunks(
   path: string,
   suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression'>,
+  readMode: 'stream' | 'read-ahead' = 'stream',
 ): AsyncIterable<Uint8Array> {
   const options = snapshotCsvOptions(suppliedOptions);
   const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
-  if (options.compression === undefined) {
-    return createReadStream(path, { highWaterMark: chunkSize });
+  const compression = options.compression ?? 'auto';
+  if (isZipCompression(compression)) {
+    return readZipEntryChunks(path, compression, chunkSize);
   }
-  if (isZipCompression(options.compression)) {
-    return readZipEntryChunks(path, options.compression, chunkSize);
+  if (compression === 'auto' || compression === 'none') {
+    const readAhead = readMode === 'read-ahead';
+    const raw = readAhead ? readAheadFileChunks(path, chunkSize) : createReadStream(path, { highWaterMark: chunkSize });
+    return compression === 'none' ? raw : readAutoDetectedCsvFileChunks(path, raw, chunkSize, readAhead);
   }
-  if (options.compression === 'auto') {
-    return readAutoDetectedCsvFileChunks(path, chunkSize);
-  }
-  return decompressedCsvFileChunks(path, options.compression, chunkSize);
+  return decompressedCsvFileChunks(path, compression, chunkSize);
 }
 
 function isZipCompression(compression: CsvCompression): compression is CsvZipCompression {
@@ -248,10 +252,10 @@ export function rejectAutoDelimiterSharding(
   }
 }
 
-async function* replayCsvFileChunks(
-  bufferedChunks: readonly Uint8Array[],
-  iterator: AsyncIterator<Uint8Array>,
-): AsyncGenerator<Uint8Array, void> {
+async function* replayCsvFileChunks<T extends Uint8Array>(
+  bufferedChunks: readonly T[],
+  iterator: AsyncIterator<T>,
+): AsyncGenerator<T, void> {
   try {
     yield* bufferedChunks;
     while (true) {
@@ -520,16 +524,79 @@ function stripCompressionExtension(path: string): string {
   return path;
 }
 
-async function* readAutoDetectedCsvFileChunks(path: string, chunkSize: number): AsyncGenerator<Uint8Array, void> {
-  const compression = compressionFromPrefix(path, await Bun.file(path).slice(0, 4).bytes());
-  if (compression === undefined) {
-    throw new Error(
-      'compression auto-detection failed: no supported signature or extension; specify compression as \'brotli\' or \'deflate-raw\' when applicable',
-    );
+async function* readAutoDetectedCsvFileChunks(
+  path: string,
+  raw: AsyncIterable<Uint8Array<ArrayBuffer>>,
+  chunkSize: number,
+  reusesBuffer: boolean,
+): AsyncGenerator<Uint8Array, void> {
+  const iterator = raw[Symbol.asyncIterator]();
+  // Replay the original chunks on the same descriptor, including for pipes.
+  const buffered: Uint8Array<ArrayBuffer>[] = [];
+  const prefix = new Uint8Array(64);
+  let length = 0;
+  let needed = 4;
+  try {
+    while (length < needed) {
+      const next = await iterator.next();
+      if (next.done === true) {
+        break;
+      }
+      const chunk = next.value;
+      const take = Math.min(prefix.length - length, chunk.length);
+      prefix.set(chunk.subarray(0, take), length);
+      length += take;
+      if (length >= 4 && isZlibHeader(prefix) && isPrintableZlibHeader(prefix)) {
+        needed = prefix.length;
+      }
+      buffered.push(reusesBuffer && length < needed ? new Uint8Array(chunk) : chunk);
+    }
+    const sample = prefix.subarray(0, length);
+    if (isZipSignature(sample)) {
+      throw new Error(
+        'ZIP input requires an entry; use compression: { format: \'zip\', entry: \'*\' } or --compression zip --zip-entry <path>',
+      );
+    }
+    const compression = compressionFromPrefix(path, sample);
+    const replay = replayCsvFileChunks(buffered, iterator);
+    if (compression === undefined) {
+      if (!isPlainCsvFile(path)) {
+        throw new Error(
+          'compression auto-detection failed: no supported signature or extension and no delimited-text MIME type; specify compression explicitly (none for plain input)',
+        );
+      }
+      yield* replay;
+      return;
+    }
+    // A Web stream can queue chunks after advancing the file iterator.
+    yield* WebReadableStream.from<NodeJS.BufferSource>(reusesBuffer ? copyFileChunks(replay) : replay)
+      .pipeThrough(new DecompressionStream(compression, { highWaterMark: chunkSize }));
+  } finally {
+    await closeCsvFileIterator(iterator);
   }
-  for await (const chunk of decompressedCsvFileChunks(path, compression, chunkSize)) {
-    yield chunk;
+}
+
+async function* copyFileChunks(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array<ArrayBuffer>, void> {
+  for await (const chunk of chunks) {
+    yield new Uint8Array(chunk);
   }
+}
+
+function isPlainCsvFile(path: string): boolean {
+  const mime = Bun.file(path).type.split(';', 1)[0];
+  return mime === 'text/csv' || mime === 'text/tab-separated-values' || mime === 'text/plain'
+    || (mime === 'application/octet-stream' && /\.(?:psv|ssv|tab)$/i.test(path));
+}
+
+export function isZipSignature(prefix: Uint8Array): boolean {
+  return prefix[0] === 0x50 && prefix[1] === 0x4b
+    && ((prefix[2] === 3 && prefix[3] === 4) || (prefix[2] === 5 && prefix[3] === 6));
+}
+
+function isPrintableZlibHeader(prefix: Uint8Array): boolean {
+  const first = prefix[0] ?? 0;
+  const second = prefix[1] ?? 0;
+  return first >= 32 && first < 127 && second >= 32 && second < 127;
 }
 
 function decompressedCsvFileChunks(
@@ -574,6 +641,22 @@ export function compressionFromPrefix(path: string, prefix: Uint8Array): Bun.Com
   }
 
   if (hasZlibHeader) {
+    // Plain headers such as "H,name" satisfy the two-byte zlib check. For
+    // text files with that weak signature, validate a bounded deflate prefix.
+    const sample = prefix.subarray(0, 64);
+    if (isPrintableZlibHeader(sample) && isPlainCsvFile(path) && !sample.some((b) => b < 32 && b !== 9 && b !== 10 && b !== 13)) {
+      try {
+        inflateSync(sample, { finishFlush: sample.length < 64 ? constants.Z_FINISH : constants.Z_SYNC_FLUSH });
+      } catch (error) {
+        if (
+          error instanceof Error && 'code' in error
+          && (error.code === 'Z_DATA_ERROR' || error.code === 'Z_NEED_DICT' || error.code === 'Z_BUF_ERROR')
+        ) {
+          return undefined;
+        }
+        throw error;
+      }
+    }
     return 'deflate';
   }
 

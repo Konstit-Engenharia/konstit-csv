@@ -153,7 +153,6 @@ import { csv } from '@konstit/csv';
 
 for await (
   const batch of csv.rows('data.csv.gz', {
-    compression: 'auto',
     delimiter: 'auto',
   })
 ) {
@@ -163,8 +162,9 @@ for await (
 }
 ```
 
-Decompression streams into the parser. File APIs support gzip, deflate, deflate-raw, Brotli, Zstandard, and selected
-ZIP entries. Automatic delimiter detection is also available for file APIs.
+File APIs and the CLI detect compression by default and read plain CSV, TSV, and text files directly.
+For a plain file with an unrecognized name, use `compression: 'none'` or `--compression none`.
+Decompression streams into the parser.
 
 For a ZIP archive, select an entry with `compression: { format: 'zip', entry: 'data.csv' }`. See
 [Compression](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#compression-and-delimiter-detection)

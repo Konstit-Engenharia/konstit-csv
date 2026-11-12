@@ -28,7 +28,7 @@ async function fixture(
   repeats: number,
   bom?: Buffer,
 ) {
-  const path = join(directory, `${name}.data`);
+  const path = join(directory, `${name}.txt`);
   const data = Buffer.alloc(pattern.length * repeats, pattern);
   await Bun.write(path, bom === undefined ? data : Buffer.concat([bom, data]));
   inputs.push({ name, path, encoding, delimiter });
