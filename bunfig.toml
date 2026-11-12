@@ -22,3 +22,7 @@ coveragePathIgnorePatterns = [
   "examples/**",
   "bench/**",
 ]
+
+[fmt]
+ignorePatterns = ["**/**", "!package.json"]
+sortPackageJson = true

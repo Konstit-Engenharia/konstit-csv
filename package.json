@@ -2,6 +2,19 @@
   "name": "@konstit/csv",
   "version": "0.4.3",
   "description": "Bun-native CSV parser with streaming rows, filters, and low-allocation batches.",
+  "keywords": [
+    "AVX2",
+    "NEON",
+    "bun",
+    "cli",
+    "compressed",
+    "csv",
+    "filters",
+    "native",
+    "parser",
+    "streaming"
+  ],
+  "license": "MIT",
   "author": {
     "name": "KONSTIT ENGENHARIA E TECNOLOGIA LTDA",
     "email": "opensource@konstit.com.br"
@@ -18,18 +31,8 @@
       "email": "marcelo.marchioro@konstit.com.br"
     }
   ],
-  "license": "MIT",
-  "type": "module",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "bin": {
     "csv": "./dist/cli.js"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
   },
   "files": [
     "dist",
@@ -38,18 +41,15 @@
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
-  "keywords": [
-    "csv",
-    "parser",
-    "streaming",
-    "compressed",
-    "filters",
-    "bun",
-    "native",
-    "cli",
-    "AVX2",
-    "NEON"
-  ],
+  "type": "module",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "publishConfig": {
     "access": "public"
   },
