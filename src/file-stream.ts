@@ -73,12 +73,12 @@ export type CsvFileProbe = (path: string, prefix: Uint8Array, sourceEnded: boole
   skipBytes: number;
 };
 
-type FileReadMode = 'stream' | 'read-ahead' | 'count';
+type FileReadMode = 'stream' | 'parse' | 'read-ahead' | 'count';
 
 export async function prepareCsvFileInput(
   path: string,
   suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter' | 'encoding'>,
-  readMode: FileReadMode = 'stream',
+  readMode: FileReadMode = 'parse',
   probeFormat: CsvFileProbe = probeCsvFileFormat,
 ): Promise<CsvFileInput> {
   const options = snapshotCsvOptions(suppliedOptions);
@@ -113,7 +113,7 @@ export async function prepareCsvFileInput(
   const compression = options.compression ?? 'auto';
   const reusesReadBuffer = typeof inputEncoding === 'string' && (
     (readMode === 'read-ahead' && (compression === 'auto' || compression === 'none'))
-    || (readMode === 'count' && (compression === 'auto' || isZipCompression(compression)))
+    || ((compression === 'auto' || isZipCompression(compression)) && useZipReadAhead(readMode, options.chunkSize ?? DEFAULT_CHUNK_SIZE))
   );
   const bufferedChunks: Uint8Array[] = [];
   let bufferedByteLength = 0;
@@ -223,19 +223,26 @@ export function readCsvFileChunks(
   const options = snapshotCsvOptions(suppliedOptions);
   const chunkSize = options.chunkSize ?? DEFAULT_CHUNK_SIZE;
   const compression = options.compression ?? 'auto';
+  const zipReadAhead = useZipReadAhead(readMode, chunkSize);
   if (isZipCompression(compression)) {
-    return readZipEntryChunks(path, compression, chunkSize, readMode === 'count');
+    return readZipEntryChunks(path, compression, chunkSize, zipReadAhead);
   }
   if (compression === 'auto' || compression === 'none') {
     const readAhead = readMode === 'read-ahead';
     const raw = readAhead ? readAheadFileChunks(path, chunkSize) : createReadStream(path, { highWaterMark: chunkSize });
-    return compression === 'none' ? raw : readAutoDetectedCsvFileChunks(path, raw, chunkSize, readMode);
+    return compression === 'none' ? raw : readAutoDetectedCsvFileChunks(path, raw, chunkSize, readAhead, zipReadAhead);
   }
   return decompressedCsvFileChunks(path, compression, chunkSize);
 }
 
 function isZipCompression(compression: CsvCompression): compression is CsvZipCompression {
   return typeof compression === 'object' && compression.format === 'zip';
+}
+
+function useZipReadAhead(mode: FileReadMode, chunkSize: number): boolean {
+  // The native producer reads at least 64 KiB. A row iterator with smaller chunks
+  // can stop before a corrupt suffix and must observe errors at its requested boundary.
+  return mode === 'count' || (mode !== 'stream' && chunkSize >= 64 * 1024);
 }
 
 function delimiterHintPath(path: string, compression: CsvCompression | undefined): string {
@@ -536,9 +543,9 @@ async function* readAutoDetectedCsvFileChunks(
   path: string,
   raw: AsyncIterable<Uint8Array<ArrayBuffer>>,
   chunkSize: number,
-  readMode: FileReadMode,
+  reusesBuffer: boolean,
+  zipReadAhead: boolean,
 ): AsyncGenerator<Uint8Array, void> {
-  const reusesBuffer = readMode === 'read-ahead';
   const iterator = raw[Symbol.asyncIterator]();
   // Replay the original chunks on the same descriptor, including for pipes.
   const buffered: Uint8Array<ArrayBuffer>[] = [];
@@ -567,7 +574,7 @@ async function* readAutoDetectedCsvFileChunks(
       }
       // The native reader seeks through the ZIP central directory using its own file handle.
       await closeCsvFileIterator(iterator);
-      yield* readZipEntryChunks(path, { format: 'zip', entry: '*' }, chunkSize, readMode === 'count');
+      yield* readZipEntryChunks(path, { format: 'zip', entry: '*' }, chunkSize, zipReadAhead);
       return;
     }
     const compression = compressionFromPrefix(path, sample);

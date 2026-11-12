@@ -278,6 +278,21 @@ describe('csv CLI', () => {
     expect(lines.stderr.toString()).toBe('');
   });
 
+  test('limited ZIP lines can stop before a corrupt final chunk', async () => {
+    const path = join(temporaryDirectory, 'late-crc.zip');
+    const prefix = '1,a\n'.repeat(16_500);
+    const data = Buffer.from(`${prefix}4,early\n${prefix}2,match\n${'3,z\n'.repeat(4096)}`);
+    const crc32 = (Bun.hash.crc32(data) ^ 1) >>> 0;
+    await Bun.write(path, createZip([{ data, method: 8, name: 'rows.csv', crc32 }]));
+    const result = runCli('lines', path, '--chunk-size', '1024', '--where-eq', '0=2', '--limit', '1');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('2,match\n');
+    const prefetched = runCli('lines', path, '--chunk-size', '65536', '--where-eq', '0=4', '--limit', '1');
+    expect(prefetched.exitCode).toBe(0);
+    expect(prefetched.stdout.toString()).toBe('4,early\n');
+    expectCommandError(runCli('lines', path, '--chunk-size', '65536', '--where-eq', '0=2'), 'CRC32');
+  });
+
   test('rejects auto-detected ZIP input from a pipe', () => {
     const result = Bun.spawnSync({
       cmd: [process.execPath, cliPath, 'count', '/dev/stdin', '--chunk-size', '1'],

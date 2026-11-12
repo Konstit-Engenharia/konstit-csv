@@ -354,6 +354,41 @@ describe('compressed CSV file streams', () => {
     expect((await rejectedError(csv.count(path, options))).message).toContain('CRC32');
   });
 
+  test('drains pending DEFLATE output on one-byte reads and rejects a missing end marker', async () => {
+    const data = Buffer.from('1,abc\n'.repeat(3));
+    const zip = Buffer.from(createZip([{ data, method: 8, name: 'data.csv' }]));
+    const path = join(temporaryDirectory, 'pending-match.zip');
+    await Bun.write(path, zip);
+    const options = { chunkSize: 1, delimiter: ',', encoding: 'utf8' } as const;
+    expect((await Array.fromAsync(csv.rows(path, options))).flat()).toEqual(Array.from({ length: 3 }, () => ['1', 'abc']));
+
+    const centralOffset = zip.readUInt32LE(zip.length - 6);
+    const truncatedSize = zip.readUInt32LE(18) - 1;
+    zip.writeUInt32LE(truncatedSize, 18);
+    zip.writeUInt32LE(truncatedSize, centralOffset + 20);
+    await Bun.write(path, zip);
+    expect((await rejectedError(csv.count(path, options))).message).toContain('truncated');
+  });
+
+  test('retained ZIP batches and materialized rows own their fields across reads', async () => {
+    const path = join(temporaryDirectory, 'retained.zip');
+    const chunkSize = 65_536;
+    const values = ['a', 'b', 'c', 'd'].map((letter) => letter.repeat(chunkSize - 3));
+    const data = Buffer.from(values.map((value) => `1,${value}\n`).join(''));
+    await Bun.write(path, createZip([{ data, method: 8, name: 'data.csv' }]));
+    const options = { chunkSize, delimiter: ',', encoding: 'latin1' } as const;
+    const batches = await Array.fromAsync(csv.batches(path, options));
+    try {
+      expect(batches.map((batch) => batch.fieldBuffer(0, 1)?.toString())).toEqual(values);
+    } finally {
+      for (const batch of batches) {
+        batch.close();
+      }
+    }
+    const rows = (await Array.fromAsync(csv.rows(path, options))).flat();
+    expect(rows.map((row) => row[1])).toEqual(values);
+  });
+
   test('captures nested ZIP settings before iteration without freezing the caller', async () => {
     const compression = { entry: 'nested/input.tsv', format: 'zip' as const, maxDecompressedBytes: source.byteLength };
     const options = { chunkSize: 1, compression, delimiter: ';' };

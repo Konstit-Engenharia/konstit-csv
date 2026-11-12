@@ -124,13 +124,6 @@ FetchContent_Declare(
   SYSTEM
 )
 FetchContent_MakeAvailable(abseil highway re2 unordered_dense)
-set(CSV_NATIVE_BUILD_TESTING "${BUILD_TESTING}")
-set(BUILD_TESTING OFF)
-FetchContent_MakeAvailable(zlib_ng)
-set(BUILD_TESTING "${CSV_NATIVE_BUILD_TESTING}")
-set_target_properties(zlib-ng PROPERTIES
-  C_VISIBILITY_PRESET hidden
-)
 
 add_library(csv_native SHARED
   native/csv_parser.cpp
@@ -172,7 +165,18 @@ csv_native_target_options(csv_native)
 target_compile_options(csv_native PRIVATE -fno-exceptions -fno-rtti)
 target_link_options(csv_native PRIVATE -fno-exceptions -fno-rtti)
 find_package(Threads REQUIRED)
-target_link_libraries(csv_native PRIVATE hwy re2::re2 unordered_dense::unordered_dense zlib-ng::zlibstatic Threads::Threads)
+target_link_libraries(csv_native PRIVATE hwy re2::re2 unordered_dense::unordered_dense Threads::Threads)
+if(APPLE AND CSV_NATIVE_ARCH STREQUAL "arm64")
+  target_compile_definitions(csv_native PRIVATE CSV_USE_APPLE_ZLIB)
+  target_link_libraries(csv_native PRIVATE z)
+else()
+  set(CSV_NATIVE_BUILD_TESTING "${BUILD_TESTING}")
+  set(BUILD_TESTING OFF)
+  FetchContent_MakeAvailable(zlib_ng)
+  set(BUILD_TESTING "${CSV_NATIVE_BUILD_TESTING}")
+  set_target_properties(zlib-ng PROPERTIES C_VISIBILITY_PRESET hidden)
+  target_link_libraries(csv_native PRIVATE zlib-ng::zlibstatic)
+endif()
 
 set_target_properties(csv_native PROPERTIES
   CXX_VISIBILITY_PRESET hidden

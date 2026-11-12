@@ -56,13 +56,34 @@ CSV_NATIVE_LIBRARY_PATH="$PWD/prebuilds/darwin-arm64/libcsv_native.dylib" \
 On an Apple M4 running macOS arm64 and Bun 1.4.4, both versions returned 29,093,533 records on every run.
 The table shows the mean and sample standard deviation over five timed runs per version.
 
-| ZIP count implementation  |        Wall time |        Peak RSS |
-| ------------------------- | ---------------: | --------------: |
-| Serial reader (`e169164`) | 12.454 ± 0.044 s | 103.3 ± 4.8 MiB |
-| Two-buffer reader         |  8.421 ± 0.102 s |  47.9 ± 0.6 MiB |
+| ZIP count implementation      |        Wall time |        Peak RSS |
+| ----------------------------- | ---------------: | --------------: |
+| Serial reader (`e169164`)     | 12.454 ± 0.044 s | 103.3 ± 4.8 MiB |
+| Two-buffer reader (`0de6952`) |  8.421 ± 0.102 s |  47.9 ± 0.6 MiB |
 
 The producer inflates and CRC-checks the next chunk while the CSV parser scans the current one.
 Copying each chunk into a reusable parser buffer keeps the background thread's memory independent of Bun's heap.
+
+## ZIP file APIs and CLI
+
+On the same Apple M4 and archive, the following comparison uses the mean of three full scans per version,
+with each version loading its own native binary. The baseline is `0de6952`, which already overlaps ZIP reads
+with counting. The updated reader also overlaps decompression with row and batch parsing, and uses macOS
+system zlib on arm64. Linux x64 and macOS x64 use zlib-ng; these timings apply only to the M4.
+
+| Workload | Baseline | Updated | Less elapsed time | Output check |
+| -------- | -------: | ------: | ----------------: | ------------ |
+| CLI `count` | 8.176 s | 5.805 s | 29.0% | 29,093,533 records |
+| Filtered `csv.rows()` | 15.593 s | 8.061 s | 48.3% | 11,516,955 rows; 345,508,650 cells; 1,808,786,228 characters |
+| Filtered CLI `lines` | 14.785 s | 6.417 s | 56.6% | Identical SHA-256 on all six runs |
+
+The row benchmark uses the Latin-1 filters and materialization loop described below, reading the `example.csv`
+entry in 1 MiB chunks. The CLI output benchmark includes the cost of hashing the projected records:
+
+```sh
+set -o pipefail
+bun --silent src/cli.ts lines corpus/large/example.csv.zip --where-eq 19=EX --columns 0,19 | shasum -a 256
+```
 
 ## Full-file filtered materialization
 

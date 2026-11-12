@@ -325,7 +325,7 @@ SOFTWARE.
 - Source: https://github.com/zlib-ng/zlib-ng
 - Version: 2.3.3
 - License: zlib License
-- Use in this project: compiled into the distributed native library for streaming ZIP DEFLATE and CRC32 processing.
+- Use in this project: compiled into the Linux x64 and macOS x64 native libraries for ZIP DEFLATE and CRC32 processing. The macOS arm64 library uses the operating system's zlib.
 
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler
 

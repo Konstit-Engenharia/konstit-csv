@@ -1,4 +1,12 @@
+#ifdef CSV_USE_APPLE_ZLIB
+#include <zlib.h>
+using zip_inflate_stream = z_stream;
+#define CSV_ZLIB(name) name
+#else
 #include <zlib-ng.h>
+using zip_inflate_stream = zng_stream;
+#define CSV_ZLIB(name) zng_##name
+#endif
 
 #include <algorithm>
 #include <array>
@@ -181,7 +189,7 @@ public:
     }
     ahead_->capacity = capacity;
     ahead_->buffer.reset(new (std::nothrow) uint8_t[capacity]);
-    // A count can still run synchronously if a spare buffer or thread is unavailable.
+    // Continue reading synchronously if a spare buffer or thread is unavailable.
     const auto produce = [](void* self) -> void* {
       static_cast<zip_reader*>(self)->produce_chunks();
       return nullptr;
@@ -589,9 +597,9 @@ private:
     }
 
     compressed_remaining_ = entry_.compressed_size;
-    crc32_ = zng_crc32(0, nullptr, 0);
+    crc32_ = 0;
     if (entry_.method == deflate_method) {
-      const int result = zng_inflateInit2(&inflate_stream_, -MAX_WBITS);
+      const int result = CSV_ZLIB(inflateInit2)(&inflate_stream_, -MAX_WBITS);
       if (result != Z_OK) {
         return fail("failed to initialize ZIP DEFLATE decoder");
       }
@@ -601,7 +609,7 @@ private:
   }
 
   uint64_t read_stored(uint8_t* output, uint32_t output_capacity) {
-    const size_t requested = static_cast<size_t>(std::min<uint64_t>(output_capacity, compressed_remaining_));
+    const auto requested = static_cast<uint32_t>(std::min<uint64_t>(output_capacity, compressed_remaining_));
     if (requested != 0 && std::fread(output, 1, requested, file_) != requested) {
       fail("ZIP entry data is truncated");
       return 0;
@@ -622,13 +630,14 @@ private:
     uint64_t written = 0;
 
     while (inflate_stream_.avail_out != 0 && status_ == zip_reader_status::reading) {
-      if (inflate_stream_.avail_in == 0 && !fill_inflate_input()) {
+      // The final input byte may leave a pending match or end marker in the inflater.
+      if (inflate_stream_.avail_in == 0 && compressed_remaining_ != 0 && !fill_inflate_input()) {
         break;
       }
 
       const uint32_t input_before = inflate_stream_.avail_in;
       const uint32_t output_before = inflate_stream_.avail_out;
-      const int result = zng_inflate(&inflate_stream_, Z_NO_FLUSH);
+      const int result = CSV_ZLIB(inflate)(&inflate_stream_, Z_NO_FLUSH);
       const uint32_t produced = output_before - inflate_stream_.avail_out;
       if (!account_output(output + written, produced)) {
         return 0;
@@ -656,9 +665,6 @@ private:
   }
 
   bool fill_inflate_input() {
-    if (compressed_remaining_ == 0) {
-      return fail("ZIP DEFLATE stream is truncated");
-    }
     const size_t requested = static_cast<size_t>(std::min<uint64_t>(inflate_input_.size(), compressed_remaining_));
     if (std::fread(inflate_input_.data(), 1, requested, file_) != requested) {
       return fail("ZIP entry data is truncated");
@@ -669,11 +675,11 @@ private:
     return true;
   }
 
-  bool account_output(const uint8_t* output, uint64_t length) {
+  bool account_output(const uint8_t* output, uint32_t length) {
     if (length > maximum_output_size_ - output_size_) {
       return fail("ZIP entry exceeds the maximum decompressed byte count");
     }
-    crc32_ = zng_crc32(crc32_, output, static_cast<size_t>(length));
+    crc32_ = static_cast<uint32_t>(CSV_ZLIB(crc32)(crc32_, output, length));
     output_size_ += length;
     return true;
   }
@@ -693,7 +699,7 @@ private:
 
   void close_inflate() {
     if (inflate_initialized_) {
-      zng_inflateEnd(&inflate_stream_);
+      CSV_ZLIB(inflateEnd)(&inflate_stream_);
       inflate_initialized_ = false;
     }
   }
@@ -719,7 +725,7 @@ private:
   uint64_t maximum_output_size_ = 0;
   uint32_t maximum_compression_ratio_ = 0;
   uint32_t crc32_ = 0;
-  zng_stream inflate_stream_{};
+  zip_inflate_stream inflate_stream_{};
   bool inflate_initialized_ = false;
   std::array<uint8_t, inflate_input_size> inflate_input_{};
 };

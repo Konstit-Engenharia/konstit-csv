@@ -5,7 +5,7 @@ import {
   materializeFileWithCsvParser,
 } from './common.ts';
 
-type BenchmarkTarget = 'csv-parser' | 'konstit-csv';
+type BenchmarkTarget = 'csv-parser' | 'konstit-csv' | 'konstit-csv-zip';
 
 const FILE = Bun.env['CSV_BENCH_FILE'] ?? 'corpus/large/example.csv';
 const CHUNK_SIZE = Number(Bun.env['CSV_BENCH_CHUNK_SIZE'] ?? 1 * 1024 * 1024);
@@ -18,6 +18,8 @@ const bytes = statSync(FILE).size;
 const target = parseTarget(Bun.argv[2]);
 const result = target === 'konstit-csv'
   ? await materializeWithKonstitCsv()
+  : target === 'konstit-csv-zip'
+  ? await materializeWithKonstitCsvZip()
   : await materializeFileWithCsvParser(FILE, CHUNK_SIZE, DELIMITER, 'iso88591');
 
 if (result.rows === 0) {
@@ -66,8 +68,42 @@ async function materializeWithKonstitCsv(): Promise<CsvParserMaterializeStats> {
   };
 }
 
+async function materializeWithKonstitCsvZip(): Promise<CsvParserMaterializeStats> {
+  let cells = 0;
+  let chars = 0;
+  let rows = 0;
+
+  for await (
+    const batch of csv.rows(`${FILE}.zip`, {
+      chunkSize: CHUNK_SIZE,
+      delimiter: DELIMITER,
+      encoding: 'latin1',
+      where: csv.all(
+        csv.column(5).equals('02'),
+        csv.column(19).doesNotEqual('EX'),
+      ),
+      reuseArrays: true,
+      compression: { format: 'zip', entry: 'example.csv' },
+    })
+  ) {
+    rows += batch.length;
+    for (const row of batch) {
+      cells += row.length;
+      for (const value of row) {
+        chars += value.length;
+      }
+    }
+  }
+
+  return {
+    cells,
+    chars,
+    rows,
+  };
+}
+
 function parseTarget(value: string | undefined): BenchmarkTarget {
-  if (value === 'csv-parser' || value === 'konstit-csv') {
+  if (value === 'csv-parser' || value === 'konstit-csv' || value === 'konstit-csv-zip') {
     return value;
   }
   throw new Error('target must be csv-parser or konstit-csv');

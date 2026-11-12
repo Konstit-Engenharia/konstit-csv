@@ -103,18 +103,16 @@ export async function* readZipEntryChunks(
   path: string,
   options: CsvZipCompression,
   chunkSize: number,
-  forCount = false,
+  readAhead = false,
 ): AsyncGenerator<Uint8Array, void> {
   const outputSize = positiveUint32(chunkSize, 'ZIP output chunk size');
   using reader = new NativeZipReader(path, options);
-  // Counts consume the output before advancing. Other readers may retain their chunks.
-  const countBuffer = forCount ? new Uint8Array(outputSize) : undefined;
-  if (forCount) {
-    reader.enableReadAhead(outputSize);
-  }
+  // File parsers consume the chunk before advancing. Raw byte iterators can retain it.
+  const reusableBuffer = readAhead ? new Uint8Array(outputSize) : undefined;
+  let startProducer = readAhead;
 
   while (true) {
-    const output = countBuffer ?? new Uint8Array(outputSize);
+    const output = reusableBuffer ?? new Uint8Array(outputSize);
     const written = reader.read(output);
     const status = reader.status;
     if (status === ZIP_READER_ERROR) {
@@ -131,6 +129,11 @@ export async function* readZipEntryChunks(
     }
     if (written === 0) {
       throw new Error('native ZIP reader made no progress');
+    }
+    // A sample or a limited CLI read can finish after the first chunk.
+    if (startProducer) {
+      reader.enableReadAhead(outputSize);
+      startProducer = false;
     }
   }
 }
