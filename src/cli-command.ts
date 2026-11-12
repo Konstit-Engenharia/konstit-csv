@@ -28,14 +28,18 @@ interface CliOutput {
   write(chunk: string): Promise<number>;
 }
 
-export async function runCli(arguments_: readonly string[], output: CliOutput): Promise<number> {
+export async function runCli(arguments_: readonly string[], customOutput?: CliOutput): Promise<number> {
   const result = csvCommand.tryParse(arguments_);
+  if (result.type === 'display') {
+    return csvCommand.runParsed(result, customOutput && { stdout: (text) => customOutput.log(text.trimEnd()) });
+  }
+  const output: CliOutput = customOutput ?? {
+    log: console.log,
+    error: console.error,
+    write: (chunk) => Bun.write(Bun.stdout, chunk),
+  };
   if (result.type === 'error') {
     return usageError(output, result.error.message, `${result.error.commandPath.join(' ')} --help`);
-  }
-  if (result.type === 'display') {
-    output.log(result.output.trimEnd());
-    return 0;
   }
   const { subcommand } = result.value;
   switch (subcommand.name) {

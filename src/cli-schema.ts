@@ -74,25 +74,17 @@ const byteSize = parsers.custom(parsers.byteSize.label, (input) => {
 });
 const positiveByteSize = parsers.refine(byteSize, (bytes) => bytes > 0, 'expected at least 1 byte');
 const chunkSize = parsers.refine(positiveByteSize, (bytes) => bytes <= 64 * 1024 * 1024, 'expected at most 64 MiB');
-const inputDelimiter = parsers.refine(
-  parsers.string,
-  (value) => value === 'auto' || isSafeDelimiter(value),
-  'expected one safe ASCII character or auto',
-);
-const outputDelimiter = parsers.refine(parsers.string, isSafeDelimiter, 'expected one safe ASCII character');
+const inputDelimiter = parsers.regex(/^(?:auto|[\p{ASCII}--["\r\n]])$/v);
+const outputDelimiter = parsers.regex(/^[\p{ASCII}--["\r\n]]$/v);
 const path = positional('path', parsers.string, { required: true, valueHint: 'file', describe: 'Input file path' });
 const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => value.length > 0, 'expected a non-empty ZIP entry name'), {
   valueName: 'PATH',
   describe: 'Select an entry inside a ZIP archive',
 });
 
-function isSafeDelimiter(value: string): boolean {
-  return value.length === 1 && value.charCodeAt(0) <= 0x7f && value !== '"' && value !== '\r' && value !== '\n';
-}
-
 const fileArgs = [
   path,
-  option('delimiter', inputDelimiter, { describe: 'One safe ASCII character or auto (default: auto)' }),
+  option('delimiter', inputDelimiter, { valueName: 'CHAR|auto', describe: 'One safe ASCII character or auto (default: auto)' }),
   option('encoding', encodingParser, {
     valueName: 'ENCODING',
     describe: 'Input encoding or decoder alias (default: auto)',
@@ -191,6 +183,7 @@ const lines = command('lines', {
     ...fileArgs,
     flag('json', { describe: 'Emit one JSON string array per record (NDJSON)' }),
     option('output-delimiter', outputDelimiter, {
+      valueName: 'CHAR',
       default: ',',
       describe: 'One safe ASCII output delimiter (default: comma). Incompatible with --json',
     }),

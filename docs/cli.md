@@ -21,6 +21,7 @@ Save it as `data.csv` before trying the examples.
 ## Commands and help
 
 Run `csv` without arguments to list the subcommands. Use the full subcommand name.
+Help uses color in interactive terminals. Redirecting stdout, setting `NO_COLOR`, or using `TERM=dumb` produces plain text.
 
 ```sh
 bunx @konstit/csv --help

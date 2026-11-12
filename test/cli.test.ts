@@ -1077,6 +1077,30 @@ describe('csv CLI', () => {
     expect(await runCli()).toEqual(result);
   });
 
+  test.each([
+    { term: 'xterm-256color', noColor: undefined, styled: true },
+    { term: 'xterm-256color', noColor: '1', styled: false },
+    { term: 'dumb', noColor: undefined, styled: false },
+  ])('terminal help styling with TERM=$term and NO_COLOR=$noColor', async ({ term, noColor, styled }) => {
+    const env = { ...process.env, TERM: term, NO_COLOR: noColor };
+    const closed = Promise.withResolvers<void>();
+    const chunks: Uint8Array[] = [];
+    await using child = Bun.spawn([process.execPath, cliPath, 'count', '--help'], {
+      env,
+      terminal: {
+        name: term,
+        data: (_, data) => chunks.push(data),
+        exit: () => closed.resolve(),
+      },
+    });
+    const [exitCode,] = await Promise.all([child.exited, closed.promise]);
+    const help = Buffer.concat(chunks).toString();
+    const plain = Bun.stripANSI(help);
+    expect(exitCode).toBe(0);
+    expect(plain).toContain('Usage: csv count');
+    expect(help !== plain).toBe(styled);
+  });
+
   test('shows every count option in count help', async () => {
     const result = await runCli('count', '--help');
     const stdout = result.stdout.toString();
@@ -1203,7 +1227,7 @@ describe('csv CLI', () => {
       'auto',
     );
 
-    expectUsageError(result, 'invalid value \'auto\' for \'--output-delimiter\': expected one safe ASCII character', 'lines');
+    expectUsageError(result, 'invalid value \'auto\' for \'--output-delimiter\': expected value matching', 'lines');
   });
 
   test('rejects a JSON output delimiter', async () => {
@@ -1272,12 +1296,12 @@ describe('csv CLI', () => {
   }[] = [
     {
       arguments: ['--delimiter', '||'],
-      message: 'invalid value \'||\' for \'--delimiter\': expected one safe ASCII character or auto',
+      message: 'invalid value \'||\' for \'--delimiter\': expected value matching',
       name: 'a multi-character delimiter',
     },
     {
       arguments: ['--delimiter', '"'],
-      message: `invalid value '"' for '--delimiter': expected one safe ASCII character or auto`,
+      message: `invalid value '"' for '--delimiter': expected value matching`,
       name: 'a structural quote delimiter',
     },
     {
