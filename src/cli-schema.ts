@@ -6,7 +6,6 @@ import {
   option,
   parsers,
   positional,
-  type ValueParser,
 } from '@konstit/cli';
 import { resolveInputEncoding } from './normalize.js';
 import type { CsvFileEncoding } from './types.js';
@@ -69,6 +68,12 @@ const encodingParser = {
 
 const compressionFormats = ['auto', 'none', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd', 'zip'] as const;
 const positiveUint32 = parsers.range(1, 0xffff_ffff, { integer: true });
+const byteSize = parsers.custom(parsers.byteSize.label, (input) => {
+  const bare = Number(input);
+  return parsers.byteSize.parse(Number.isNaN(bare) ? input : `${bare}B`);
+});
+const positiveByteSize = parsers.refine(byteSize, (bytes) => bytes > 0, 'expected at least 1 byte');
+const chunkSize = parsers.refine(positiveByteSize, (bytes) => bytes <= 64 * 1024 * 1024, 'expected at most 64 MiB');
 const inputDelimiter = parsers.refine(
   parsers.string,
   (value) => value === 'auto' || isSafeDelimiter(value),
@@ -80,15 +85,6 @@ const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => v
   valueName: 'PATH',
   describe: 'Select an entry inside a ZIP archive',
 });
-
-function byteSize(maximum = Number.MAX_SAFE_INTEGER): ValueParser<number> {
-  const range = parsers.range(1, maximum, { integer: true });
-  return parsers.custom('BYTES', (input) => {
-    const unitless = Number(input);
-    const bytes = Number.isNaN(unitless) ? parsers.byteSize.parse(input) : unitless;
-    return range.parse(String(bytes));
-  });
-}
 
 function isSafeDelimiter(value: string): boolean {
   return value.length === 1 && value.charCodeAt(0) <= 0x7f && value !== '"' && value !== '\r' && value !== '\n';
@@ -105,7 +101,7 @@ const fileArgs = [
     valueName: 'FORMAT',
     describe: `Input compression (default: auto). Choices: ${compressionFormats.join(', ')}`,
   }),
-  option('chunk-size', byteSize(64 * 1024 * 1024), {
+  option('chunk-size', chunkSize, {
     describe: 'Read 1 B through 64 MiB per chunk (default: 1MiB). Example: 256KiB',
   }),
   zipEntry,
@@ -113,7 +109,7 @@ const fileArgs = [
     valueName: 'RATIO',
     describe: 'Maximum ZIP expansion ratio, an integer from 1 through 4294967295',
   }),
-  option('max-decompressed-bytes', byteSize(), { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
+  option('max-decompressed-bytes', positiveByteSize, { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
   flag('strict', { describe: 'Enable strict RFC 4180 validation' }),
   option('fixed-columns', positiveUint32, { valueName: 'COUNT', describe: 'Require this positive field count in strict mode' }),
   option('columns', parsers.string, {

@@ -203,16 +203,17 @@ describe('csv CLI', () => {
 
   test('accepts unitless, SI, and IEC chunk sizes and enforces the byte limit after conversion', async () => {
     const path = csvFixturePath('rfc4180/simple-lf.csv');
-    for (const size of ['0x400', '1.5KB', '1.5KiB']) {
+    for (const size of ['1024', '0x400', '1.5KB', '1.5KiB']) {
       const result = await runCli('count', path, '--chunk-size', size);
       expect(result.exitCode).toBe(0);
       expect(result.stdout.toString()).toBe('2\n');
     }
     expectUsageError(
       await runCli('count', path, '--chunk-size', '65MiB'),
-      'invalid value \'65MiB\' for \'--chunk-size\': expected an integer from 1 to 67108864',
+      'invalid value \'65MiB\' for \'--chunk-size\': expected at most 64 MiB',
     );
     expectUsageError(await runCli('count', path, '--chunk-size', '0.1B'), 'invalid value \'0.1B\' for \'--chunk-size\'');
+    expectUsageError(await runCli('count', path, '--chunk-size', '1.5'), 'invalid value \'1.5\' for \'--chunk-size\'');
     expectUsageError(await runCli('count', path, '--chunk-size', '8PiB'), 'invalid value \'8PiB\' for \'--chunk-size\'');
   });
 
@@ -469,8 +470,10 @@ describe('csv CLI', () => {
     expect(exact.stdout.toString()).toBe('4096\n');
     expectUsageError(
       await runCli(...args, '0B'),
-      'invalid value \'0B\' for \'--max-decompressed-bytes\': expected an integer from 1 to 9007199254740991',
+      'invalid value \'0B\' for \'--max-decompressed-bytes\': expected at least 1 byte',
     );
+    expect((await runCli(...args, '9007199254740991')).exitCode).toBe(0);
+    expectUsageError(await runCli(...args, '9007199254740992'), 'invalid value \'9007199254740992\' for \'--max-decompressed-bytes\'');
   });
 
   test('supports latin1 encoding', async () => {
@@ -1282,12 +1285,12 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--chunk-size', '0'],
-      message: 'invalid value \'0\' for \'--chunk-size\': expected an integer from 1 to 67108864',
+      message: 'invalid value \'0\' for \'--chunk-size\': expected at least 1 byte',
       name: 'a zero chunk size',
     },
     {
       arguments: ['--chunk-size', '67108865'],
-      message: 'invalid value \'67108865\' for \'--chunk-size\': expected an integer from 1 to 67108864',
+      message: 'invalid value \'67108865\' for \'--chunk-size\': expected at most 64 MiB',
       name: 'an excessive chunk size',
     },
     {
