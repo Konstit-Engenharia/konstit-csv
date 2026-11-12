@@ -8,18 +8,17 @@ import {
   positional,
 } from '@konstit/cli';
 import { resolveInputEncoding } from './normalize.js';
-import type { CsvFileEncoding } from './types.js';
 
-const encodingNames = [
+const encodings = parsers.enum([
   'auto',
-  'utf8',
-  'latin1',
+  { value: 'utf8', aliases: ['utf-8'] },
+  { value: 'latin1', aliases: ['iso88591', 'iso-8859-1'] },
   'utf-16le',
   'utf-16be',
   'windows-874',
   'windows-1250',
   'windows-1251',
-  'windows-1252',
+  { value: 'windows-1252', aliases: ['cp1252'] },
   'windows-1253',
   'windows-1254',
   'windows-1255',
@@ -49,20 +48,20 @@ const encodingNames = [
   'koi8-r',
   'koi8-u',
   'macintosh',
-  'shift_jis',
+  { value: 'shift_jis', aliases: ['sjis'] },
   'x-mac-cyrillic',
   'x-user-defined',
-] as const satisfies readonly CsvFileEncoding[];
-const encodings = parsers.enum(encodingNames);
+]);
 const encodingParser = {
   ...encodings,
   parse(label: string) {
-    if (label === 'auto') {
+    try {
       return encodings.parse(label);
+    } catch {
+      // Bun recognizes additional decoder labels, including case and whitespace variants.
+      const encoding = resolveInputEncoding(label);
+      return encodings.parse(typeof encoding === 'string' ? encoding : encoding.encoding);
     }
-    // Resolve decoder aliases using the same Latin-1 and Windows-1252 rules as the CSV API.
-    const encoding = resolveInputEncoding(label);
-    return encodings.parse(typeof encoding === 'string' ? encoding : encoding.encoding);
   },
 };
 
@@ -169,8 +168,8 @@ Explicit ZIP options require --compression zip and --zip-entry.
 Filters use original input column indexes. Friendly filter clauses use AND.
 Strict mode cannot use filter options.
 
-Encodings: ${encodingNames.join(', ')}
-Decoder aliases such as utf-8, iso-8859-1, cp1252, and sjis are also accepted.`;
+Encodings: ${encodings.choices?.map(({ value, aliases }) => aliases ? `${value} (${aliases.join(', ')})` : value).join(', ')}
+Other Bun TextDecoder labels are also accepted.`;
 const count = command('count', {
   ...fileRelations,
   about: 'Count CSV records, including the header row',

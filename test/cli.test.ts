@@ -510,14 +510,16 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
-  test('accepts decoder aliases and distinguishes native Latin-1 from Windows-1252', async () => {
-    const path = join(temporaryDirectory, 'windows-1252.csv');
-    const windows = await runCli('lines', path, '--encoding', '  CP1252  ');
-    const latin = await runCli('lines', path, '--encoding', 'ISO-8859-1');
-    expect(windows.exitCode).toBe(0);
-    expect(latin.exitCode).toBe(0);
-    expect(windows.stdout.toString()).toContain('1,€\n');
-    expect(latin.stdout.toString()).toContain('1,\u0080\n');
+  test.each([
+    ['cp1252', '€'],
+    ['  CP1252  ', '€'],
+    ['csisolatin1', '€'],
+    ['iso88591', '\u0080'],
+    ['ISO-8859-1', '\u0080'],
+  ])('decodes byte 0x80 with encoding label "%s"', async (label, character) => {
+    const result = await runCli('lines', join(temporaryDirectory, 'windows-1252.csv'), '--encoding', label);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain(`1,${character}\n`);
   });
 
   test('supports strict validation and a fixed column count', async () => {
@@ -1081,8 +1083,8 @@ describe('csv CLI', () => {
 
     expect(result.exitCode).toBe(0);
     expect(stdout).toContain('Usage: csv count [OPTIONS] <PATH>');
-    expect(stdout).toContain('shift_jis');
-    expect(stdout).toContain('windows-1252');
+    expect(stdout).toContain('shift_jis (sjis)');
+    expect(stdout).toContain('windows-1252 (cp1252)');
     expect(stdout).toContain('deflate-raw');
     expect(stdout).toContain('256KiB');
     for (
