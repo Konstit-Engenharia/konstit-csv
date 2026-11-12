@@ -7,6 +7,7 @@ import {
   parsers,
   positional,
 } from '@konstit/cli';
+import packageInfo from '../package.json';
 import { resolveInputEncoding } from './normalize.js';
 
 const encodings = parsers.enum([
@@ -214,6 +215,7 @@ export type LinesArguments = Infer<typeof lines>;
 
 export const csvCommand = command('csv', {
   about: 'Inspect, count, and stream CSV records',
+  version: packageInfo.version,
   defaultToHelp: true,
   subcommandRequired: true,
   subcommands: [
