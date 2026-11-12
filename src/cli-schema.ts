@@ -68,13 +68,7 @@ const encodingParser = {
 };
 
 const compressionFormats = ['auto', 'none', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd', 'zip'] as const;
-const numericValue = parsers.map(parsers.string, Number);
-const positiveUint32 = boundedInteger(numericValue, 1, 0xffff_ffff);
-const byteSize = parsers.custom('BYTES', (input) => {
-  // A unitless number is a byte count. Unit suffixes use the framework's SI and IEC scales.
-  const bytes = Number(input);
-  return Number.isNaN(bytes) ? parsers.byteSize.parse(input) : bytes;
-});
+const positiveUint32 = parsers.range(1, 0xffff_ffff, { integer: true });
 const inputDelimiter = parsers.refine(
   parsers.string,
   (value) => value === 'auto' || isSafeDelimiter(value),
@@ -87,10 +81,13 @@ const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => v
   describe: 'Select an entry inside a ZIP archive',
 });
 
-function boundedInteger(parser: ValueParser<number>, minimum: number, maximum = Number.MAX_SAFE_INTEGER): ValueParser<number> {
-  const range = parsers.range(minimum, maximum, { integer: true });
-  // The integer range expects decimal text, so resolve numeric spellings and byte units first.
-  return parsers.map(parser, (value) => range.parse(String(value)));
+function byteSize(maximum = Number.MAX_SAFE_INTEGER): ValueParser<number> {
+  const range = parsers.range(1, maximum, { integer: true });
+  return parsers.custom('BYTES', (input) => {
+    const unitless = Number(input);
+    const bytes = Number.isNaN(unitless) ? parsers.byteSize.parse(input) : unitless;
+    return range.parse(String(bytes));
+  });
 }
 
 function isSafeDelimiter(value: string): boolean {
@@ -108,7 +105,7 @@ const fileArgs = [
     valueName: 'FORMAT',
     describe: `Input compression (default: auto). Choices: ${compressionFormats.join(', ')}`,
   }),
-  option('chunk-size', boundedInteger(byteSize, 1, 64 * 1024 * 1024), {
+  option('chunk-size', byteSize(64 * 1024 * 1024), {
     describe: 'Read 1 B through 64 MiB per chunk (default: 1MiB). Example: 256KiB',
   }),
   zipEntry,
@@ -116,7 +113,7 @@ const fileArgs = [
     valueName: 'RATIO',
     describe: 'Maximum ZIP expansion ratio, an integer from 1 through 4294967295',
   }),
-  option('max-decompressed-bytes', boundedInteger(byteSize, 1), { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
+  option('max-decompressed-bytes', byteSize(), { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
   flag('strict', { describe: 'Enable strict RFC 4180 validation' }),
   option('fixed-columns', positiveUint32, { valueName: 'COUNT', describe: 'Require this positive field count in strict mode' }),
   option('columns', parsers.string, {
@@ -125,7 +122,7 @@ const fileArgs = [
   }),
   option('expected-header', parsers.string, { repeatable: true, describe: 'Expected header value. Repeat once per column in strict mode' }),
   flag('require-header', { describe: 'Require a header row in strict mode' }),
-  option('min-data-rows', boundedInteger(numericValue, 0), {
+  option('min-data-rows', parsers.range(0, Number.MAX_SAFE_INTEGER, { integer: true }), {
     valueName: 'COUNT',
     describe: 'Require at least this many data rows in strict mode',
   }),
@@ -201,7 +198,7 @@ const lines = command('lines', {
       default: ',',
       describe: 'One safe ASCII output delimiter (default: comma). Incompatible with --json',
     }),
-    option('limit', boundedInteger(numericValue, 1), {
+    option('limit', parsers.range(1, Number.MAX_SAFE_INTEGER, { integer: true }), {
       valueName: 'N',
       describe: 'Stop after matching output record N, numbered from 1. Incompatible with --min-data-rows',
     }),

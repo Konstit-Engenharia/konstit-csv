@@ -142,14 +142,32 @@ describe('csv CLI', () => {
     expect(await runCli('lines', '--help', '--limit', 'bad')).toEqual(await runCli('lines', '--help'));
   });
 
-  test('applies the last valid count and accepts equivalent numeric spellings', async () => {
+  test('accepts decimal counts and applies the last valid limit', async () => {
     const path = csvFixturePath('rfc4180/simple-lf.csv');
-    const result = await runCli('lines', path, '--strict', '--fixed-columns', '3.0', '--limit', '2e0', '--limit', '0x1');
+    const result = await runCli('lines', path, '--strict', '--fixed-columns', '03', '--limit', '2', '--limit', '+1');
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('id,name,total\n');
-    const count = await runCli('count', path, '--strict', '--min-data-rows=');
+    const count = await runCli('count', path, '--strict', '--min-data-rows=0');
     expect(count.exitCode).toBe(0);
     expect(count.stdout.toString()).toBe('2\n');
+  });
+
+  test('requires decimal integer text for counts, limits, and the compression ratio', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    for (
+      const [option, value,] of [
+        ['--fixed-columns', '3.0'],
+        ['--min-data-rows', ''],
+        ['--limit', '2e0'],
+        ['--max-compression-ratio', '0x10'],
+      ] as const
+    ) {
+      expectUsageError(
+        await runCli('lines', path, `${option}=${value}`, '--help'),
+        `invalid value '${value}' for '${option}': expected an integer`,
+        'lines',
+      );
+    }
   });
 
   test('counts every record in a CSV file', async () => {

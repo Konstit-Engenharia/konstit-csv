@@ -156,6 +156,9 @@ only NDJSON records to stdout and cannot be combined with
 | `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.                                               |
 | `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.                                        |
 
+`--fixed-columns`, `--min-data-rows`, `--limit`, and `--max-compression-ratio` take base-10 integers.
+For example, write `--limit 100` for one hundred records and `--min-data-rows 0` for a zero minimum.
+
 `--chunk-size` and `--max-decompressed-bytes` accept a bare byte count or a size with a unit.
 For example, `256KiB` equals `262144` bytes and `1.5MB` equals `1500000` bytes.
 Units are case-sensitive: `B`, `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB`, and `TiB`.
