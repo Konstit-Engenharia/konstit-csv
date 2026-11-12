@@ -192,7 +192,7 @@ describe('csv CLI', () => {
     }
     expectUsageError(
       await runCli('count', path, '--chunk-size', '65MiB'),
-      'invalid value \'65MiB\' for \'--chunk-size\': expected an integer from 1 through 67108864',
+      'invalid value \'65MiB\' for \'--chunk-size\': expected an integer from 1 to 67108864',
     );
     expectUsageError(await runCli('count', path, '--chunk-size', '0.1B'), 'invalid value \'0.1B\' for \'--chunk-size\'');
     expectUsageError(await runCli('count', path, '--chunk-size', '8PiB'), 'invalid value \'8PiB\' for \'--chunk-size\'');
@@ -451,7 +451,7 @@ describe('csv CLI', () => {
     expect(exact.stdout.toString()).toBe('4096\n');
     expectUsageError(
       await runCli(...args, '0B'),
-      'invalid value \'0B\' for \'--max-decompressed-bytes\': expected an integer from 1 through 9007199254740991',
+      'invalid value \'0B\' for \'--max-decompressed-bytes\': expected an integer from 1 to 9007199254740991',
     );
   });
 
@@ -1156,12 +1156,19 @@ describe('csv CLI', () => {
     expectUsageError(result, 'the following required arguments were not provided: <path>', 'lines');
   });
 
-  for (const value of ['0', '-1', '1.5', '9007199254740992']) {
+  for (
+    const [value, message,] of [
+      ['0', 'expected an integer from 1 to 9007199254740991'],
+      ['-1', 'expected an integer from 1 to 9007199254740991'],
+      ['1.5', 'expected an integer'],
+      ['9007199254740992', 'integer is outside the safe range'],
+    ] as const
+  ) {
     test(`rejects lines limit ${value}`, async () => {
       const limitArguments = value.startsWith('-') ? [`--limit=${value}`] : ['--limit', value];
       const result = await runCli('lines', csvFixturePath('rfc4180/simple-lf.csv'), ...limitArguments);
 
-      expectUsageError(result, `invalid value '${value}' for '--limit': expected an integer from 1 through 9007199254740991`, 'lines');
+      expectUsageError(result, `invalid value '${value}' for '--limit': ${message}`, 'lines');
     });
   }
 
@@ -1257,17 +1264,17 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--chunk-size', '0'],
-      message: 'invalid value \'0\' for \'--chunk-size\': expected an integer from 1 through 67108864',
+      message: 'invalid value \'0\' for \'--chunk-size\': expected an integer from 1 to 67108864',
       name: 'a zero chunk size',
     },
     {
       arguments: ['--chunk-size', '67108865'],
-      message: 'invalid value \'67108865\' for \'--chunk-size\': expected an integer from 1 through 67108864',
+      message: 'invalid value \'67108865\' for \'--chunk-size\': expected an integer from 1 to 67108864',
       name: 'an excessive chunk size',
     },
     {
       arguments: ['--strict', '--fixed-columns', '0'],
-      message: 'invalid value \'0\' for \'--fixed-columns\': expected an integer from 1 through 4294967295',
+      message: 'invalid value \'0\' for \'--fixed-columns\': expected an integer from 1 to 4294967295',
       name: 'a zero fixed column count',
     },
     {
@@ -1293,7 +1300,7 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--compression', 'zip', '--zip-entry', 'data.csv', '--max-compression-ratio', '1.5'],
-      message: 'invalid value \'1.5\' for \'--max-compression-ratio\': expected an integer from 1 through 4294967295',
+      message: 'invalid value \'1.5\' for \'--max-compression-ratio\': expected an integer',
       name: 'a fractional ZIP compression ratio',
     },
     {

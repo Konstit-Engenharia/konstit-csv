@@ -88,11 +88,9 @@ const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => v
 });
 
 function boundedInteger(parser: ValueParser<number>, minimum: number, maximum = Number.MAX_SAFE_INTEGER): ValueParser<number> {
-  return parsers.refine(
-    parser,
-    (value) => Number.isSafeInteger(value) && value >= minimum && value <= maximum,
-    `expected an integer from ${minimum} through ${maximum}`,
-  );
+  const range = parsers.range(minimum, maximum, { integer: true });
+  // The integer range expects decimal text, so resolve numeric spellings and byte units first.
+  return parsers.map(parser, (value) => range.parse(String(value)));
 }
 
 function isSafeDelimiter(value: string): boolean {
