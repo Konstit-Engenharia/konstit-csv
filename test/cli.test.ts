@@ -108,7 +108,7 @@ describe('csv CLI', () => {
         [['--max-decompressed-bytes', '1KiB'], 'argument group \'zip-limits\' requires \'--zip-entry\''],
         [['--zip-entry', 'rows.csv'], 'argument \'--zip-entry\' requires \'--compression\''],
         [['--compression', 'gzip', '--zip-entry', 'rows.csv'], '--zip-entry requires --compression zip'],
-        [['--compression', 'zip', '--zip-entry='], '--compression zip requires --zip-entry <path>'],
+        [['--compression', 'zip', '--zip-entry='], 'invalid value \'\' for \'--zip-entry\': expected a non-empty ZIP entry name'],
         [['--where', '{"column":1,"regex":false}'], '--where.regex must contain source and optional flags strings'],
         [['--where', '{"column":1}'], '--where must contain equals, in, notEquals, notIn, startsWith, or regex'],
       ] as const
@@ -123,6 +123,35 @@ describe('csv CLI', () => {
     parse.mockReturnValueOnce(Object.assign(Object.create({ equals: 'x' }), { column: 0 }));
     expectUsageError(await runCli('count', 'input.csv', '--where', '{"column":0}'), '--where is missing property: equals');
   });
+
+  test('an invalid option value fails before a later override or help request', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    for (const suffix of [['--limit', '1'], ['--help']]) {
+      expectUsageError(await runCli('lines', path, '--limit', 'bad', ...suffix), 'invalid value \'bad\' for \'--limit\'', 'lines');
+    }
+    expectUsageError(await runCli('count', path, '--where', '{', '--help'), 'invalid value \'{\' for \'--where\': expected valid JSON');
+    expectUsageError(
+      await runCli('count', path, '--where-in', '=x', '--help'),
+      'invalid value \'=x\' for \'--where-in\': expected KEY=VALUE',
+    );
+    expectUsageError(
+      await runCli('probe', path, '--zip-entry=', '--help'),
+      'invalid value \'\' for \'--zip-entry\': expected a non-empty ZIP entry name',
+      'probe',
+    );
+    expect(await runCli('lines', '--help', '--limit', 'bad')).toEqual(await runCli('lines', '--help'));
+  });
+
+  test('applies the last valid count and accepts equivalent numeric spellings', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    const result = await runCli('lines', path, '--strict', '--fixed-columns', '3.0', '--limit', '2e0', '--limit', '0x1');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('id,name,total\n');
+    const count = await runCli('count', path, '--strict', '--min-data-rows=');
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout.toString()).toBe('2\n');
+  });
+
   test('counts every record in a CSV file', async () => {
     const result = await runCli('count', csvFixturePath('rfc4180/simple-lf.csv'));
 
@@ -161,7 +190,10 @@ describe('csv CLI', () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout.toString()).toBe('2\n');
     }
-    expectUsageError(await runCli('count', path, '--chunk-size', '65MiB'), 'chunk size must be an integer from 1 through 67108864');
+    expectUsageError(
+      await runCli('count', path, '--chunk-size', '65MiB'),
+      'invalid value \'65MiB\' for \'--chunk-size\': expected an integer from 1 through 67108864',
+    );
     expectUsageError(await runCli('count', path, '--chunk-size', '0.1B'), 'invalid value \'0.1B\' for \'--chunk-size\'');
     expectUsageError(await runCli('count', path, '--chunk-size', '8PiB'), 'invalid value \'8PiB\' for \'--chunk-size\'');
   });
@@ -417,7 +449,10 @@ describe('csv CLI', () => {
     const exact = await runCli(...args, '16KiB');
     expect(exact.exitCode).toBe(0);
     expect(exact.stdout.toString()).toBe('4096\n');
-    expectUsageError(await runCli(...args, '0B'), 'maximum decompressed bytes must be an integer greater than or equal to 1');
+    expectUsageError(
+      await runCli(...args, '0B'),
+      'invalid value \'0B\' for \'--max-decompressed-bytes\': expected an integer from 1 through 9007199254740991',
+    );
   });
 
   test('supports latin1 encoding', async () => {
@@ -752,6 +787,12 @@ describe('csv CLI', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('1\n');
     expect(result.stderr.toString()).toBe('');
+  });
+
+  test('matches an empty friendly filter value', async () => {
+    const result = await runCli('count', join(temporaryDirectory, 'quoted.csv'), '--delimiter', ';', '--where-eq', '2=');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('1\n');
   });
 
   test('streams normalized CSV records', async () => {
@@ -1120,7 +1161,7 @@ describe('csv CLI', () => {
       const limitArguments = value.startsWith('-') ? [`--limit=${value}`] : ['--limit', value];
       const result = await runCli('lines', csvFixturePath('rfc4180/simple-lf.csv'), ...limitArguments);
 
-      expectUsageError(result, 'limit must be an integer greater than or equal to 1', 'lines');
+      expectUsageError(result, `invalid value '${value}' for '--limit': expected an integer from 1 through 9007199254740991`, 'lines');
     });
   }
 
@@ -1132,7 +1173,7 @@ describe('csv CLI', () => {
       'auto',
     );
 
-    expectUsageError(result, 'output delimiter must be one safe ASCII character; auto is not supported', 'lines');
+    expectUsageError(result, 'invalid value \'auto\' for \'--output-delimiter\': expected one safe ASCII character', 'lines');
   });
 
   test('rejects a JSON output delimiter', async () => {
@@ -1201,12 +1242,12 @@ describe('csv CLI', () => {
   }[] = [
     {
       arguments: ['--delimiter', '||'],
-      message: 'delimiter must be one safe ASCII character or auto',
+      message: 'invalid value \'||\' for \'--delimiter\': expected one safe ASCII character or auto',
       name: 'a multi-character delimiter',
     },
     {
       arguments: ['--delimiter', '"'],
-      message: 'delimiter must be one safe ASCII character or auto',
+      message: `invalid value '"' for '--delimiter': expected one safe ASCII character or auto`,
       name: 'a structural quote delimiter',
     },
     {
@@ -1216,17 +1257,17 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--chunk-size', '0'],
-      message: 'chunk size must be an integer from 1 through 67108864',
+      message: 'invalid value \'0\' for \'--chunk-size\': expected an integer from 1 through 67108864',
       name: 'a zero chunk size',
     },
     {
       arguments: ['--chunk-size', '67108865'],
-      message: 'chunk size must be an integer from 1 through 67108864',
+      message: 'invalid value \'67108865\' for \'--chunk-size\': expected an integer from 1 through 67108864',
       name: 'an excessive chunk size',
     },
     {
       arguments: ['--strict', '--fixed-columns', '0'],
-      message: 'fixed columns must be an integer greater than or equal to 1',
+      message: 'invalid value \'0\' for \'--fixed-columns\': expected an integer from 1 through 4294967295',
       name: 'a zero fixed column count',
     },
     {
@@ -1252,12 +1293,12 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--compression', 'zip', '--zip-entry', 'data.csv', '--max-compression-ratio', '1.5'],
-      message: 'maximum compression ratio must be an integer from 1 through 4294967295',
+      message: 'invalid value \'1.5\' for \'--max-compression-ratio\': expected an integer from 1 through 4294967295',
       name: 'a fractional ZIP compression ratio',
     },
     {
       arguments: ['--where', '{'],
-      message: '--where must be valid JSON',
+      message: 'invalid value \'{\' for \'--where\': expected valid JSON',
       name: 'invalid filter JSON',
     },
     {
@@ -1362,7 +1403,7 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--where-eq', '2'],
-      message: '--where-eq must use <column>=<value>',
+      message: 'invalid value \'2\' for \'--where-eq\': expected KEY=VALUE with a non-empty key',
       name: 'an equality flag without a value separator',
     },
     {

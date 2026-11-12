@@ -6,6 +6,7 @@ import {
   option,
   parsers,
   positional,
+  type ValueParser,
 } from '@konstit/cli';
 import { resolveInputEncoding } from './normalize.js';
 import type { CsvFileEncoding } from './types.js';
@@ -67,16 +68,40 @@ const encodingParser = {
 };
 
 const compressionFormats = ['auto', 'none', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd', 'zip'] as const;
+const numericValue = parsers.map(parsers.string, Number);
+const positiveUint32 = boundedInteger(numericValue, 1, 0xffff_ffff);
 const byteSize = parsers.custom('BYTES', (input) => {
   // A unitless number is a byte count. Unit suffixes use the framework's SI and IEC scales.
   const bytes = Number(input);
   return Number.isNaN(bytes) ? parsers.byteSize.parse(input) : bytes;
 });
+const inputDelimiter = parsers.refine(
+  parsers.string,
+  (value) => value === 'auto' || isSafeDelimiter(value),
+  'expected one safe ASCII character or auto',
+);
+const outputDelimiter = parsers.refine(parsers.string, isSafeDelimiter, 'expected one safe ASCII character');
 const path = positional('path', parsers.string, { required: true, valueHint: 'file', describe: 'Input file path' });
-const zipEntry = option('zip-entry', parsers.string, { valueName: 'PATH', describe: 'Select an entry inside a ZIP archive' });
+const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => value.length > 0, 'expected a non-empty ZIP entry name'), {
+  valueName: 'PATH',
+  describe: 'Select an entry inside a ZIP archive',
+});
+
+function boundedInteger(parser: ValueParser<number>, minimum: number, maximum = Number.MAX_SAFE_INTEGER): ValueParser<number> {
+  return parsers.refine(
+    parser,
+    (value) => Number.isSafeInteger(value) && value >= minimum && value <= maximum,
+    `expected an integer from ${minimum} through ${maximum}`,
+  );
+}
+
+function isSafeDelimiter(value: string): boolean {
+  return value.length === 1 && value.charCodeAt(0) <= 0x7f && value !== '"' && value !== '\r' && value !== '\n';
+}
+
 const fileArgs = [
   path,
-  option('delimiter', parsers.string, { describe: 'One safe ASCII character or auto (default: auto)' }),
+  option('delimiter', inputDelimiter, { describe: 'One safe ASCII character or auto (default: auto)' }),
   option('encoding', encodingParser, {
     valueName: 'ENCODING',
     describe: 'Input encoding or decoder alias (default: auto)',
@@ -85,33 +110,38 @@ const fileArgs = [
     valueName: 'FORMAT',
     describe: `Input compression (default: auto). Choices: ${compressionFormats.join(', ')}`,
   }),
-  option('chunk-size', byteSize, { describe: 'Read 1 B through 64 MiB per chunk (default: 1MiB). Example: 256KiB' }),
+  option('chunk-size', boundedInteger(byteSize, 1, 64 * 1024 * 1024), {
+    describe: 'Read 1 B through 64 MiB per chunk (default: 1MiB). Example: 256KiB',
+  }),
   zipEntry,
-  option('max-compression-ratio', parsers.string, {
+  option('max-compression-ratio', positiveUint32, {
     valueName: 'RATIO',
     describe: 'Maximum ZIP expansion ratio, an integer from 1 through 4294967295',
   }),
-  option('max-decompressed-bytes', byteSize, { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
+  option('max-decompressed-bytes', boundedInteger(byteSize, 1), { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
   flag('strict', { describe: 'Enable strict RFC 4180 validation' }),
-  option('fixed-columns', parsers.string, { valueName: 'COUNT', describe: 'Require this positive field count in strict mode' }),
+  option('fixed-columns', positiveUint32, { valueName: 'COUNT', describe: 'Require this positive field count in strict mode' }),
   option('columns', parsers.string, {
     valueName: 'INDEXES',
     describe: 'Zero-based column indexes in output order. The count command validates the indexes only',
   }),
   option('expected-header', parsers.string, { repeatable: true, describe: 'Expected header value. Repeat once per column in strict mode' }),
   flag('require-header', { describe: 'Require a header row in strict mode' }),
-  option('min-data-rows', parsers.string, { valueName: 'COUNT', describe: 'Require at least this many data rows in strict mode' }),
-  option('where', parsers.string, { valueName: 'JSON', describe: 'Advanced JSON can nest all, any, and not.' }),
-  option('where-eq', parsers.string, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Match an exact value' }),
-  option('where-neq', parsers.string, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Exclude an exact value' }),
-  option('where-in', parsers.string, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Match any listed value for this column' }),
-  option('where-noin', parsers.string, {
+  option('min-data-rows', boundedInteger(numericValue, 0), {
+    valueName: 'COUNT',
+    describe: 'Require at least this many data rows in strict mode',
+  }),
+  option('where', parsers.json(), { valueName: 'JSON', describe: 'Advanced JSON can nest all, any, and not.' }),
+  option('where-eq', parsers.keyValue, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Match an exact value' }),
+  option('where-neq', parsers.keyValue, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Exclude an exact value' }),
+  option('where-in', parsers.keyValue, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Match any listed value for this column' }),
+  option('where-noin', parsers.keyValue, {
     repeatable: true,
     valueName: 'COLUMN=VALUE',
     describe: 'Exclude all listed values for this column',
   }),
-  option('where-prefix', parsers.string, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Match a value prefix' }),
-  option('where-regex', parsers.string, {
+  option('where-prefix', parsers.keyValue, { repeatable: true, valueName: 'COLUMN=VALUE', describe: 'Match a value prefix' }),
+  option('where-regex', parsers.keyValue, {
     repeatable: true,
     valueName: 'COLUMN=/RE/FLAGS',
     describe: 'Match an RE2-compatible regex (flags: i, m, s, u)',
@@ -169,8 +199,11 @@ const lines = command('lines', {
   args: [
     ...fileArgs,
     flag('json', { describe: 'Emit one JSON string array per record (NDJSON)' }),
-    option('output-delimiter', parsers.string, { describe: 'One safe ASCII output delimiter (default: comma). Incompatible with --json' }),
-    option('limit', parsers.string, {
+    option('output-delimiter', outputDelimiter, {
+      default: ',',
+      describe: 'One safe ASCII output delimiter (default: comma). Incompatible with --json',
+    }),
+    option('limit', boundedInteger(numericValue, 1), {
       valueName: 'N',
       describe: 'Stop after matching output record N, numbered from 1. Incompatible with --min-data-rows',
     }),

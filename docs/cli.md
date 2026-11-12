@@ -40,8 +40,10 @@ bunx @konstit/csv help count
 `count`, `lines`, and `probe` each take one input path. Use `csv help <command>`
 or `csv <command> --help` for command options. Parsing stops when it reaches
 `-h` or `--help`, so `csv count --help --unknown` prints help and exits successfully.
-An unknown option before `--help` produces a usage error (exit code 2).
-When repeating a scalar option, pass valid values at each occurrence. The last value wins.
+An unknown option before `--help` produces a usage error (exit code 2). The same applies to values
+checked during argument parsing. For example, `csv lines data.csv --limit 0 --help` exits with code 2.
+When repeating a scalar option, pass valid values at each occurrence. `--limit 2 --limit 1` selects
+one record, while `--limit bad --limit 1` fails at `bad`.
 
 ## Shell completion
 

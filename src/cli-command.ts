@@ -1,3 +1,4 @@
+import type { KeyValuePair } from '@konstit/cli';
 import { csv } from './api.js';
 import {
   type CountArguments,
@@ -9,18 +10,15 @@ import { inspectCsvFile } from './inspect-file.js';
 import {
   normalizeColumns,
   normalizeFilterColumn,
-  normalizeFixedColumnsCount,
 } from './normalize.js';
 import type {
   CsvColumns,
   CsvCompression,
   CsvCountOptions,
-  CsvDelimiter,
   CsvFilter,
   CsvRowsOptions,
 } from './types.js';
 
-const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 const MAX_FILTER_NESTING = 128;
 const OUTPUT_BUFFER_SIZE = 64 * 1024;
 
@@ -121,7 +119,7 @@ interface LinesInput {
 }
 
 function parseLinesInput(values: LinesArguments): LinesInput {
-  const limit = values.limit === undefined ? undefined : parseInteger(values.limit, 'limit', 1);
+  const { limit } = values;
   const options = parseCommonOptions(values, values.strict === true && limit !== undefined);
   if (limit !== undefined && options.strict === true) {
     if (options.compression !== 'none') {
@@ -138,15 +136,11 @@ function parseLinesInput(values: LinesArguments): LinesInput {
     }
     options.chunkSize = 1;
   }
-  const outputDelimiter = values['output-delimiter'] === undefined
-    ? ','
-    : parseOutputDelimiter(values['output-delimiter']);
-
   return {
     json: values.json,
     ...(limit === undefined ? {} : { limit }),
     options,
-    outputDelimiter,
+    outputDelimiter: values['output-delimiter'],
     path: values.path,
   };
 }
@@ -155,14 +149,13 @@ type MutableCliOptions<TOptions> = { -readonly [Key in keyof TOptions]: TOptions
 
 function parseCommonOptions(values: CountArguments, fixedFormat = false): MutableCliOptions<CsvCountOptions> {
   const options: MutableCliOptions<CsvCountOptions> = values.strict ? { strict: true } : { where: parseWhereOptions(values) };
-  options.delimiter = parseDelimiter(values.delimiter ?? (fixedFormat ? ',' : 'auto'));
+  options.delimiter = values.delimiter ?? (fixedFormat ? ',' : 'auto');
   options.encoding = values.encoding ?? (fixedFormat ? 'utf8' : 'auto');
   if (values['chunk-size'] !== undefined) {
-    options.chunkSize = parseInteger(values['chunk-size'], 'chunk size', 1, MAX_CHUNK_SIZE);
+    options.chunkSize = values['chunk-size'];
   }
   if (values['fixed-columns'] !== undefined) {
-    options.fixedColumns = parseInteger(values['fixed-columns'], 'fixed columns', 1);
-    normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
+    options.fixedColumns = values['fixed-columns'];
   }
   if (values.columns !== undefined) {
     options.columns = parseColumns(values.columns, 'columns');
@@ -174,49 +167,22 @@ function parseCommonOptions(values: CountArguments, fixedFormat = false): Mutabl
     options.requireHeader = true;
   }
   if (values['min-data-rows'] !== undefined) {
-    options.minDataRows = parseInteger(values['min-data-rows'], 'minimum data rows', 0);
+    options.minDataRows = values['min-data-rows'];
   }
   options.compression = parseCompression(values) ?? (fixedFormat ? 'none' : 'auto');
   return options;
 }
 
-function parseDelimiter(value: string): CsvDelimiter {
-  if (value === 'auto') {
-    return value;
-  }
-  if (
-    value.length !== 1
-    || value.charCodeAt(0) > 0x7f
-    || value === '"'
-    || value === '\r'
-    || value === '\n'
-  ) {
-    throw new Error(`delimiter must be one safe ASCII character or auto: ${JSON.stringify(value)}`);
-  }
-  return value;
-}
-
-function parseOutputDelimiter(value: string): string {
-  const delimiter = parseDelimiter(value);
-  if (delimiter === 'auto') {
-    throw new Error('output delimiter must be one safe ASCII character; auto is not supported');
-  }
-  return delimiter;
-}
-
-function parseInteger(value: string | number, label: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
+function parseColumnIndex(value: string, label: string): number {
   const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
-    const range = maximum === Number.MAX_SAFE_INTEGER
-      ? `greater than or equal to ${String(minimum)}`
-      : `from ${String(minimum)} through ${String(maximum)}`;
-    throw new Error(`${label} must be an integer ${range}: ${value}`);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error(`${label} must be an integer greater than or equal to 0: ${value}`);
   }
   return number;
 }
 
 function parseColumns(value: string, label: string): number[] {
-  const columns = value.length === 0 ? [] : value.split(',').map((column) => parseInteger(column, label, 0));
+  const columns = value.length === 0 ? [] : value.split(',').map((column) => parseColumnIndex(column, label));
   normalizeColumns(columns);
   return columns;
 }
@@ -232,19 +198,12 @@ function parseCompression(values: CountArguments): CsvCompression | undefined {
     }
     return compression;
   }
-  if (typeof zipEntry !== 'string' || zipEntry.length === 0) {
-    throw new Error('--compression zip requires --zip-entry <path>');
-  }
-
   return {
-    entry: zipEntry,
+    // The command schema requires --zip-entry when --compression is zip.
+    entry: zipEntry as string,
     format: 'zip',
-    ...(typeof maxCompressionRatio === 'string'
-      ? { maxCompressionRatio: parseUint32(maxCompressionRatio, 'maximum compression ratio') }
-      : {}),
-    ...(maxDecompressedBytes !== undefined
-      ? { maxDecompressedBytes: parseInteger(maxDecompressedBytes, 'maximum decompressed bytes', 1) }
-      : {}),
+    ...(maxCompressionRatio === undefined ? {} : { maxCompressionRatio }),
+    ...(maxDecompressedBytes === undefined ? {} : { maxDecompressedBytes }),
   };
 }
 
@@ -297,33 +256,25 @@ function isBrokenPipe(error: unknown): boolean {
   return isObject(error) && error['code'] === 'EPIPE';
 }
 
-function parseUint32(value: string, label: string): number {
-  const number = Number(value);
-  if (!Number.isInteger(number) || number <= 0 || number > 0xffff_ffff) {
-    throw new Error(`${label} must be an integer from 1 through 4294967295: ${value}`);
-  }
-  return number;
-}
-
 function parseWhereOptions(values: CountArguments): CsvFilter | undefined {
   const filters: CsvFilter[] = [];
   if (values.where !== undefined) {
-    filters.push(parseWhereJson(values.where));
+    filters.push(parseWhereFilter(values.where, '--where'));
   }
 
-  for (const expression of values['where-eq']) {
-    const { column, value } = parseColumnValue(expression, '--where-eq');
+  for (const { key, value } of values['where-eq']) {
+    const column = parseFilterColumn(key, '--where-eq');
     filters.push(csv.column(column).equals(value));
   }
 
-  for (const expression of values['where-neq']) {
-    const { column, value } = parseColumnValue(expression, '--where-neq');
+  for (const { key, value } of values['where-neq']) {
+    const column = parseFilterColumn(key, '--where-neq');
     filters.push(csv.column(column).doesNotEqual(value));
   }
 
   const inValuesByColumn = new Map<number, string[]>();
-  for (const expression of values['where-in']) {
-    const { column, value } = parseColumnValue(expression, '--where-in');
+  for (const { key, value } of values['where-in']) {
+    const column = parseFilterColumn(key, '--where-in');
     const columnValues = inValuesByColumn.get(column);
     if (columnValues === undefined) {
       inValuesByColumn.set(column, [value]);
@@ -336,8 +287,8 @@ function parseWhereOptions(values: CountArguments): CsvFilter | undefined {
   }
 
   const notInValuesByColumn = new Map<number, string[]>();
-  for (const expression of values['where-noin']) {
-    const { column, value } = parseColumnValue(expression, '--where-noin');
+  for (const { key, value } of values['where-noin']) {
+    const column = parseFilterColumn(key, '--where-noin');
     const columnValues = notInValuesByColumn.get(column);
     if (columnValues === undefined) {
       notInValuesByColumn.set(column, [value]);
@@ -349,8 +300,8 @@ function parseWhereOptions(values: CountArguments): CsvFilter | undefined {
     filters.push(csv.column(column).isNoneOf(notInValues));
   }
 
-  for (const expression of values['where-prefix']) {
-    const { column, value } = parseColumnValue(expression, '--where-prefix');
+  for (const { key, value } of values['where-prefix']) {
+    const column = parseFilterColumn(key, '--where-prefix');
     filters.push(csv.column(column).startsWith(value));
   }
   for (const expression of values['where-regex']) {
@@ -364,35 +315,19 @@ function parseWhereOptions(values: CountArguments): CsvFilter | undefined {
   return filters.length === 1 ? first : csv.all(first, ...filters.slice(1));
 }
 
-function parseColumnValue(expression: string, option: string): { column: number; value: string; } {
-  const separator = expression.indexOf('=');
-  if (separator <= 0) {
-    throw new Error(`${option} must use <column>=<value>: ${JSON.stringify(expression)}`);
-  }
-  const column = parseInteger(expression.slice(0, separator), `${option} column`, 0);
-  normalizeFilterColumn(column);
-  return { column, value: expression.slice(separator + 1) };
+function parseFilterColumn(key: string, option: string): number {
+  return normalizeFilterColumn(parseColumnIndex(key, `${option} column`));
 }
 
-function parseRegexExpression(expression: string): CsvFilter {
-  const { column, value } = parseColumnValue(expression, '--where-regex');
+function parseRegexExpression({ key, value }: KeyValuePair): CsvFilter {
+  const column = parseFilterColumn(key, '--where-regex');
   const closingSlash = value.lastIndexOf('/');
   if (!value.startsWith('/') || closingSlash === 0) {
-    throw new Error(`--where-regex must use <column>=/<pattern>/<flags>: ${JSON.stringify(expression)}`);
+    throw new Error(`--where-regex must use <column>=/<pattern>/<flags>: ${JSON.stringify(`${key}=${value}`)}`);
   }
   const source = value.slice(1, closingSlash);
   const flags = value.slice(closingSlash + 1);
   return csv.column(column).hasMatch(new RegExp(source, flags));
-}
-
-function parseWhereJson(value: string): CsvFilter {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch (error) {
-    throw new Error(`--where must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  return parseWhereFilter(parsed, '--where');
 }
 
 function parseWhereFilter(value: unknown, label: string, depth = 0): CsvFilter {
