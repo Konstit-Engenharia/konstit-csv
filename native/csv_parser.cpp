@@ -1282,6 +1282,11 @@ private:
       }
     }
 
+    // Let finish_row report the physical width mismatch, even if a filter would reject this record.
+    if (fixed_columns_ != 0 && field_count != fixed_columns_) {
+      return 0;
+    }
+
     const auto field_at = [&](size_t column) {
       // A closing quote, delimiter and opening quote separate consecutive payloads.
       const size_t start = column == 0 ? 1 : ends[column - 1] + 3;
@@ -1330,7 +1335,7 @@ private:
   }
 
   bool supports_quoted_records() const {
-    if (layout_ == batch_layout::utf8 || !conjunctive_filters_ || projection_enabled_ || fixed_columns_ != 0) {
+    if (layout_ == batch_layout::utf8 || !conjunctive_filters_ || projection_enabled_) {
       return false;
     }
     for (const auto& filter : filters_) {
@@ -2626,12 +2631,16 @@ CSV_EXPORT void* csv_parser_create_latin1_rows(uint8_t delimiter) {
   return csv_parser_create_latin1_rows_with_fixed_columns(delimiter, 0);
 }
 
-CSV_EXPORT void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter) {
+CSV_EXPORT void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_t fixed_columns) {
   if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
     return nullptr;
   }
   return new csv_native::csv_parser(csv_native::csv_encoding::utf8, delimiter,
-                                    csv_native::batch_layout::latin1_quoted_spans);
+                                    csv_native::batch_layout::latin1_quoted_spans, fixed_columns);
+}
+
+CSV_EXPORT void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter) {
+  return csv_parser_create_latin1_quoted_rows(delimiter, 0);
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }

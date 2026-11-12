@@ -16,6 +16,7 @@ int csv_runtime_supports_avx2();
 void* csv_parser_create(int encoding, uint8_t delimiter);
 void* csv_parser_create_latin1_rows(uint8_t delimiter);
 void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter);
+void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_t fixed_columns);
 void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
 void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
@@ -1090,7 +1091,7 @@ TEST_CASE("prepared Latin-1 rows match ASCII predicates across quoted records, f
   }
 }
 
-TEST_CASE("prepared Latin-1 quote masks preserve every lane across full blocks and tails") {
+TEST_CASE("fixed-width Latin-1 quote masks preserve every lane across full blocks and tails") {
   const uint32_t offsets[] = {0};
   const std::vector<uint8_t> expected_flags = {1, 0, 1};
   for (size_t lane = 0; lane < 64; ++lane) {
@@ -1104,7 +1105,7 @@ TEST_CASE("prepared Latin-1 quote masks preserve every lane across full blocks a
     const std::string input = simple + escaped + simple;
     const std::vector<std::vector<std::string>> expected = {{first, second}, {first, second + "\""}, {first, second}};
 
-    void* parser = csv_parser_create_latin1_rows_with_quoted_spans(';');
+    void* parser = csv_parser_create_latin1_quoted_rows(';', 2);
     REQUIRE(parser != nullptr);
     REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, offsets, 0));
     std::vector<std::vector<std::string>> actual;

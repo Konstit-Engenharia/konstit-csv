@@ -10,6 +10,7 @@ const requiredSymbols = [
   'csv_parser_write_prepared_count',
   'csv_parser_create_latin1_rows',
   'csv_parser_create_latin1_rows_with_quoted_spans',
+  'csv_parser_create_latin1_quoted_rows',
   'csv_batch_quoted_rows_ptr',
   'csv_parser_create_latin1_rows_with_fixed_columns',
 ] as const;

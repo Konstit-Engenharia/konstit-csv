@@ -409,6 +409,9 @@ const CSV_SYMBOLS = {
   // void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter);
   csv_parser_create_latin1_rows_with_quoted_spans: { args: ['u8'], returns: 'ptr' },
   // C signature:
+  // void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_t fixed_columns);
+  csv_parser_create_latin1_quoted_rows: { args: ['u8', 'u32'], returns: 'ptr' },
+  // C signature:
   // const uint8_t* csv_batch_quoted_rows_ptr(void* batch);
   csv_batch_quoted_rows_ptr: { args: ['ptr'], returns: 'ptr' },
   // C signature:
@@ -422,10 +425,7 @@ const CSV_SYMBOLS = {
 export const native = dlopen(resolveNativeLibraryPath(), CSV_SYMBOLS);
 
 export function latin1RowsParser(fixedColumns: number | undefined): (delimiter: number) => NativePointer | null {
-  if (fixedColumns !== undefined) {
-    return (delimiter) => native.symbols.csv_parser_create_latin1_rows_with_fixed_columns(delimiter, fixedColumns);
-  }
-  return native.symbols.csv_parser_create_latin1_rows_with_quoted_spans;
+  return (delimiter) => native.symbols.csv_parser_create_latin1_quoted_rows(delimiter, fixedColumns ?? 0);
 }
 
 function resolveNativeLibraryPath(): string {

@@ -268,6 +268,24 @@ describe('private Latin1 row materialization compatibility', () => {
     }
   });
 
+  test('checks the width of quoted Latin1 records before evaluating ASCII filters', async () => {
+    const path = join(directory, 'fixed-quoted.csv');
+    const where = csv.all(csv.column(0).equals('keep'), csv.column(2).doesNotEqual('X'));
+    const options = { fixedColumns: 3, where };
+    const valid = '"keep";"é;à";""\n"drop";"a";"b"\n"keep";"a""b";"y"\n';
+    await Bun.write(path, Buffer.from(valid, 'latin1'));
+    for (const chunkSize of [1, 1024]) {
+      expect(await collect(path, { ...options, chunkSize })).toEqual([['keep', 'é;à', ''], ['keep', 'a"b', 'y']]);
+    }
+
+    for (const invalid of ['"drop";"x"', '"keep";"x"', '"keep";"x";"X";"extra"', '"keep";"x";"y";"extra"']) {
+      await Bun.write(path, Buffer.from(`${valid}${invalid}\n`, 'latin1'));
+      for (const chunkSize of [1, 1024]) {
+        await rejects(collect(path, { ...options, chunkSize }), /fixed row column count mismatch/);
+      }
+    }
+  });
+
   test('rejects invalid Latin1 fixed column counts before native conversion', async () => {
     for (const fixedColumns of [0, 1.5, 0x1_0000_0001]) {
       await rejects(collect(bytesPath, { fixedColumns }), /fixed column count out of range/);
