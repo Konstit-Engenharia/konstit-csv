@@ -1,4 +1,7 @@
-import type { KeyValuePair } from '@konstit/cli';
+import type {
+  CompletionShell,
+  KeyValuePair,
+} from '@konstit/cli';
 import { csv } from './api.js';
 import {
   type CountArguments,
@@ -49,12 +52,15 @@ export async function runCli(arguments_: readonly string[], customOutput?: CliOu
       return runLines(subcommand.args, output);
     case 'probe':
       return runProbe(subcommand.args.path, subcommand.args['zip-entry'], output);
-    case 'completion': {
-      const { generateCompletion } = await import('@konstit/cli/completion');
-      output.log(generateCompletion(csvCommand, subcommand.args.shell).trimEnd());
-      return 0;
-    }
+    case 'completion':
+      return runCompletion(subcommand.args.shell, output);
   }
+}
+
+async function runCompletion(shell: CompletionShell, output: CliOutput): Promise<number> {
+  const { generateCompletion } = await import('@konstit/cli/completion');
+  output.log(generateCompletion(csvCommand, shell).trimEnd());
+  return 0;
 }
 
 async function runProbe(path: string, entry: string | undefined, output: CliOutput): Promise<number> {
