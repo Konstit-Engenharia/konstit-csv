@@ -969,11 +969,6 @@ export class NativeCsvParser {
     destroyNativeCsvParser(handle);
   }
 
-  /** Alias for {@link close}, suitable for explicit resource management. */
-  dispose(): void {
-    this.close();
-  }
-
   /** Implements `using` / explicit resource management. */
   [Symbol.dispose](): void {
     this.close();

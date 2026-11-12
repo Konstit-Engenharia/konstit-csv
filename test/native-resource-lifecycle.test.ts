@@ -13,7 +13,7 @@ describe('native resource lifecycle', () => {
     expect(() => requirePtr(null)).toThrow('native CSV pointer is null');
   });
 
-  test('parser and row batches expose dispose state and use-after-close errors', () => {
+  test('parser and row batches expose closed state and use-after-close errors', () => {
     const parser = new NativeCsvParser();
     expect(parser.closed).toBe(false);
 
@@ -21,13 +21,13 @@ describe('native resource lifecycle', () => {
     expect(batch.closed).toBe(false);
     expect(batch.rows()).toEqual([['a', 'b'], ['1', '2']]);
 
-    batch.dispose();
+    batch.close();
     expect(batch.closed).toBe(true);
     expect(() => batch.rows()).toThrow('native CSV batch is closed');
     batch.close();
     expect(batch.closed).toBe(true);
 
-    parser.dispose();
+    parser.close();
     expect(parser.closed).toBe(true);
     expect(() => parser.write(readCsvFixture('native/single-x.csv'))).toThrow('native CSV parser is closed');
     parser.close();

@@ -108,7 +108,7 @@ async function consumeProjectedRowViewsBytes(): Promise<BenchResult> {
   await withProjectedRowViews((row) => {
     ++result.rows;
     for (const column of PROJECTED_COLUMNS) {
-      const bytes = row.fieldBytes(column);
+      const bytes = row.bytes(column);
       if (bytes !== null) {
         ++result.fields;
         result.bytes += bytes.byteLength;
@@ -174,7 +174,7 @@ async function consumeProjectedRowViewsStrings(): Promise<BenchResult> {
   await withProjectedRowViews((row) => {
     ++result.rows;
     for (const column of PROJECTED_COLUMNS) {
-      const value = row.fieldString(column);
+      const value = row.get(column);
       if (value !== null) {
         ++result.fields;
         result.bytes += value.length;

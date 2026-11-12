@@ -18,11 +18,11 @@ import {
 } from '../src/file-stream.ts';
 import {
   countCsvFile,
-  findCsvSafeSplitOffsets,
   parseCsvBuffer,
   parseCsvFile,
   parseCsvFileProjected,
 } from '../src/files.ts';
+import { csv } from '../src/index.ts';
 import {
   findNativeLibraryPath,
   nativeLibraryCandidates,
@@ -210,10 +210,10 @@ describe('coverage input boundaries', () => {
       expect(Buffer.from(zipChunks).toString()).toBe('x,y\n3,4\n');
       expect(() => rejectCompressedSharding({ compression: 'gzip' }, 'x')).toThrow();
       expect(() => rejectAutoDelimiterSharding({ delimiter: 'auto' }, 'x')).toThrow();
-      expect(() => findCsvSafeSplitOffsets(join(dir, 'missing.csv'), 0)).toThrow();
-      expect(() => findCsvSafeSplitOffsets(path, 2, ',,')).toThrow();
-      expect(() => findCsvSafeSplitOffsets(path, 2, '"')).toThrow();
-      expect(findCsvSafeSplitOffsets(empty, 2)).toEqual([0]);
+      expect(() => csv.findCsvSafeSplitOffsets(join(dir, 'missing.csv'), 0)).toThrow();
+      expect(() => csv.findCsvSafeSplitOffsets(path, 2, { delimiter: ',,' })).toThrow();
+      expect(() => csv.findCsvSafeSplitOffsets(path, 2, { delimiter: '"' })).toThrow();
+      expect(csv.findCsvSafeSplitOffsets(empty, 2)).toEqual([0]);
       const rows: unknown[] = [];
       for await (const batch of parseCsvFile(path)) {
         rows.push(...batch);

@@ -16,22 +16,21 @@ const path = csvFixturePath('api/quoted-people-two-rows.csv');
 describe('API and native coverage contracts', () => {
   test('exposes every row-view accessor during its callback', async () => {
     let escaped: Pick<NativeCsvRowView, 'get'> | undefined;
+    const ids: (string | null)[] = [];
     for await (using batch of csv.batches(path, { delimiter: ';', columns: [0, 2] })) {
       batch.forEachRow((row) => {
         expect(row.rowIndex).toBeGreaterThanOrEqual(0);
         expect(row.fieldCount).toBe(2);
-        expect(row.fieldRange(0)).not.toBeNull();
+        const id = row.get(0);
+        ids.push(id);
         expect(row.range(0)).not.toBeNull();
-        expect(row.fieldBytes(0)).not.toBeNull();
-        expect(row.bytes(0)).not.toBeNull();
-        expect(row.fieldBuffer(0)?.toString()).toBe(row.buffer(0)?.toString());
-        expect(row.fieldString(0)).toBe(row.getPhysical(0));
-        expect(row.get(0)).toBe(row.fieldString(0));
-        expect(row.pickPhysical([0, 1])).toEqual([row.get(0) ?? '', row.get(1) ?? '']);
-        expect(row.pick([0])).toEqual([row.get(0) ?? '']);
+        expect(row.bytes(0)).toBeInstanceOf(Uint8Array);
+        expect(row.buffer(0)?.toString() ?? null).toBe(id);
+        expect(row.pick([0])).toEqual([id ?? '']);
         escaped = row;
       });
     }
+    expect(ids).toEqual(['id', '1', '2']);
     const retained = escaped;
     if (retained === undefined) {
       throw new Error('row callback did not run');
@@ -66,20 +65,6 @@ describe('API and native coverage contracts', () => {
       throw new Error('no native batches yielded');
     }
     expect(() => retained.dataView()).toThrow('native CSV batch is closed');
-  });
-
-  test('supports explicit disposable cleanup aliases', async () => {
-    let count = 0;
-    for await (using batch of csv.batches(path, { delimiter: ';' })) {
-      expect(batch.closed).toBe(false);
-      count += batch.rowCount;
-      batch.dispose();
-      expect(batch.closed).toBe(true);
-    }
-    expect(count).toBe(3);
-    const parser = new NativeCsvParser();
-    parser.dispose();
-    expect(parser.closed).toBe(true);
   });
 
   test('covers sharding and regex constructors', () => {

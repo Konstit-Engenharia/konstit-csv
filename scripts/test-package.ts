@@ -39,10 +39,13 @@ try {
     'bun',
     '-e',
     `import assert from 'node:assert/strict';
-     import { findCsvSafeShards, findCsvSafeSplitOffsets } from '@konstit/csv';
+     import * as pkg from '@konstit/csv';
+     const { csv } = pkg;
      const path = 'input.csv';
-     assert.deepEqual(findCsvSafeSplitOffsets(path, 2, { delimiter: ';' }), [0, 14, 20]);
-     assert.deepEqual(findCsvSafeShards(path, 2, { delimiter: ';' }), [{ start: 0, end: 13 }, { start: 14, end: 19 }]);`,
+     assert.equal('findCsvSafeSplitOffsets' in pkg, false);
+     assert.equal('findCsvSafeShards' in pkg, false);
+     assert.deepEqual(csv.findCsvSafeSplitOffsets(path, 2, { delimiter: ';' }), [0, 14, 20]);
+     assert.deepEqual(csv.findCsvSafeShards(path, 2, { delimiter: ';' }), [{ start: 0, end: 13 }, { start: 14, end: 19 }]);`,
   ], directory);
   console.log('package byte-boundary helpers smoke passed');
 

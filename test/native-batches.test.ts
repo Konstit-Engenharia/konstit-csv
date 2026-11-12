@@ -113,12 +113,12 @@ describe('NativeCsvParser batches and materialization', () => {
       seen.push({
         rowIndex,
         fieldCount: row.fieldCount,
-        id: row.fieldString(0),
-        name: row.fieldString(1),
-        uf: row.fieldString(2),
-        missing: row.fieldString(4),
-        nameBytes: row.fieldBytes(1)?.toString(),
-        ufBuffer: row.fieldBuffer(2)?.toString(),
+        id: row.get(0),
+        name: row.get(1),
+        uf: row.get(2),
+        missing: row.get(4),
+        nameBytes: row.bytes(1)?.toString(),
+        ufBuffer: row.buffer(2)?.toString(),
       });
     });
 
@@ -156,11 +156,11 @@ describe('NativeCsvParser batches and materialization', () => {
     const rowView = new NativeCsvRowView(Buffer.from('ab'), rowOffsets, fieldOffsets);
 
     expect(rowView.fieldCount).toBe(1);
-    expect(rowView.fieldString(0)).toBe('a');
+    expect(rowView.get(0)).toBe('a');
     rowOffsets[1] = 2n;
     expect(rowView.fieldCount).toBe(2);
     fieldOffsets[1] = 2n;
-    expect(rowView.fieldString(0)).toBe('ab');
+    expect(rowView.get(0)).toBe('ab');
   });
 
   test('preserves projected row reuse and missing-column behavior', () => {
@@ -280,7 +280,7 @@ describe('NativeCsvParser batches and materialization', () => {
     expect(() => aboveUint32Row.fieldCount).toThrow('exceeds backing storage: 4294967297');
 
     const aboveUint32 = new NativeCsvRowView(data, rowOffsets, new BigUint64Array([0n, 0x100000001n]));
-    expect(() => aboveUint32.fieldRange(0)).toThrow('exceeds backing storage: 4294967297');
+    expect(() => aboveUint32.range(0)).toThrow('exceeds backing storage: 4294967297');
 
     const maxSafeRow = new NativeCsvRowView(
       data,
@@ -290,17 +290,17 @@ describe('NativeCsvParser batches and materialization', () => {
     expect(() => maxSafeRow.fieldCount).toThrow('exceeds backing storage: 9007199254740991');
 
     const maxSafe = new NativeCsvRowView(data, rowOffsets, new BigUint64Array([0n, BigInt(Number.MAX_SAFE_INTEGER)]));
-    expect(() => maxSafe.fieldRange(0)).toThrow('exceeds backing storage: 9007199254740991');
+    expect(() => maxSafe.range(0)).toThrow('exceeds backing storage: 9007199254740991');
 
     const unsafe = new NativeCsvRowView(
       data,
       rowOffsets,
       new BigUint64Array([0n, BigInt(Number.MAX_SAFE_INTEGER) + 1n]),
     );
-    expect(() => unsafe.fieldRange(0)).toThrow('exceeds Number.MAX_SAFE_INTEGER: 9007199254740992');
+    expect(() => unsafe.range(0)).toThrow('exceeds Number.MAX_SAFE_INTEGER: 9007199254740992');
 
     const valid = new NativeCsvRowView(data, rowOffsets, new BigUint64Array([0n, 1n]));
-    expect(() => valid.fieldRange(0.5)).toThrow('field offset index out of range: 0.5');
+    expect(() => valid.range(0.5)).toThrow('field offset index out of range: 0.5');
     expect(() => valid.moveTo(-1)).toThrow('row -1 offset index out of range: -1');
     expect(() => valid.moveTo(2)).toThrow('row 2 offset index out of range: 2');
   });
@@ -340,6 +340,6 @@ describe('NativeCsvParser batches and materialization', () => {
       new BigUint64Array([0n, 1n]),
       new BigUint64Array([0n, 2n]),
     );
-    expect(() => outsideData.fieldRange(0)).toThrow('exceeds backing storage');
+    expect(() => outsideData.range(0)).toThrow('exceeds backing storage');
   });
 });

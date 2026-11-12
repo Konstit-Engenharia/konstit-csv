@@ -60,7 +60,7 @@ test('probes the decompressed ZIP entry and uses its extension to break delimite
   expect(await csv.count(path, { ...options, where: csv.column(1).equals('€|x,y') })).toBe(1);
   const names: (string | null)[] = [];
   for await (using batch of csv.batches(path, options)) {
-    batch.forEachRow((row) => names.push(row.fieldString(1)));
+    batch.forEachRow((row) => names.push(row.get(1)));
   }
   expect(names).toEqual(['name,unit', '€|x,y']);
 });

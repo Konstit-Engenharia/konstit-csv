@@ -75,7 +75,7 @@ async function countSelectedFieldsWithRowView(): Promise<BenchResult> {
     batch.forEachRow((row) => {
       ++result.rows;
       for (const column of SELECTED_COLUMNS) {
-        const bytes = row.fieldBytes(column);
+        const bytes = row.bytes(column);
         if (bytes !== null) {
           ++result.fields;
           result.bytes += bytes.byteLength;
@@ -88,7 +88,7 @@ async function countSelectedFieldsWithRowView(): Promise<BenchResult> {
   batch.forEachRow((row) => {
     ++result.rows;
     for (const column of SELECTED_COLUMNS) {
-      const bytes = row.fieldBytes(column);
+      const bytes = row.bytes(column);
       if (bytes !== null) {
         ++result.fields;
         result.bytes += bytes.byteLength;
@@ -122,7 +122,7 @@ async function printSelectedFieldsWithRowView(): Promise<BenchResult> {
       if (output.length >= PRINT_ROWS) {
         return;
       }
-      const fields = SELECTED_COLUMNS.map((column) => row.fieldString(column) ?? '');
+      const fields = SELECTED_COLUMNS.map((column) => row.get(column) ?? '');
       output.push(fields.join('|'));
       ++result.rows;
       result.fields += fields.length;

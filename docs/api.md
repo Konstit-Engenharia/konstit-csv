@@ -220,8 +220,8 @@ const rows = await csv.parse(Buffer.from([0x6e, 0x61, 0x6d, 0x65, 0x0a, 0x80, 0x
 ## Record-safe byte boundaries
 
 Advanced applications that process an uncompressed CSV file in their own pipeline can use the boundary helpers to avoid
-starting a range in the middle of a quoted record. `findCsvSafeSplitOffsets()` returns record-safe starts plus the
-terminal file boundary. `findCsvSafeShards()` returns the same boundaries as non-empty inclusive `{ start, end }` ranges.
+starting a range in the middle of a quoted record. `csv.findCsvSafeSplitOffsets()` returns record-safe starts plus the
+terminal file boundary. `csv.findCsvSafeShards()` returns the same boundaries as non-empty inclusive `{ start, end }` ranges.
 These helpers only calculate offsets and ranges. They do not parse the ranges or schedule processing.
 
 ```ts
@@ -326,9 +326,9 @@ Each batch owns native memory. The `using` declaration closes it when the iterat
 for await (using batch of csv.batches('data.csv')) {
   batch.forEachRow((row) => {
     console.log({
-      id: row.getPhysical(0),
-      name: row.getPhysical(1),
-      state: row.getPhysical(2),
+      id: row.get(0),
+      name: row.get(1),
+      state: row.get(2),
       stateBytes: row.bytes(2),
       stateRange: row.range(2),
     });
@@ -342,10 +342,10 @@ the callback. You can keep decoded strings. Copy borrowed bytes before closing t
 `NativeCsvBatch` provides `rowCount`, `totalFields`, `dataLength`, `closed`, `rows()`, `rowsInto(target, columns?)`,
 `forEachRow()`, `data()`, `dataView()`, `rowOffsets()`, `fieldOffsets()`, `rowFieldCount()`, `fieldRange()`, `fieldBytes()`,
 `fieldBuffer()`, `fieldString()`, `scanColumns()`, `forEachColumnRange()`, `forEachColumnBytes()`,
-`countWhereEquals()`, `close()`, `dispose()`, and `[Symbol.dispose]`.
+`countWhereEquals()`, `close()`, and `[Symbol.dispose]`.
 
 In `csv.batches()`, `columns` selects the stored fields in the requested order.
-Filters always use physical input indexes. Row accessors, including `getPhysical()` and `pickPhysical()`,
+Filters always use physical input indexes. Row accessors, including `get()` and `pick()`,
 and batch methods such as `scanColumns()` use positions in the resulting batch.
 
 ```ts
@@ -393,5 +393,5 @@ configure `writeBatch()`; use the explicit projected methods for low-level proje
 
 `NativeCsvParser` accepts native UTF-8 and Latin-1 labels. It captures `encoding`, `delimiter`, `strict`, and
 `fixedColumns` at construction. It does not support
-`delimiter: 'auto'` or schema metadata options. Dispose the parser with `close()`, `dispose()`, or `using`; its
+`delimiter: 'auto'` or schema metadata options. Dispose the parser with `close()` or `using`; its
 `closed` property reports whether the native handle has been released.

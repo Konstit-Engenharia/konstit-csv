@@ -100,7 +100,7 @@ export class NativeCsvRowView {
    * @returns A half-open byte range, or `null` when the row has no such field.
    * @throws {RangeError} If the row or offset table is malformed.
    */
-  fieldRange(columnIndex: number): CsvFieldRange | null {
+  range(columnIndex: number): CsvFieldRange | null {
     const [rowStart, rowEnd,] = this.#rowRange(this.#rowIndex);
 
     const fieldIndex = rowStart + columnIndex;
@@ -115,16 +115,6 @@ export class NativeCsvRowView {
   }
 
   /**
-   * Returns the current row's field range as a half-open byte interval.
-   *
-   * @param columnIndex Zero-based field index in the current row.
-   * @returns Offsets into the backing data, or `null` when the field is absent.
-   */
-  range(columnIndex: number): CsvFieldRange | null {
-    return this.fieldRange(columnIndex);
-  }
-
-  /**
    * Returns a borrowed byte view for a field in the current row.
    *
    * The returned view shares the batch backing storage; consume it before the
@@ -133,23 +123,8 @@ export class NativeCsvRowView {
    * @param columnIndex Zero-based field index.
    * @returns A borrowed byte view, or `null` when the field is absent.
    */
-  fieldBytes(columnIndex: number): Uint8Array | null {
-    const range = this.fieldRange(columnIndex);
-    if (range === null) {
-      return null;
-    }
-    return this.#data.subarray(range.start, range.end);
-  }
-
-  /**
-   * Returns borrowed bytes for a field in the current row.
-   *
-   * @param columnIndex Zero-based field index in the current row.
-   * @returns A view sharing the batch storage, or `null` when the field is absent.
-   * The view is valid only while the originating batch remains open.
-   */
   bytes(columnIndex: number): Uint8Array | null {
-    return this.fieldBytes(columnIndex);
+    return this.buffer(columnIndex);
   }
 
   /**
@@ -161,23 +136,12 @@ export class NativeCsvRowView {
    * @param columnIndex Zero-based field index.
    * @returns A borrowed buffer, or `null` when the field is absent.
    */
-  fieldBuffer(columnIndex: number): Buffer | null {
-    const range = this.fieldRange(columnIndex);
+  buffer(columnIndex: number): Buffer | null {
+    const range = this.range(columnIndex);
     if (range === null) {
       return null;
     }
     return this.#data.subarray(range.start, range.end);
-  }
-
-  /**
-   * Returns a borrowed `Buffer` for a field in the current row.
-   *
-   * @param columnIndex Zero-based field index in the current row.
-   * @returns A buffer sharing the batch storage, or `null` when the field is absent.
-   * The buffer is valid only while the originating batch remains open.
-   */
-  buffer(columnIndex: number): Buffer | null {
-    return this.fieldBuffer(columnIndex);
   }
 
   /**
@@ -186,34 +150,12 @@ export class NativeCsvRowView {
    * @param columnIndex Zero-based field index.
    * @returns The decoded field, or `null` when the field is absent.
    */
-  fieldString(columnIndex: number): string | null {
-    const range = this.fieldRange(columnIndex);
+  get(columnIndex: number): string | null {
+    const range = this.range(columnIndex);
     if (range === null) {
       return null;
     }
     return this.#data.toString('utf8', range.start, range.end);
-  }
-
-  /**
-   * Reads a field from the current row as UTF-8 text.
-   *
-   * @param columnIndex Zero-based field index in the current row.
-   * @returns Decoded text, or `null` when the field is absent.
-   */
-  getPhysical(columnIndex: number): string | null {
-    return this.fieldString(columnIndex);
-  }
-
-  /**
-   * Reads a field from the current row as UTF-8 text.
-   *
-   * Both `get()` and `getPhysical()` use positions in the stored row.
-   *
-   * @param columnIndex Zero-based field index in the current row.
-   * @returns Decoded text, or `null` when the field is absent.
-   */
-  get(columnIndex: number): string | null {
-    return this.getPhysical(columnIndex);
   }
 
   /**
@@ -225,25 +167,14 @@ export class NativeCsvRowView {
    * this low-level accessor.
    * @returns A newly allocated array of decoded UTF-8 strings.
    */
-  pickPhysical(columns: CsvColumns): string[] {
+  pick(columns: CsvColumns): string[] {
     this.#requireActive();
     const values: string[] = [];
     values.length = columns.length;
     for (let index = 0; index < columns.length; ++index) {
-      values[index] = this.fieldString(columns[index] ?? 0) ?? '';
+      values[index] = this.get(columns[index] ?? 0) ?? '';
     }
     return values;
-  }
-
-  /**
-   * Materializes selected fields from the current row in the requested order.
-   *
-   * @param columns Zero-based field indexes in the current row. Duplicate
-   * indexes are allowed for this low-level accessor.
-   * @returns A new array of decoded UTF-8 strings. Missing fields are `''`.
-   */
-  pick(columns: CsvColumns): string[] {
-    return this.pickPhysical(columns);
   }
 
   #rowRange(rowIndex: number): readonly [number, number] {
@@ -781,11 +712,6 @@ export class NativeCsvBatch {
       this.#fieldOffsets = undefined;
       this.#fieldOffsetWords = undefined;
     }
-  }
-
-  /** Alias for {@link close}, suitable for explicit resource management. */
-  dispose(): void {
-    this.close();
   }
 
   /** Implements `using` / explicit resource management. */

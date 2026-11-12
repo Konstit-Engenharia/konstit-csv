@@ -293,7 +293,7 @@ export async function count(path: string, suppliedOptions: CsvCountOptions = {})
  * @throws {RangeError} If `shardCount` is not a positive integer.
  * @throws {Error} If the input is compressed, the encoding requires transcoding, or the delimiter is automatic or invalid.
  */
-export function findCsvSafeSplitOffsets(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): number[] {
+function findCsvSafeSplitOffsets(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): number[] {
   const options = snapshotCsvOptions(suppliedOptions);
   return findCsvSafeSplitOffsetsNative(path, shardCount, shardingDelimiter(options, 'CSV split offset scanning'));
 }
@@ -312,7 +312,7 @@ export function findCsvSafeSplitOffsets(path: string, shardCount: number, suppli
  * @throws {RangeError} If `shardCount` is not a positive integer.
  * @throws {Error} If the input is compressed, the encoding requires transcoding, or the delimiter is automatic or invalid.
  */
-export function findCsvSafeShards(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): CsvShard[] {
+function findCsvSafeShards(path: string, shardCount: number, suppliedOptions: CsvShardingOptions = {}): CsvShard[] {
   const options = snapshotCsvOptions(suppliedOptions);
   return findCsvSafeShardsNative(path, shardCount, shardingDelimiter(options, 'CSV shard scanning'));
 }

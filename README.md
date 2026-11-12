@@ -97,15 +97,15 @@ console.log(await csv.count('data.csv')); // 3, including the header
 
 ## Choose an API
 
-| Task                         | API                                                 | Result or lifecycle                                 |
-| ---------------------------- | --------------------------------------------------- | --------------------------------------------------- |
-| Parse an in-memory buffer    | `await csv.parse(buffer)`                           | All rows as arrays of strings                       |
-| Stream a file                | `csv.rows(path)`                                    | Async stream of row batches                         |
-| Count records                | `await csv.count(path)`                             | Record count, optionally filtered                   |
-| Access native batches        | `csv.batches(path, options)`                        | Use `using` to close each batch after its iteration |
-| Visit rows or scan columns   | `batch.forEachRow()` / `batch.scanColumns()`        | Read projected fields by position within the batch  |
-| Supply your own input chunks | `NativeCsvParser`                                   | Manual parser and batch disposal                    |
-| Find record-safe boundaries  | `findCsvSafeSplitOffsets()` / `findCsvSafeShards()` | Advanced byte-range processing                      |
+| Task                         | API                                                         | Result or lifecycle                                 |
+| ---------------------------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| Parse an in-memory buffer    | `await csv.parse(buffer)`                                   | All rows as arrays of strings                       |
+| Stream a file                | `csv.rows(path)`                                            | Async stream of row batches                         |
+| Count records                | `await csv.count(path)`                                     | Record count, optionally filtered                   |
+| Access native batches        | `csv.batches(path, options)`                                | Use `using` to close each batch after its iteration |
+| Visit rows or scan columns   | `batch.forEachRow()` / `batch.scanColumns()`                | Read projected fields by position within the batch  |
+| Supply your own input chunks | `NativeCsvParser`                                           | Manual parser and batch disposal                    |
+| Find record-safe boundaries  | `csv.findCsvSafeSplitOffsets()` / `csv.findCsvSafeShards()` | Advanced byte-range processing                      |
 
 Start with `csv.rows()` for streaming records. Use batches or views when you need byte access or lower allocation
 overhead. Advanced applications can use the record-safe boundary helpers to divide an uncompressed CSV file into

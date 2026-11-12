@@ -41,7 +41,7 @@ export type {
   NativeCsvRowCallback,
 } from './types.js';
 
-export { csv, findCsvSafeShards, findCsvSafeSplitOffsets } from './api.js';
+export { csv } from './api.js';
 export { NativeCsvBatch, NativeCsvRowView } from './batches.js';
 export { countCsvFile, countTrustedNewlineRows, parseCsvBuffer, parseCsvFile, parseCsvFileProjected } from './files.js';
 export { defineCountOptions, defineRowsOptions } from './options.js';
