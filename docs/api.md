@@ -155,8 +155,11 @@ for await (
 }
 ```
 
-ZIP entry names must match exactly. `entry: '*'` is allowed only when the archive contains exactly one file entry;
-directories are ignored. Encrypted entries and methods other than stored and DEFLATE are rejected. ZIP output is limited
+ZIP entry names must match exactly. `entry: '*'` selects the only file after ignoring directories and OS metadata.
+Ignored metadata includes files inside `__MACOSX/` or `.AppleDouble/` directories at any depth, filenames starting
+with `._`, and `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `ehthumbs_vista.db`, and `desktop.ini` (case-insensitive).
+Explicit entry names can select these files. Automatic selection fails when zero or multiple data files remain.
+Encrypted entries and methods other than stored and DEFLATE are rejected. ZIP output is limited
 by default to 64 GiB and a declared compression ratio of 1000; use `maxDecompressedBytes` and `maxCompressionRatio`
 to apply stricter limits or to permit a larger trusted entry.
 

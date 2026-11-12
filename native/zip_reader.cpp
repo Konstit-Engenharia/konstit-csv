@@ -8,6 +8,7 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <string_view>
 #include <sys/types.h>
 #include <vector>
 
@@ -57,6 +58,31 @@ bool add_within(uint64_t left, uint64_t right, uint64_t upper_bound, uint64_t& r
   }
   result = left + right;
   return result <= upper_bound;
+}
+
+bool is_os_metadata_entry(std::string_view name) {
+  for (size_t separator = name.find('/'); separator != std::string_view::npos; separator = name.find('/')) {
+    const std::string_view directory = name.substr(0, separator);
+    if (directory == "__MACOSX" || directory == ".AppleDouble") {
+      return true;
+    }
+    name.remove_prefix(separator + 1);
+  }
+  if (name.starts_with("._")) {
+    return true;
+  }
+
+  constexpr std::array<std::string_view, 5> metadata_names = {".ds_store", "thumbs.db", "ehthumbs.db",
+                                                              "ehthumbs_vista.db", "desktop.ini"};
+  return std::any_of(metadata_names.begin(), metadata_names.end(), [name](std::string_view metadata_name) {
+    return std::equal(name.begin(), name.end(), metadata_name.begin(), metadata_name.end(),
+                      [](char character, char expected) {
+                        if (character >= 'A' && character <= 'Z') {
+                          character = static_cast<char>(character + ('a' - 'A'));
+                        }
+                        return character == expected;
+                      });
+  });
 }
 
 enum class zip_reader_status : int {
@@ -295,9 +321,11 @@ private:
         return false;
       }
       const bool is_file = !name.empty() && name.back() != '/';
-      const bool matches = select_only_file ? is_file
-                                            : name.size() == entry_name_.size() &&
-                                                  std::memcmp(name.data(), entry_name_.data(), name.size()) == 0;
+      const bool matches =
+          select_only_file
+              ? is_file &&
+                    !is_os_metadata_entry(std::string_view(reinterpret_cast<const char*>(name.data()), name.size()))
+              : name.size() == entry_name_.size() && std::memcmp(name.data(), entry_name_.data(), name.size()) == 0;
       if (matches) {
         if (found) {
           if (select_only_file) {

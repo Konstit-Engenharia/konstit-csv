@@ -141,6 +141,25 @@ describe('csv CLI', () => {
     expect(chosen.stdout.toString()).toContain('Delimiter: "|"\nLine endings: CR\nCompression: zip\nFirst record columns: 2');
   });
 
+  test('probe ignores OS metadata when automatically selecting a ZIP entry', async () => {
+    const path = join(temporaryDirectory, 'with-metadata.zip');
+    await Bun.write(
+      path,
+      createZip([
+        { data: Buffer.from('metadata'), method: 0, name: '__MACOSX/._example.csv' },
+        { data: Buffer.from('id;name\n1;Ada\n'), method: 8, name: 'example.csv' },
+        { data: Buffer.from('metadata'), method: 0, name: '.DS_Store' },
+        { data: Buffer.from('metadata'), method: 0, name: 'Thumbs.db' },
+      ]),
+    );
+    for (const arguments_ of [[], ['--zip-entry', '*']]) {
+      const result = runCli('probe', path, ...arguments_);
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.toString()).toBe('');
+      expect(result.stdout.toString()).toContain('Delimiter: ";"\nLine endings: LF\nCompression: zip\nFirst record columns: 2');
+    }
+  });
+
   test('probe distinguishes missing, incomplete, single-column, and ambiguous first records', async () => {
     const path = join(temporaryDirectory, 'unknown.data');
     for (

@@ -52,8 +52,8 @@ bunx @konstit/csv probe data.csv
 
 Size is the size of the regular file on disk. The other CSV details come from a sample of up to 64 KiB
 after decompression. The probe recognizes the same stream compression signatures and filename hints as
-`--compression auto`, plus plain files and ZIP archives. It reads the only file in a ZIP automatically;
-for archives containing multiple files, pass `--zip-entry path/to/table.csv`.
+`--compression auto`, plus plain files and ZIP archives. It reads the only file in a ZIP automatically after
+ignoring directories and OS metadata. For archives containing multiple data files, pass `--zip-entry path/to/table.csv`.
 
 Record endings can be LF, CRLF, CR, mixed, or absent. Newlines and separators inside quotes belong to their field.
 A complete first record with no candidate separators has one column; an empty file has zero.
@@ -134,7 +134,7 @@ only NDJSON records to stdout and cannot be combined with
 | `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding. |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                   |
 | `--compression <format>`           | `auto` (default), `none`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`. |
-| `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file entry. |
+| `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file after ignoring directories and OS metadata. |
 | `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.          |
 | `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.   |
 
@@ -151,6 +151,11 @@ in the TypeScript API require uncompressed input. ZIP input
 supports stored and DEFLATE entries; encrypted entries and other compression
 methods fail. ZIP options must be used together with `--compression zip` and a
 non-empty `--zip-entry`.
+
+Automatic ZIP selection skips files inside `__MACOSX/` or `.AppleDouble/` directories at any depth,
+filenames starting with `._`, and `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `ehthumbs_vista.db`, and
+`desktop.ini` (case-insensitive). Explicit entry names can select these files. Automatic selection requires
+exactly one data file after these exclusions.
 
 For the repository's large Latin-1 corpus, follow the [dataset setup](./benchmarks.md#prepare-the-datasets),
 then pass both the delimiter and encoding explicitly:

@@ -190,6 +190,7 @@ const probeHelp = `Usage: csv probe <path> [--zip-entry <path>]
 Print the on-disk file size and compression, plus the encoding, delimiter,
 record endings and first record's column count from up to 64 KiB of CSV.
 For a ZIP archive with multiple files, select one with --zip-entry.
+Automatic ZIP selection ignores directories and common OS metadata.
 Use -h or --help to show this help.`;
 const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 const MAX_FILTER_NESTING = 128;

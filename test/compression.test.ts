@@ -33,6 +33,22 @@ const expectedRows = [
   ['3', 'Caio', 'SP'],
 ];
 const formats = ['gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd'] as const satisfies readonly Bun.CompressionFormat[];
+const metadataEntries = [
+  '__MACOSX/._input.tsv',
+  'nested/__MACOSX/metadata',
+  '.AppleDouble/input.tsv',
+  'nested/.AppleDouble/input.tsv',
+  '._input.tsv',
+  'nested/._input.tsv',
+  '.DS_Store',
+  'nested/.DS_STORE',
+  'Thumbs.db',
+  'nested/THUMBS.DB',
+  'ehthumbs.db',
+  'nested/EHTHUMBS_VISTA.DB',
+  'desktop.ini',
+  'nested/DESKTOP.INI',
+].map((name) => ({ data: Buffer.from('metadata\n'), method: 0 as const, name }));
 
 let temporaryDirectory: string;
 
@@ -66,6 +82,15 @@ beforeAll(async () => {
     ]),
   );
   await Bun.write(join(temporaryDirectory, 'empty.zip'), createZip([]));
+  await Bun.write(join(temporaryDirectory, 'metadata-only.zip'), createZip(metadataEntries));
+  await Bun.write(
+    join(temporaryDirectory, 'with-metadata.zip'),
+    createZip([
+      ...metadataEntries,
+      { data: source, method: 8, name: 'nested/input.tsv' },
+      { data: Buffer.from('metadata\n'), method: 0, name: 'nested/.ds_store' },
+    ]),
+  );
   await Bun.write(
     join(temporaryDirectory, 'corrupt.zip'),
     createZip([{ crc32: (Bun.hash.crc32(source) ^ 1) >>> 0, data: source, method: 8, name: 'input.tsv' }]),
@@ -320,6 +345,61 @@ describe('compressed CSV file streams', () => {
     ).toBe(4);
   });
 
+  test('skips OS metadata when selecting the only ZIP file', async () => {
+    const rows: string[][] = [];
+    for await (
+      const batch of csv.rows(join(temporaryDirectory, 'with-metadata.zip'), {
+        chunkSize: 3,
+        compression: { entry: '*', format: 'zip' },
+        delimiter: ';',
+      })
+    ) {
+      rows.push(...batch);
+    }
+    expect(rows).toEqual(expectedRows);
+  });
+
+  test('allows explicit selection of OS metadata entries', async () => {
+    for (const { name } of metadataEntries) {
+      expect(
+        await csv.count(join(temporaryDirectory, 'metadata-only.zip'), {
+          compression: { entry: name, format: 'zip' },
+          delimiter: ';',
+        }),
+      ).toBe(1);
+    }
+  });
+
+  test('counts hidden data files and metadata lookalikes when selecting a ZIP file', async () => {
+    const path = join(temporaryDirectory, 'metadata-lookalikes.zip');
+    for (
+      const name of [
+        '.hidden.csv',
+        '__MACOSX.csv',
+        '__MACOSX-backup/data.csv',
+        'data/.AppleDouble.csv',
+        '.DS_Store.csv',
+        'Thumbs.db.csv',
+        'desktop.ini.csv',
+      ]
+    ) {
+      await Bun.write(
+        path,
+        createZip([
+          ...metadataEntries,
+          { data: source, method: 8, name: 'input.tsv' },
+          { data: source, method: 0, name },
+        ]),
+      );
+      expect(
+        (await rejectedError(csv.count(path, {
+          compression: { entry: '*', format: 'zip' },
+          delimiter: ';',
+        }))).message,
+      ).toContain('entry \'*\' requires exactly one file');
+    }
+  });
+
   test('rejects entry \'*\' unless the ZIP contains exactly one file', async () => {
     const options = {
       compression: { entry: '*', format: 'zip' } as const,
@@ -330,6 +410,9 @@ describe('compressed CSV file streams', () => {
       'entry \'*\' requires exactly one file',
     );
     expect((await rejectedError(csv.count(join(temporaryDirectory, 'empty.zip'), options))).message).toContain(
+      'entry \'*\' requires exactly one file',
+    );
+    expect((await rejectedError(csv.count(join(temporaryDirectory, 'metadata-only.zip'), options))).message).toContain(
       'entry \'*\' requires exactly one file',
     );
   });

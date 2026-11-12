@@ -28,13 +28,15 @@ export type CsvNativeEncoding =
  * Selects one CSV entry from a ZIP archive.
  *
  * ZIP input is available to file parsing operations. The `entry` name must
- * match the archive member exactly; use `'*'` only when the archive contains
- * exactly one file entry.
+ * match the archive member exactly. `'*'` selects the only file after ignoring
+ * directories and OS metadata. This includes files in `__MACOSX/` or
+ * `.AppleDouble/` directories, `._*` files, and the case-insensitive filenames
+ * `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `ehthumbs_vista.db`, and `desktop.ini`.
  */
 export interface CsvZipCompression {
   /** ZIP is the selected container format. */
   readonly format: 'zip';
-  /** Archive member containing the CSV data, or `'*'` for an unambiguous single-file archive. */
+  /** Exact archive member name, or `'*'` for the only file after ignoring directories and OS metadata. */
   readonly entry: string;
   /**
    * Maximum allowed decompressed-to-compressed byte ratio for the selected entry.
