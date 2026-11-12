@@ -1,12 +1,15 @@
-import { parseArgs } from 'node:util';
 import { csv } from './api.js';
+import {
+  type CountArguments,
+  csvCommand,
+  type LinesArguments,
+} from './cli-schema.js';
 import { formatBytes } from './format-bytes.js';
 import { inspectCsvFile } from './inspect-file.js';
 import {
   normalizeColumns,
   normalizeFilterColumn,
   normalizeFixedColumnsCount,
-  resolveInputEncoding,
 } from './normalize.js';
 import type {
   CsvApiFileOptions,
@@ -14,181 +17,10 @@ import type {
   CsvCompression,
   CsvCountOptions,
   CsvDelimiter,
-  CsvEncoding,
-  CsvFileEncoding,
   CsvFilter,
   CsvRowsOptions,
 } from './types.js';
 
-const help = `Usage: csv <command>
-
-Commands:
-  count <path> [options]  Count CSV records
-  lines <path> [options]  Stream matching CSV records to stdout
-  probe <path> [options]  Inspect the file size and CSV format
-
-Options:
-  -h, --help              Show this help
-
-Run 'csv <command> --help' for command options.
-
-Run without installing:
-  bunx @konstit/csv <command> <path>`;
-
-const countHelp = `Usage: csv count <path> [options]
-
-Count every CSV record, including the header row.
-ZIP input automatically selects the only data file, ignoring OS metadata.
-
-File options:
-  --delimiter <value>              One safe ASCII character or auto (default: auto)
-  --encoding <value>               A Bun.Encoding label or auto (default: auto)
-  --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
-  --compression <format>           auto, none, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: auto)
-  --zip-entry <path>               Entry used with --compression zip
-  --max-compression-ratio <ratio>  ZIP expansion ratio integer from 1 through 4294967295
-  --max-decompressed-bytes <bytes> Positive ZIP output byte limit
-
-Parser options:
-  --strict                         Enable strict RFC 4180 validation
-  --fixed-columns <count>          Require this positive field count in strict mode
-  --columns <indexes>              Validate indexes; does not change the count
-  --expected-header <value>        Expected header; repeat per column; requires --strict
-  --require-header                 Require a header row; requires --strict
-  --min-data-rows <count>          Require a non-negative data row count; requires --strict
-
-Friendly filter options (repeatable):
-  --where-eq <column=value>        Match one exact value
-  --where-in <column=value>        Add a value to a column IN filter
-  --where-neq <column=value>       Exclude one exact value
-  --where-noin <column=value>      Add a value to a column NOT IN filter
-  --where-prefix <column=value>    Match a value prefix
-  --where-regex <column=/re/flags> Match an RE2-compatible JavaScript regex
-
-Advanced filter option:
-  --where <json>                   Advanced filter JSON
-
-Friendly filter clauses use AND. Repeated --where-in and --where-noin clauses for
-the same column form one filter. Advanced JSON can nest all, any, and not.
-Quote values that contain spaces or shell characters. Regex flags can be i, m, s, and u.
-
-Compatibility:
-  Strict mode cannot use filter options.
-  --fixed-columns and schema options require --strict.
-  ZIP options require --compression zip and --zip-entry.
-
-Examples:
-  csv count data.csv --delimiter ';' --chunk-size 262144
-  csv count data.csv --where-eq 2=SP
-  csv count data.csv --where-neq 2=SP
-  csv count data.csv --where-in 2=SP --where-in 2=RJ --where-prefix 1=A
-  csv count data.csv --where-regex '1=/^ana/i'`;
-
-const linesHelp = `Usage: csv lines <path> [options]
-
-Parse a CSV file and stream matching records as normalized UTF-8 CSV or NDJSON.
-CSV output uses comma delimiters and LF record endings by default.
-ZIP input automatically selects the only data file, ignoring OS metadata.
-
-File options:
-  --delimiter <value>              Input delimiter: one safe ASCII character or auto (default: auto)
-  --encoding <value>               A Bun.Encoding label or auto (default: auto)
-  --chunk-size <bytes>             Integer from 1 through 67108864 (default: 1048576)
-  --compression <format>           auto, none, gzip, deflate, deflate-raw, brotli, zstd, or zip (default: auto)
-  --zip-entry <path>               Entry used with --compression zip
-  --max-compression-ratio <ratio>  ZIP expansion ratio integer from 1 through 4294967295
-  --max-decompressed-bytes <bytes> Positive ZIP output byte limit
-
-Output options:
-  --json                           Emit one JSON string array per record (NDJSON)
-  --output-delimiter <value>       One safe ASCII output delimiter (default: ,)
-  --limit <N>                      Stop after matching output record N, numbered from 1
-
-Parser options:
-  --strict                         Enable strict RFC 4180 validation
-  --fixed-columns <count>          Require this positive field count in strict mode
-  --columns <indexes>              Select zero-based input columns and output order
-  --expected-header <value>        Expected header; repeat per column; requires --strict
-  --require-header                 Require a header row; requires --strict
-  --min-data-rows <count>          Require a non-negative data row count; requires --strict
-
-Friendly filter options (repeatable):
-  --where-eq <column=value>        Match one exact value
-  --where-in <column=value>        Add a value to a column IN filter
-  --where-neq <column=value>       Exclude one exact value
-  --where-noin <column=value>      Add a value to a column NOT IN filter
-  --where-prefix <column=value>    Match a value prefix
-  --where-regex <column=/re/flags> Match an RE2-compatible JavaScript regex
-
-Advanced filter option:
-  --where <json>                   Advanced filter JSON
-
-Filters use original input column indexes. Friendly filter clauses use AND.
-Repeated --where-in and --where-noin clauses for the same column form one filter.
-Advanced JSON can nest all, any, and not. Quote values that contain spaces or
-shell characters. Regex flags can be i, m, s, and u.
-
-CSV output is normalized and can differ from the input quoting, delimiter, and
-record endings. With --json, stdout contains only NDJSON string arrays. A quoted
-field can contain physical newlines. With --strict and --limit, validation stops
-at the selected record and uses one-byte input chunks. Partial output can exist
-if a later input error occurs.
-
-Compatibility:
-  Strict mode cannot use filter options.
-  --fixed-columns and schema options require --strict.
-  --json cannot be combined with --output-delimiter.
-  --limit cannot be combined with --min-data-rows.
-  --strict with --limit defaults to comma and UTF-8 and uses --chunk-size 1; auto is unavailable.
-  --strict with --limit uses --compression none; compression detection is unavailable.
-  ZIP options require --compression zip and --zip-entry.
-
-Examples:
-  csv lines data.csv
-  csv lines data.csv --json --limit 10
-  csv lines input.tsv --delimiter $'\\t' --output-delimiter ','
-  csv lines data.csv --columns 0,2 --where-eq 3=active --limit 10
-  csv lines data.csv.gz --compression auto > selected.csv`;
-
-const countOptionDefinitions = {
-  'columns': { type: 'string' },
-  'compression': { type: 'string' },
-  'delimiter': { type: 'string' },
-  'encoding': { type: 'string' },
-  'chunk-size': { type: 'string' },
-  'expected-header': { multiple: true, type: 'string' },
-  'fixed-columns': { type: 'string' },
-  'help': { short: 'h', type: 'boolean' },
-  'max-compression-ratio': { type: 'string' },
-  'max-decompressed-bytes': { type: 'string' },
-  'min-data-rows': { type: 'string' },
-  'require-header': { type: 'boolean' },
-  'strict': { type: 'boolean' },
-  'where': { type: 'string' },
-  'where-eq': { multiple: true, type: 'string' },
-  'where-in': { multiple: true, type: 'string' },
-  'where-neq': { multiple: true, type: 'string' },
-  'where-noin': { multiple: true, type: 'string' },
-  'where-prefix': { multiple: true, type: 'string' },
-  'where-regex': { multiple: true, type: 'string' },
-  'zip-entry': { type: 'string' },
-} as const;
-
-const linesOptionDefinitions = {
-  ...countOptionDefinitions,
-  'json': { type: 'boolean' },
-  'limit': { type: 'string' },
-  'output-delimiter': { type: 'string' },
-} as const;
-
-const compressionFormats = new Set(['auto', 'none', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd']);
-const probeHelp = `Usage: csv probe <path> [--zip-entry <path>]
-
-Print the on-disk file size and compression, plus the encoding, delimiter,
-record endings and first record's column count from up to 64 KiB of CSV.
-For a ZIP archive with multiple files, select one with --zip-entry.
-Automatic ZIP selection ignores directories and common OS metadata.
-Use -h or --help to show this help.`;
 const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 const MAX_FILTER_NESTING = 128;
 const OUTPUT_BUFFER_SIZE = 64 * 1024;
@@ -200,48 +32,31 @@ interface CliOutput {
 }
 
 export async function runCli(arguments_: readonly string[], output: CliOutput): Promise<number> {
-  const command = arguments_[0];
-  if (command === '-h' || command === '--help') {
-    output.log(help);
+  const result = csvCommand.tryParse(arguments_);
+  if (result.type === 'error') {
+    return usageError(output, result.error.message, `${result.error.commandPath.join(' ')} --help`);
+  }
+  if (result.type === 'display') {
+    output.log(result.output.trimEnd());
     return 0;
   }
-  if (command === undefined) {
-    return usageError(output, 'missing command');
-  }
-  if (command === 'count') {
-    return runCount(arguments_.slice(1), output);
-  }
-  if (command === 'lines') {
-    return runLines(arguments_.slice(1), output);
-  }
-  if (command === 'probe') {
-    return runProbe(arguments_.slice(1), output);
-  }
-  return usageError(output, `unknown command: ${command}`);
-}
-
-async function runProbe(arguments_: readonly string[], output: CliOutput): Promise<number> {
-  let path: string;
-  let entry: string | undefined;
-  try {
-    const { values, positionals } = parseArgs({
-      args: [...arguments_],
-      allowPositionals: true,
-      strict: true,
-      options: { 'help': countOptionDefinitions.help, 'zip-entry': countOptionDefinitions['zip-entry'] },
-    });
-    if (values.help === true) {
-      output.log(probeHelp);
+  const { subcommand } = result.value;
+  switch (subcommand.name) {
+    case 'count':
+      return runCount(subcommand.args, output);
+    case 'lines':
+      return runLines(subcommand.args, output);
+    case 'probe':
+      return runProbe(subcommand.args.path, subcommand.args['zip-entry'], output);
+    case 'completion': {
+      const { generateCompletion } = await import('@konstit/cli/completion');
+      output.log(generateCompletion(csvCommand, subcommand.args.shell).trimEnd());
       return 0;
     }
-    if (positionals.length !== 1 || positionals[0] === undefined) {
-      throw new Error('probe requires one file path');
-    }
-    path = positionals[0];
-    entry = values['zip-entry'];
-  } catch (error) {
-    return usageError(output, error instanceof Error ? error.message : String(error), 'csv probe --help');
   }
+}
+
+async function runProbe(path: string, entry: string | undefined, output: CliOutput): Promise<number> {
   try {
     const result = await inspectCsvFile(path, entry);
     output.log([
@@ -259,20 +74,16 @@ async function runProbe(arguments_: readonly string[], output: CliOutput): Promi
   }
 }
 
-async function runCount(arguments_: readonly string[], output: CliOutput): Promise<number> {
-  let input: CountInput;
+async function runCount(args: CountArguments, output: CliOutput): Promise<number> {
+  let options: CsvCountOptions;
   try {
-    input = parseCountInput(arguments_);
+    options = parseCommonOptions(args);
   } catch (error) {
     return usageError(output, error instanceof Error ? error.message : String(error), 'csv count --help');
   }
-  if (input.help) {
-    output.log(countHelp);
-    return 0;
-  }
 
   try {
-    output.log(await csv.count(input.path, input.options));
+    output.log(await csv.count(args.path, options));
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -281,16 +92,12 @@ async function runCount(arguments_: readonly string[], output: CliOutput): Promi
   }
 }
 
-async function runLines(arguments_: readonly string[], output: CliOutput): Promise<number> {
+async function runLines(args: LinesArguments, output: CliOutput): Promise<number> {
   let input: LinesInput;
   try {
-    input = parseLinesInput(arguments_);
+    input = parseLinesInput(args);
   } catch (error) {
     return usageError(output, error instanceof Error ? error.message : String(error), 'csv lines --help');
-  }
-  if (input.help) {
-    output.log(linesHelp);
-    return 0;
   }
 
   try {
@@ -306,14 +113,7 @@ async function runLines(arguments_: readonly string[], output: CliOutput): Promi
   }
 }
 
-interface CountInput {
-  help: boolean;
-  options: CsvCountOptions;
-  path: string;
-}
-
 interface LinesInput {
-  help: boolean;
   json: boolean;
   limit?: number;
   options: CsvRowsOptions<CsvColumns | undefined>;
@@ -321,63 +121,7 @@ interface LinesInput {
   path: string;
 }
 
-interface CommonOptionValues {
-  readonly 'chunk-size'?: string;
-  readonly 'columns'?: string;
-  readonly 'compression'?: string;
-  readonly 'delimiter'?: string;
-  readonly 'encoding'?: string;
-  readonly 'expected-header'?: readonly string[];
-  readonly 'fixed-columns'?: string;
-  readonly 'help'?: boolean;
-  readonly 'max-compression-ratio'?: string;
-  readonly 'max-decompressed-bytes'?: string;
-  readonly 'min-data-rows'?: string;
-  readonly 'require-header'?: boolean;
-  readonly 'strict'?: boolean;
-  readonly 'where'?: string;
-  readonly 'where-eq'?: readonly string[];
-  readonly 'where-in'?: readonly string[];
-  readonly 'where-neq'?: readonly string[];
-  readonly 'where-noin'?: readonly string[];
-  readonly 'where-prefix'?: readonly string[];
-  readonly 'where-regex'?: readonly string[];
-  readonly 'zip-entry'?: string;
-}
-
-function parseCountInput(arguments_: readonly string[]): CountInput {
-  const { positionals, values } = parseArgs({
-    allowPositionals: true,
-    args: [...arguments_],
-    options: countOptionDefinitions,
-    strict: true,
-  });
-  if (values.help === true) {
-    return { help: true, options: {}, path: '' };
-  }
-  if (positionals.length !== 1) {
-    throw new Error('count requires one file path');
-  }
-
-  const options = parseCommonOptions(values);
-
-  return { help: false, options, path: positionals[0] ?? '' };
-}
-
-function parseLinesInput(arguments_: readonly string[]): LinesInput {
-  const { positionals, values } = parseArgs({
-    allowPositionals: true,
-    args: [...arguments_],
-    options: linesOptionDefinitions,
-    strict: true,
-  });
-  if (values.help === true) {
-    return { help: true, json: false, options: {}, outputDelimiter: ',', path: '' };
-  }
-  if (positionals.length !== 1) {
-    throw new Error('lines requires one file path');
-  }
-
+function parseLinesInput(values: LinesArguments): LinesInput {
   const limit = values.limit === undefined ? undefined : parseInteger(values.limit, 'limit', 1);
   const options = parseCommonOptions(values, values.strict === true && limit !== undefined);
   if (limit !== undefined && options.minDataRows !== undefined) {
@@ -407,21 +151,20 @@ function parseLinesInput(arguments_: readonly string[]): LinesInput {
     : parseOutputDelimiter(values['output-delimiter']);
 
   return {
-    help: false,
     json,
     ...(limit === undefined ? {} : { limit }),
     options,
     outputDelimiter,
-    path: positionals[0] ?? '',
+    path: values.path,
   };
 }
 
 type MutableCliOptions<TOptions = CsvApiFileOptions> = { -readonly [Key in keyof TOptions]: TOptions[Key]; };
 
-function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): MutableCliOptions<CsvCountOptions> {
+function parseCommonOptions(values: CountArguments, fixedFormat = false): MutableCliOptions<CsvCountOptions> {
   const options: MutableCliOptions = {
     delimiter: parseDelimiter(values.delimiter ?? (fixedFormat ? ',' : 'auto')),
-    encoding: parseEncoding(values.encoding ?? (fixedFormat ? 'utf8' : 'auto')),
+    encoding: values.encoding ?? (fixedFormat ? 'utf8' : 'auto'),
   };
   if (values['chunk-size'] !== undefined) {
     options.chunkSize = parseInteger(values['chunk-size'], 'chunk size', 1, MAX_CHUNK_SIZE);
@@ -436,7 +179,7 @@ function parseCommonOptions(values: CommonOptionValues, fixedFormat = false): Mu
   if (values.columns !== undefined) {
     options.columns = parseColumns(values.columns, 'columns');
   }
-  if (values['expected-header'] !== undefined) {
+  if (values['expected-header'].length > 0) {
     options.expectedHeaders = values['expected-header'];
   }
   if (values['require-header'] === true) {
@@ -476,15 +219,7 @@ function parseOutputDelimiter(value: string): string {
   return delimiter;
 }
 
-function parseEncoding(value: string): CsvFileEncoding {
-  if (value === 'auto') {
-    return value;
-  }
-  const resolved = resolveInputEncoding(value);
-  return typeof resolved === 'string' ? resolved : resolved.encoding as CsvEncoding;
-}
-
-function parseInteger(value: string, label: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
+function parseInteger(value: string | number, label: string, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
     const range = maximum === Number.MAX_SAFE_INTEGER
@@ -501,25 +236,16 @@ function parseColumns(value: string, label: string): number[] {
   return columns;
 }
 
-function parseCompression(values: CommonOptionValues): CsvCompression | undefined {
+function parseCompression(values: CountArguments): CsvCompression | undefined {
   const compression = values['compression'];
   const zipEntry = values['zip-entry'];
   const maxCompressionRatio = values['max-compression-ratio'];
   const maxDecompressedBytes = values['max-decompressed-bytes'];
-  if (typeof compression !== 'string') {
-    if (zipEntry !== undefined || maxCompressionRatio !== undefined || maxDecompressedBytes !== undefined) {
-      throw new Error('ZIP options require --compression zip');
-    }
-    return undefined;
-  }
   if (compression !== 'zip') {
-    if (!compressionFormats.has(compression)) {
-      throw new Error(`unsupported compression format: ${compression}`);
-    }
     if (zipEntry !== undefined || maxCompressionRatio !== undefined || maxDecompressedBytes !== undefined) {
       throw new Error('ZIP options require --compression zip');
     }
-    return compression as Bun.CompressionFormat | 'auto' | 'none';
+    return compression;
   }
   if (typeof zipEntry !== 'string' || zipEntry.length === 0) {
     throw new Error('--compression zip requires --zip-entry <path>');
@@ -531,7 +257,7 @@ function parseCompression(values: CommonOptionValues): CsvCompression | undefine
     ...(typeof maxCompressionRatio === 'string'
       ? { maxCompressionRatio: parseUint32(maxCompressionRatio, 'maximum compression ratio') }
       : {}),
-    ...(typeof maxDecompressedBytes === 'string'
+    ...(maxDecompressedBytes !== undefined
       ? { maxDecompressedBytes: parseInteger(maxDecompressedBytes, 'maximum decompressed bytes', 1) }
       : {}),
   };
@@ -609,32 +335,24 @@ function parseUint32(value: string, label: string): number {
   return number;
 }
 
-function parseWhereOptions(values: {
-  readonly 'where'?: string;
-  readonly 'where-eq'?: readonly string[];
-  readonly 'where-in'?: readonly string[];
-  readonly 'where-neq'?: readonly string[];
-  readonly 'where-noin'?: readonly string[];
-  readonly 'where-prefix'?: readonly string[];
-  readonly 'where-regex'?: readonly string[];
-}): CsvFilter | undefined {
+function parseWhereOptions(values: CountArguments): CsvFilter | undefined {
   const filters: CsvFilter[] = [];
   if (values.where !== undefined) {
     filters.push(parseWhereJson(values.where));
   }
 
-  for (const expression of values['where-eq'] ?? []) {
+  for (const expression of values['where-eq']) {
     const { column, value } = parseColumnValue(expression, '--where-eq');
     filters.push(csv.column(column).equals(value));
   }
 
-  for (const expression of values['where-neq'] ?? []) {
+  for (const expression of values['where-neq']) {
     const { column, value } = parseColumnValue(expression, '--where-neq');
     filters.push(csv.column(column).doesNotEqual(value));
   }
 
   const inValuesByColumn = new Map<number, string[]>();
-  for (const expression of values['where-in'] ?? []) {
+  for (const expression of values['where-in']) {
     const { column, value } = parseColumnValue(expression, '--where-in');
     const columnValues = inValuesByColumn.get(column);
     if (columnValues === undefined) {
@@ -648,7 +366,7 @@ function parseWhereOptions(values: {
   }
 
   const notInValuesByColumn = new Map<number, string[]>();
-  for (const expression of values['where-noin'] ?? []) {
+  for (const expression of values['where-noin']) {
     const { column, value } = parseColumnValue(expression, '--where-noin');
     const columnValues = notInValuesByColumn.get(column);
     if (columnValues === undefined) {
@@ -661,11 +379,11 @@ function parseWhereOptions(values: {
     filters.push(csv.column(column).isNoneOf(notInValues));
   }
 
-  for (const expression of values['where-prefix'] ?? []) {
+  for (const expression of values['where-prefix']) {
     const { column, value } = parseColumnValue(expression, '--where-prefix');
     filters.push(csv.column(column).startsWith(value));
   }
-  for (const expression of values['where-regex'] ?? []) {
+  for (const expression of values['where-regex']) {
     filters.push(parseRegexExpression(expression));
   }
 
@@ -825,7 +543,7 @@ function requireExactKeys(
   }
 }
 
-function usageError(output: CliOutput, message: string, helpCommand = 'csv --help'): number {
+function usageError(output: CliOutput, message: string, helpCommand: string): number {
   output.error(`csv: ${message}\nRun '${helpCommand}' for usage.`);
   return 2;
 }

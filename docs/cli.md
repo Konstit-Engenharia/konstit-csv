@@ -25,18 +25,33 @@ bunx @konstit/csv --help
 bunx @konstit/csv count --help
 bunx @konstit/csv lines --help
 bunx @konstit/csv probe --help
+bunx @konstit/csv help count
 ```
 
-The top-level command has three subcommands:
+| Command              | Description                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------- |
+| `count <path>`        | Print the number of CSV records, including the header row.                                        |
+| `lines <path>`        | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).               |
+| `probe <path>`        | Print file size, encoding, delimiter, record endings, compression, and first record column count. |
+| `completion <shell>`  | Print a completion script for Bash, Zsh, Fish, or PowerShell.                                     |
 
-| Command        | Description                                                                                         |
-| -------------- | ----------------------------------------------------------------------------------------------------|
-| `count <path>` | Print the number of CSV records, including the header row.                                          |
-| `lines <path>` | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).                 |
-| `probe <path>` | Print file size, encoding, delimiter, record endings, compression, and first record column count.   |
+`count`, `lines`, and `probe` each take one input path. Use `csv help <command>`
+or `csv <command> --help` for command options. Parsing stops when it reaches
+`-h` or `--help`, so `csv count --help --unknown` prints help and exits successfully.
+An unknown option before `--help` produces a usage error (exit code 2).
+When repeating a scalar option, pass valid values at each occurrence. The last value wins.
 
-Each command accepts exactly one input path. The complete option list and
-defaults are available from the command-specific help output.
+## Shell completion
+
+With the `csv` executable on your path, load the script for your shell to complete commands,
+options, file paths, and values such as encodings and compression formats.
+
+| Shell      | Load into the current session                   |
+| ---------- | ----------------------------------------------- |
+| Bash       | `source <(csv completion bash)`                  |
+| Zsh        | `source <(csv completion zsh)` after `compinit`  |
+| Fish       | `csv completion fish \| source`                  |
+| PowerShell | `csv completion powershell \| Out-String \| Invoke-Expression` |
 
 ## Inspect a file
 
@@ -74,7 +89,7 @@ choose the number of input bytes read per chunk. The chunk size must be from 1
 through 67,108,864 bytes and defaults to 1 MiB.
 
 ```sh
-bunx @konstit/csv count data.csv --delimiter ',' --chunk-size 262144
+bunx @konstit/csv count data.csv --delimiter ',' --chunk-size 256KiB
 ```
 
 `count` also accepts the parser, compression, schema, projection, and filter
@@ -136,6 +151,14 @@ only NDJSON records to stdout and cannot be combined with
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file after ignoring directories and OS metadata. |
 | `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.                                               |
 | `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.                                        |
+
+`--chunk-size` and `--max-decompressed-bytes` accept a bare byte count or a size with a unit.
+For example, `256KiB` equals `262144` bytes and `1.5MB` equals `1500000` bytes.
+Units are case-sensitive: `B`, `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB`, and `TiB`.
+The result must be a whole number of bytes within the option's range.
+
+`csv count --help` and `csv lines --help` list the encoding and compression choices.
+Encoding aliases accepted by Bun also work, including `utf-8`, `cp1252`, and `sjis`.
 
 `--delimiter auto` detects comma, tab, semicolon, pipe, colon, caret, or tilde
 from a bounded prefix while ignoring separators inside quoted fields. Pass a fixed

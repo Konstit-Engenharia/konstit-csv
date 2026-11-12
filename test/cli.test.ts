@@ -77,7 +77,12 @@ describe('csv CLI', () => {
   });
 
   test('reports missing and unknown commands', async () => {
-    for (const [arguments_, message,] of [[[], 'missing command'], [['unknown'], 'unknown command: unknown']] as const) {
+    for (
+      const [arguments_, message,] of [
+        [[], 'a subcommand is required but one was not provided'],
+        [['unknown'], 'unexpected argument \'unknown\''],
+      ] as const
+    ) {
       const result = await runCli(...arguments_);
       expect(result.exitCode).toBe(2);
       expect(result.stderr.toString()).toBe(`csv: ${message}\nRun 'csv --help' for usage.\n`);
@@ -147,6 +152,18 @@ describe('csv CLI', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('4\n');
     expect(result.stderr.toString()).toBe('');
+  });
+
+  test('accepts unitless, SI, and IEC chunk sizes and enforces the byte limit after conversion', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    for (const size of ['0x400', '1.5KB', '1.5KiB']) {
+      const result = await runCli('count', path, '--chunk-size', size);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString()).toBe('2\n');
+    }
+    expectUsageError(await runCli('count', path, '--chunk-size', '65MiB'), 'chunk size must be an integer from 1 through 67108864');
+    expectUsageError(await runCli('count', path, '--chunk-size', '0.1B'), 'invalid value \'0.1B\' for \'--chunk-size\'');
+    expectUsageError(await runCli('count', path, '--chunk-size', '8PiB'), 'invalid value \'8PiB\' for \'--chunk-size\'');
   });
 
   test('detects the encoding with a fixed delimiter and detects both for filtered counts', async () => {
@@ -244,12 +261,12 @@ describe('csv CLI', () => {
   });
 
   test('probe accepts one file path and provides command help', async () => {
-    expectUsageError(await runCli('probe'), 'probe requires one file path', 'probe');
-    expectUsageError(await runCli('probe', 'one', 'two'), 'probe requires one file path', 'probe');
-    expectUsageError(await runCli('probe', 'one', '--strict'), 'Unknown option \'--strict\'', 'probe');
+    expectUsageError(await runCli('probe'), 'the following required arguments were not provided: <path>', 'probe');
+    expectUsageError(await runCli('probe', 'one', 'two'), 'unexpected argument \'two\'', 'probe');
+    expectUsageError(await runCli('probe', 'one', '--strict'), 'unexpected argument \'--strict\'', 'probe');
     const help = await runCli('probe', '--help');
     expect(help.exitCode).toBe(0);
-    expect(help.stdout.toString()).toContain('Usage: csv probe <path>');
+    expect(help.stdout.toString()).toContain('Usage: csv probe [OPTIONS] <PATH>');
     expectCommandError(await runCli('probe', join(temporaryDirectory, 'missing')), 'missing');
   });
 
@@ -384,6 +401,25 @@ describe('csv CLI', () => {
     expectCommandError(result, 'maximum compression ratio');
   });
 
+  test('applies decimal and binary size limits to the actual decompressed ZIP bytes', async () => {
+    const args = [
+      'count',
+      join(temporaryDirectory, 'high-ratio.zip'),
+      '--compression',
+      'zip',
+      '--zip-entry',
+      'input.csv',
+      '--max-compression-ratio',
+      '1000',
+      '--max-decompressed-bytes',
+    ];
+    expectCommandError(await runCli(...args, '16KB'), 'maximum decompressed byte count');
+    const exact = await runCli(...args, '16KiB');
+    expect(exact.exitCode).toBe(0);
+    expect(exact.stdout.toString()).toBe('4096\n');
+    expectUsageError(await runCli(...args, '0B'), 'maximum decompressed bytes must be an integer greater than or equal to 1');
+  });
+
   test('supports latin1 encoding', async () => {
     const result = await runCli(
       'count',
@@ -416,6 +452,16 @@ describe('csv CLI', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('id,name\n1,€\n2,“quoted”\n');
     expect(result.stderr.toString()).toBe('');
+  });
+
+  test('accepts decoder aliases and distinguishes native Latin-1 from Windows-1252', async () => {
+    const path = join(temporaryDirectory, 'windows-1252.csv');
+    const windows = await runCli('lines', path, '--encoding', '  CP1252  ');
+    const latin = await runCli('lines', path, '--encoding', 'ISO-8859-1');
+    expect(windows.exitCode).toBe(0);
+    expect(latin.exitCode).toBe(0);
+    expect(windows.stdout.toString()).toContain('1,€\n');
+    expect(latin.stdout.toString()).toContain('1,\u0080\n');
   });
 
   test('supports strict validation and a fixed column count', async () => {
@@ -475,6 +521,16 @@ describe('csv CLI', () => {
     );
 
     expectCommandError(result, 'strict CSV schema error: header mismatch at column 0');
+  });
+
+  test('retains an explicitly empty expected header', async () => {
+    const path = join(temporaryDirectory, 'empty-header.csv');
+    await Bun.write(path, ',name\n1,Ada\n');
+    const headers = ['--expected-header=', '--expected-header', 'name'];
+    const result = await runCli('count', path, '--strict', ...headers);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('2\n');
+    expectCommandError(await runCli('count', path, '--strict', '--expected-header', 'name'), 'header');
   });
 
   test('reports a missing required header', async () => {
@@ -949,9 +1005,9 @@ describe('csv CLI', () => {
     const result = await runCli('--help');
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toContain('count <path>');
-    expect(result.stdout.toString()).toContain('lines <path>');
-    expect(result.stdout.toString()).toContain('probe <path>');
+    for (const name of ['count', 'lines', 'probe', 'completion']) {
+      expect(result.stdout.toString()).toContain(`\n  ${name} `);
+    }
     expect(result.stdout.toString()).toContain('bunx @konstit/csv <command> <path>');
     expect(result.stderr.toString()).toBe('');
   });
@@ -961,7 +1017,11 @@ describe('csv CLI', () => {
     const stdout = result.stdout.toString();
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain('Usage: csv count <path> [options]');
+    expect(stdout).toContain('Usage: csv count [OPTIONS] <PATH>');
+    expect(stdout).toContain('shift_jis');
+    expect(stdout).toContain('windows-1252');
+    expect(stdout).toContain('deflate-raw');
+    expect(stdout).toContain('256KiB');
     for (
       const option of [
         '--delimiter',
@@ -997,6 +1057,42 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
+  test('help displays immediately and the help subcommand selects the same command', async () => {
+    for (const name of ['count', 'lines', 'probe', 'completion']) {
+      const expected = await runCli('help', name);
+      expect(expected.exitCode).toBe(0);
+      expect(expected.stdout.toString()).toContain(`Usage: csv ${name}`);
+      const result = await runCli(name, '--help', '--bogus');
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toEqual(expected.stdout);
+      expect(result.stderr.length).toBe(0);
+      expectUsageError(await runCli(name, '--bogus', '--help'), 'unexpected argument \'--bogus\'', name);
+    }
+  });
+
+  test('generates completion scripts with csv commands, options and enum values', async () => {
+    for (
+      const [shell, header,] of [
+        ['bash', '# bash completion for csv'],
+        ['zsh', '#compdef csv'],
+        ['fish', '# fish completion for csv'],
+        ['powershell', '# PowerShell completion for csv'],
+      ] as const
+    ) {
+      const result = await runCli('completion', shell);
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.length).toBe(0);
+      const script = result.stdout.toString();
+      expect(script).toStartWith(header);
+      for (const candidate of ['probe', '--chunk-size', '--encoding', 'shift_jis', 'deflate-raw']) {
+        expect(script).toContain(candidate);
+      }
+    }
+    const invalid = await runCli('completion', 'unknown');
+    expectUsageError(invalid, 'invalid value \'unknown\'', 'completion');
+    expect(invalid.stderr.toString()).toContain('expected one of: bash, zsh, fish, powershell');
+  });
+
   test('shows every lines option in lines help', async () => {
     const result = await runCli('lines', '--help');
     const stdout = result.stdout.toString();
@@ -1015,10 +1111,7 @@ describe('csv CLI', () => {
 
   test('reports invalid lines usage without a stack trace', async () => {
     const result = await runCli('lines');
-
-    expect(result.exitCode).toBe(2);
-    expect(result.stdout.toString()).toBe('');
-    expect(result.stderr.toString()).toBe('csv: lines requires one file path\nRun \'csv lines --help\' for usage.\n');
+    expectUsageError(result, 'the following required arguments were not provided: <path>', 'lines');
   });
 
   for (const value of ['0', '-1', '1.5', '9007199254740992']) {
@@ -1097,10 +1190,7 @@ describe('csv CLI', () => {
 
   test('reports invalid usage without a stack trace', async () => {
     const result = await runCli('count');
-
-    expect(result.exitCode).toBe(2);
-    expect(result.stdout.toString()).toBe('');
-    expect(result.stderr.toString()).toBe('csv: count requires one file path\nRun \'csv count --help\' for usage.\n');
+    expectUsageError(result, 'the following required arguments were not provided: <path>');
   });
 
   const invalidOptionCases: readonly {
@@ -1120,7 +1210,7 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--encoding', 'utf16'],
-      message: 'unsupported encoding: utf16',
+      message: 'invalid value \'utf16\' for \'--encoding\': unsupported encoding: utf16',
       name: 'an unsupported encoding',
     },
     {
@@ -1140,17 +1230,18 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--selected-columns', '0'],
-      message: 'Unknown option \'--selected-columns\'',
+      message: 'unexpected argument \'--selected-columns\'',
       name: 'the removed column selection alias',
     },
     {
       arguments: ['--worker-count', '2'],
-      message: 'Unknown option \'--worker-count\'',
+      message: 'unexpected argument \'--worker-count\'',
       name: 'the removed worker count option',
     },
     {
       arguments: ['--compression', 'unknown'],
-      message: 'unsupported compression format: unknown',
+      message:
+        'invalid value \'unknown\' for \'--compression\': expected one of: auto, none, gzip, deflate, deflate-raw, brotli, zstd, zip',
       name: 'an unsupported compression format',
     },
     {

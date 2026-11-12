@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "@konstit/csv",
+      "dependencies": {
+        "@konstit/cli": "0.0.6",
+      },
       "devDependencies": {
         "@biomejs/biome": "2.6.5",
         "@types/bun": "1.4.4",
@@ -87,6 +90,8 @@
     "@fast-csv/format": ["@fast-csv/format@5.0.8", "", {}, "sha512-ipZW+PF3T/28gpHMkgy1j24aQO3ZHCai5LzxotrECw7csd0+6GAA24q7zS6fqeQMzHsCNDyzAE1AdXodqn5Gzw=="],
 
     "@fast-csv/parse": ["@fast-csv/parse@5.0.8", "", {}, "sha512-i2R1TWa2tgRn9YEsNplzdCv0z8J1O85nUIqPdAQtQOheZ+Pw/3AhekI27Yp095r7qSJK0l8KwphK8WzB3aCtog=="],
+
+    "@konstit/cli": ["@konstit/cli@0.0.6", "", {}, "sha512-tiffVkIzJCJ9Z6qMjhXwbzovIxElRW9of4L/IaqAI7Vb1Zk7uA79DKESdAbh6S/8xWv6Vc/OoaUp2z76DeDKtA=="],
 
     "@oxlint-tsgolint/darwin-arm64": ["@oxlint-tsgolint/darwin-arm64@7.0.2006", "", { "os": "darwin", "cpu": "arm64" }, "sha512-uc0MEHXZUDW23Zmo5X28eSNeSnP17jKnh9GiehpVZqhfy99ks8spyXT5Llar3tjDN7ppnQN0Qd9FK6WNkdD+fQ=="],
 

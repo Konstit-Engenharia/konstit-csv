@@ -95,6 +95,17 @@ try {
     throw new Error(`package CLI lines smoke test failed with exit code ${String(linesResult.exitCode)}`);
   }
   console.log('package CLI lines smoke passed');
+
+  const completion = Bun.spawnSync({
+    cmd: [join(directory, 'node_modules', '.bin', 'csv'), 'completion', 'bash'],
+    cwd: directory,
+    stderr: 'inherit',
+    stdout: 'pipe',
+  });
+  if (!completion.success || !completion.stdout.toString().includes('shift_jis')) {
+    throw new Error(`package CLI completion smoke test failed with exit code ${String(completion.exitCode)}`);
+  }
+  console.log('package CLI completion smoke passed');
 } finally {
   await rm(directory, { recursive: true, force: true });
 }
