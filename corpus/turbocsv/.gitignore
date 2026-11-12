@@ -1,0 +1,6 @@
+*.csv
+*.tsv
+*.csv.gz
+*.tsv.gz
+*.zip
+*.part

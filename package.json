@@ -76,6 +76,7 @@
     "bench:example": "bun run bench -- example-file.bench.ts",
     "bench:field-access": "bun run bench -- field-access.bench.ts",
     "bench:latin1-decode": "bun run bench -- latin1-decode.bench.ts",
+    "bench:libs-comparison": "bun run build:native && bun bench/comparison/libs-comparison.ts",
     "bench:materialization:serial": "bun run bench -- materialization-serial.bench.ts",
     "bench:native-filters": "bun run bench -- native-filters.bench.ts",
     "bench:native": "bun run build:native && bun scripts/native-bench.ts",
@@ -113,13 +114,18 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.5",
     "@types/bun": "1.4.4",
+    "@types/papaparse": "5.5.2",
+    "csv-parse": "7.0.3",
     "csv-parser": "3.2.1",
     "csv-spectrum": "2.0.0",
     "dprint": "0.64.3",
+    "fast-csv": "5.0.8",
     "iconv-lite": "0.7.3",
     "mitata": "1.0.34",
     "oxlint": "1.91.0",
     "oxlint-tsgolint": "7.0.2006",
+    "papaparse": "5.7.1",
+    "turbocsv": "0.3.4",
     "typescript": "^5.9.3"
   },
   "engines": {

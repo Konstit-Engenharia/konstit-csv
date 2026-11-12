@@ -350,6 +350,12 @@ it and redistribute it freely, subject to the following restrictions:
 - Use in this repo: compatibility fixtures loaded by `test/csv-parser/spectrum.test.ts`.
 - Notice: csv-spectrum is copyright its authors and contributors. Redistribution of source or binary forms must retain the BSD-2-Clause copyright notice, conditions, and disclaimer.
 
+## TurboCSV
+
+- Source: [TurboCSV library comparison](https://github.com/bytebrujo/bun-csv/blob/d1217818230788a8a4f48ebc023a71cd1a57feb4/test/benchmark-comparison.ts)
+- License: [MIT](./LICENSE), TurboCSV Contributors.
+- Use in this repo: synthetic fixture recipe and file parsing workloads adapted in `bench/comparison/libs-comparison.ts`.
+
 ## csvkit
 
 - Source: https://github.com/wireservice/csvkit

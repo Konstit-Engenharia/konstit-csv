@@ -68,6 +68,38 @@ These are recorded results from two runs on one machine, not a universal perform
 encoding, filters, output representation, and input shape affect results. Re-run the comparison in your environment
 before using these figures to make a performance decision.
 
+## TurboCSV library comparison
+
+```sh
+bun run bench:libs-comparison
+```
+
+This ports [TurboCSV's file benchmark](https://github.com/bytebrujo/bun-csv/blob/d1217818230788a8a4f48ebc023a71cd1a57feb4/test/benchmark-comparison.ts).
+It generates and reuses the 1k, 10k, and 100k row UTF-8 fixtures in `corpus/turbocsv/`. It also picks up the upstream
+`customers-100.csv` and `customers-100000.csv` samples if placed there. TurboCSV fast mode runs only on unquoted inputs.
+
+Each parser reads the file, excludes the header, and consumes the first field of each data row. Each run checks the row
+count and sum of IDs. TurboCSV and `@konstit/csv` batches use row views. `@konstit/csv` rows materializes arrays.
+Both `@konstit/csv` APIs run with all columns and with `columns: [0]` to select just the ID.
+PapaParse, csv-parse (sync), and fast-csv parse header-keyed objects.
+The following run used Bun 1.4.4 on an Apple M4 running macOS. Each time is the mean of the middle three of five runs
+after one warmup per parser and file. The multiplier in parentheses is elapsed time divided by the fastest time for
+that fixture.
+
+| Parser                            | 1k rows (ms) | 1k MiB/s | 10k rows (ms) | 10k MiB/s | 100k rows (ms) | 100k MiB/s |
+| --------------------------------- | -----------: | -------: | ------------: | --------: | -------------: | ---------: |
+| `@konstit/csv batches`              | 0.54 (1.95×) | 177.1 | 2.49 (1.29×) | 390.4 | 21.88 (1.26×) | 454.4 |
+| `@konstit/csv batches columns: [0]` | 0.42 (1.53×) | 225.2 | 1.99 (1.03×) | 489.3 | 17.33 (1.00×) | 573.6 |
+| `@konstit/csv rows`                 | 0.93 (3.38×) | 102.1 | 6.14 (3.18×) | 158.5 | 56.84 (3.28×) | 174.9 |
+| `@konstit/csv rows columns: [0]`    | 0.28 (1.00×) | 344.8 | 1.93 (1.00×) | 504.7 | 18.11 (1.04×) | 549.0 |
+| TurboCSV                          | 1.19 (4.31×) | 79.9 | 5.41 (2.81×) | 179.6 | 43.59 (2.52×) | 228.1 |
+| TurboCSV fast                     | 0.42 (1.54×) | 224.6 | 3.41 (1.77×) | 285.1 | 26.49 (1.53×) | 375.3 |
+| PapaParse                         | 0.62 (2.25×) | 153.3 | 5.84 (3.03×) | 166.4 | 51.68 (2.98×) | 192.4 |
+| csv-parse (sync)                  | 2.80 (10.13×) | 34.0 | 19.87 (10.31×) | 48.9 | 200.04 (11.54×) | 49.7 |
+| fast-csv                          | 2.83 (10.21×) | 33.8 | 23.28 (12.09×) | 41.8 | 226.77 (13.08×) | 43.8 |
+
+For mitata sampling of the same workloads, run `bun run bench -- comparison/libs-comparison.bench.ts`.
+
 ## Run smaller benchmarks
 
 The benchmark runner selects files by name, imports them, and runs `mitata` once:
