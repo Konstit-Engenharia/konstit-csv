@@ -29,11 +29,11 @@ bunx @konstit/csv probe --help
 
 The top-level command has three subcommands:
 
-| Command        | Description                                                                         |
-| -------------- | ----------------------------------------------------------------------------------- |
-| `count <path>` | Print the number of CSV records, including the header row.                          |
-| `lines <path>` | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON). |
-| `probe <path>` | Print file size, encoding, delimiter, record endings, compression, and first record column count. |
+| Command        | Description                                                                                         |
+| -------------- | ----------------------------------------------------------------------------------------------------|
+| `count <path>` | Print the number of CSV records, including the header row.                                          |
+| `lines <path>` | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).                 |
+| `probe <path>` | Print file size, encoding, delimiter, record endings, compression, and first record column count.   |
 
 Each command accepts exactly one input path. The complete option list and
 defaults are available from the command-specific help output.
@@ -127,15 +127,15 @@ only NDJSON records to stdout and cannot be combined with
 
 `count` and `lines` accept these file options:
 
-| Option                             | Behavior                                                                               |
-| ---------------------------------- | -------------------------------------------------------------------------------------- |
-| `--delimiter <value>`              | One safe ASCII character, or `auto` (the default) to infer the input delimiter. |
-| `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding. |
-| `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                   |
-| `--compression <format>`           | `auto` (default), `none`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`. |
+| Option                             | Behavior                                                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--delimiter <value>`              | One safe ASCII character, or `auto` (the default) to infer the input delimiter.                                             |
+| `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding.                                                |
+| `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                                                        |
+| `--compression <format>`           | `auto` (default), `none`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                                     |
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file after ignoring directories and OS metadata. |
-| `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.          |
-| `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.   |
+| `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.                                               |
+| `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.                                        |
 
 `--delimiter auto` detects comma, tab, semicolon, pipe, colon, caret, or tilde
 from a bounded prefix while ignoring separators inside quoted fields. Pass a fixed
