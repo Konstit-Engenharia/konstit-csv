@@ -118,6 +118,31 @@ const fileArgs = [
   }),
 ] as const;
 
+const fileRelations = {
+  requires: [['zip-entry', 'compression']],
+  requiresIf: [['compression', 'zip', 'zip-entry']],
+  groups: [
+    {
+      name: 'zip-limits',
+      members: ['max-compression-ratio', 'max-decompressed-bytes'],
+      multiple: true,
+      requires: ['zip-entry'],
+    },
+    {
+      name: 'schema',
+      members: ['fixed-columns', 'expected-header', 'require-header', 'min-data-rows'],
+      multiple: true,
+      requires: ['strict'],
+    },
+    {
+      name: 'filters',
+      members: ['where', 'where-eq', 'where-neq', 'where-in', 'where-noin', 'where-prefix', 'where-regex'],
+      multiple: true,
+      conflicts: ['strict'],
+    },
+  ],
+} as const;
+
 const fileHelp = `ZIP input automatically selects the only data file, ignoring OS metadata.
 Explicit ZIP options require --compression zip and --zip-entry.
 Filters use original input column indexes. Friendly filter clauses use AND.
@@ -126,6 +151,7 @@ Strict mode cannot use filter options.
 Encodings: ${encodingNames.join(', ')}
 Decoder aliases such as utf-8, iso-8859-1, cp1252, and sjis are also accepted.`;
 const count = command('count', {
+  ...fileRelations,
   about: 'Count CSV records, including the header row',
   args: fileArgs,
   argsOverrideSelf: true,
@@ -137,6 +163,8 @@ Examples:
   csv count data.csv --where-regex '1=/^ana/i'`,
 });
 const lines = command('lines', {
+  ...fileRelations,
+  conflicts: [['json', 'output-delimiter'], ['limit', 'min-data-rows']],
   about: 'Stream matching records as normalized UTF-8 CSV or NDJSON',
   args: [
     ...fileArgs,

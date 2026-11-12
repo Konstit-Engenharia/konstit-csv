@@ -12,7 +12,6 @@ import {
   normalizeFixedColumnsCount,
 } from './normalize.js';
 import type {
-  CsvApiFileOptions,
   CsvColumns,
   CsvCompression,
   CsvCountOptions,
@@ -124,9 +123,6 @@ interface LinesInput {
 function parseLinesInput(values: LinesArguments): LinesInput {
   const limit = values.limit === undefined ? undefined : parseInteger(values.limit, 'limit', 1);
   const options = parseCommonOptions(values, values.strict === true && limit !== undefined);
-  if (limit !== undefined && options.minDataRows !== undefined) {
-    throw new Error('--limit cannot be combined with --min-data-rows');
-  }
   if (limit !== undefined && options.strict === true) {
     if (options.compression !== 'none') {
       throw new Error('--strict with --limit does not support compressed input');
@@ -142,16 +138,12 @@ function parseLinesInput(values: LinesArguments): LinesInput {
     }
     options.chunkSize = 1;
   }
-  const json = values.json === true;
-  if (json && values['output-delimiter'] !== undefined) {
-    throw new Error('--json cannot be combined with --output-delimiter');
-  }
   const outputDelimiter = values['output-delimiter'] === undefined
     ? ','
     : parseOutputDelimiter(values['output-delimiter']);
 
   return {
-    json,
+    json: values.json,
     ...(limit === undefined ? {} : { limit }),
     options,
     outputDelimiter,
@@ -159,18 +151,14 @@ function parseLinesInput(values: LinesArguments): LinesInput {
   };
 }
 
-type MutableCliOptions<TOptions = CsvApiFileOptions> = { -readonly [Key in keyof TOptions]: TOptions[Key]; };
+type MutableCliOptions<TOptions> = { -readonly [Key in keyof TOptions]: TOptions[Key]; };
 
 function parseCommonOptions(values: CountArguments, fixedFormat = false): MutableCliOptions<CsvCountOptions> {
-  const options: MutableCliOptions = {
-    delimiter: parseDelimiter(values.delimiter ?? (fixedFormat ? ',' : 'auto')),
-    encoding: values.encoding ?? (fixedFormat ? 'utf8' : 'auto'),
-  };
+  const options: MutableCliOptions<CsvCountOptions> = values.strict ? { strict: true } : { where: parseWhereOptions(values) };
+  options.delimiter = parseDelimiter(values.delimiter ?? (fixedFormat ? ',' : 'auto'));
+  options.encoding = values.encoding ?? (fixedFormat ? 'utf8' : 'auto');
   if (values['chunk-size'] !== undefined) {
     options.chunkSize = parseInteger(values['chunk-size'], 'chunk size', 1, MAX_CHUNK_SIZE);
-  }
-  if (values.strict === true) {
-    options.strict = true;
   }
   if (values['fixed-columns'] !== undefined) {
     options.fixedColumns = parseInteger(values['fixed-columns'], 'fixed columns', 1);
@@ -188,10 +176,7 @@ function parseCommonOptions(values: CountArguments, fixedFormat = false): Mutabl
   if (values['min-data-rows'] !== undefined) {
     options.minDataRows = parseInteger(values['min-data-rows'], 'minimum data rows', 0);
   }
-  options.where = parseWhereOptions(values);
-
   options.compression = parseCompression(values) ?? (fixedFormat ? 'none' : 'auto');
-  validateCountOptionCombinations(options);
   return options;
 }
 
@@ -242,8 +227,8 @@ function parseCompression(values: CountArguments): CsvCompression | undefined {
   const maxCompressionRatio = values['max-compression-ratio'];
   const maxDecompressedBytes = values['max-decompressed-bytes'];
   if (compression !== 'zip') {
-    if (zipEntry !== undefined || maxCompressionRatio !== undefined || maxDecompressedBytes !== undefined) {
-      throw new Error('ZIP options require --compression zip');
+    if (zipEntry !== undefined) {
+      throw new Error('--zip-entry requires --compression zip');
     }
     return compression;
   }
@@ -261,21 +246,6 @@ function parseCompression(values: CountArguments): CsvCompression | undefined {
       ? { maxDecompressedBytes: parseInteger(maxDecompressedBytes, 'maximum decompressed bytes', 1) }
       : {}),
   };
-}
-
-function validateCountOptionCombinations(options: CsvApiFileOptions): asserts options is CsvCountOptions {
-  const hasStrictSchemaOptions = options.expectedHeaders !== undefined
-    || options.requireHeader === true
-    || options.minDataRows !== undefined;
-  if (hasStrictSchemaOptions && options.strict !== true) {
-    throw new Error('--expected-header, --require-header, and --min-data-rows require --strict');
-  }
-  if (options.fixedColumns !== undefined && options.strict !== true) {
-    throw new Error('--fixed-columns requires --strict');
-  }
-  if (options.strict === true && options.where !== undefined) {
-    throw new Error('--strict cannot be combined with filter options');
-  }
 }
 
 async function streamLines(input: LinesInput, output: CliOutput): Promise<void> {

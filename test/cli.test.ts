@@ -104,8 +104,11 @@ describe('csv CLI', () => {
   test('rejects ZIP-only flags without ZIP compression and incomplete filter predicates', async () => {
     for (
       const [args, message,] of [
-        [['--max-compression-ratio', '3'], 'ZIP options require --compression zip'],
-        [['--compression', 'gzip', '--zip-entry', 'rows.csv'], 'ZIP options require --compression zip'],
+        [['--max-compression-ratio', '3'], 'argument group \'zip-limits\' requires \'--zip-entry\''],
+        [['--max-decompressed-bytes', '1KiB'], 'argument group \'zip-limits\' requires \'--zip-entry\''],
+        [['--zip-entry', 'rows.csv'], 'argument \'--zip-entry\' requires \'--compression\''],
+        [['--compression', 'gzip', '--zip-entry', 'rows.csv'], '--zip-entry requires --compression zip'],
+        [['--compression', 'zip', '--zip-entry='], '--compression zip requires --zip-entry <path>'],
         [['--where', '{"column":1,"regex":false}'], '--where.regex must contain source and optional flags strings'],
         [['--where', '{"column":1}'], '--where must contain equals, in, notEquals, notIn, startsWith, or regex'],
       ] as const
@@ -1141,7 +1144,7 @@ describe('csv CLI', () => {
       ';',
     );
 
-    expectUsageError(result, '--json cannot be combined with --output-delimiter', 'lines');
+    expectUsageError(result, 'arguments \'--json\' and \'--output-delimiter\' cannot be used together', 'lines');
   });
 
   test('rejects a line limit with a whole-file row requirement', async () => {
@@ -1155,7 +1158,7 @@ describe('csv CLI', () => {
       '1',
     );
 
-    expectUsageError(result, '--limit cannot be combined with --min-data-rows', 'lines');
+    expectUsageError(result, 'arguments \'--limit\' and \'--min-data-rows\' cannot be used together', 'lines');
   });
 
   test('rejects strict line limits with read-ahead options', async () => {
@@ -1222,7 +1225,7 @@ describe('csv CLI', () => {
       name: 'an excessive chunk size',
     },
     {
-      arguments: ['--fixed-columns', '0'],
+      arguments: ['--strict', '--fixed-columns', '0'],
       message: 'fixed columns must be an integer greater than or equal to 1',
       name: 'a zero fixed column count',
     },
@@ -1244,7 +1247,7 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--compression', 'zip'],
-      message: '--compression zip requires --zip-entry <path>',
+      message: 'argument \'--compression\' requires \'--zip-entry\' when its value is \'zip\'',
       name: 'ZIP input without an entry',
     },
     {
@@ -1408,35 +1411,32 @@ describe('csv CLI', () => {
   }[] = [
     {
       arguments: ['--fixed-columns', '3'],
-      message: '--fixed-columns requires --strict',
+      message: 'argument group \'schema\' requires \'--strict\'',
       name: 'fixed columns without strict mode',
     },
     {
       arguments: ['--expected-header', 'id'],
-      message: '--expected-header, --require-header, and --min-data-rows require --strict',
+      message: 'argument group \'schema\' requires \'--strict\'',
       name: 'strict schema options without strict mode',
     },
     {
       arguments: ['--strict', '--where', '{"column":2,"equals":"SP"}'],
-      message: '--strict cannot be combined with filter options',
+      message: 'argument group \'filters\' conflicts with \'--strict\'',
       name: 'strict mode and filtering',
     },
     {
       arguments: ['--strict', '--where-eq', '2=SP'],
-      message: '--strict cannot be combined with filter options',
+      message: 'argument group \'filters\' conflicts with \'--strict\'',
       name: 'strict mode and friendly filtering',
     },
   ];
 
   for (const incompatibleCase of incompatibleOptionCases) {
-    test(`rejects ${incompatibleCase.name}`, async () => {
-      const result = await runCli(
-        'count',
-        csvFixturePath('api/unquoted-people-sp-filter.csv'),
-        ...incompatibleCase.arguments,
-      );
-
-      expectUsageError(result, incompatibleCase.message);
+    test(`rejects ${incompatibleCase.name} for count and lines`, async () => {
+      for (const command of ['count', 'lines']) {
+        const result = await runCli(command, csvFixturePath('api/unquoted-people-sp-filter.csv'), ...incompatibleCase.arguments);
+        expectUsageError(result, incompatibleCase.message, command);
+      }
     });
   }
 
