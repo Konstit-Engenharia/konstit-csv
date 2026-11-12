@@ -163,6 +163,7 @@ export type LinesArguments = Infer<typeof lines>;
 
 export const csvCommand = command('csv', {
   about: 'Inspect, count, and stream CSV records',
+  defaultToHelp: true,
   subcommandRequired: true,
   subcommands: [
     count,

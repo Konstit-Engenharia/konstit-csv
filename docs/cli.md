@@ -20,6 +20,8 @@ Save it as `data.csv` before trying the examples.
 
 ## Commands and help
 
+Run `csv` without arguments to list the subcommands. Use the full subcommand name.
+
 ```sh
 bunx @konstit/csv --help
 bunx @konstit/csv count --help

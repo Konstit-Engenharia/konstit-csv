@@ -76,16 +76,13 @@ describe('csv CLI', () => {
     }
   });
 
-  test('reports missing and unknown commands', async () => {
-    for (
-      const [arguments_, message,] of [
-        [[], 'a subcommand is required but one was not provided'],
-        [['unknown'], 'unexpected argument \'unknown\''],
-      ] as const
-    ) {
-      const result = await runCli(...arguments_);
+  test('rejects abbreviated and unknown subcommand names', async () => {
+    for (const name of ['c', 'cou', 'unknown']) {
+      const result = await runCli(name);
       expect(result.exitCode).toBe(2);
-      expect(result.stderr.toString()).toBe(`csv: ${message}\nRun 'csv --help' for usage.\n`);
+      expect(result.stdout.length).toBe(0);
+      expect(result.stderr.toString()).toContain(`csv: unexpected argument '${name}'`);
+      expect(result.stderr.toString()).toContain('Run \'csv --help\' for usage.');
     }
   });
 
@@ -1001,7 +998,7 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
-  test('shows command help', async () => {
+  test('lists subcommands with --help or no arguments', async () => {
     const result = await runCli('--help');
 
     expect(result.exitCode).toBe(0);
@@ -1010,6 +1007,7 @@ describe('csv CLI', () => {
     }
     expect(result.stdout.toString()).toContain('bunx @konstit/csv <command> <path>');
     expect(result.stderr.toString()).toBe('');
+    expect(await runCli()).toEqual(result);
   });
 
   test('shows every count option in count help', async () => {
