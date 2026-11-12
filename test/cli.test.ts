@@ -258,6 +258,37 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
+  test('count and lines automatically select ZIP data while ignoring OS metadata', async () => {
+    const path = join(temporaryDirectory, 'auto-select.zip');
+    await Bun.write(
+      path,
+      createZip([
+        { data: Buffer.from('metadata'), method: 0, name: '__MACOSX/._input.csv' },
+        { data: Buffer.from('id;name\n1;Ada\n2;Bob\n'), method: 8, name: 'input.csv' },
+        { data: Buffer.from('metadata'), method: 0, name: '.DS_Store' },
+      ]),
+    );
+    const count = runCli('count', path);
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout.toString()).toBe('3\n');
+    expect(count.stderr.toString()).toBe('');
+    const lines = runCli('lines', path, '--compression', 'auto', '--limit', '2');
+    expect(lines.exitCode).toBe(0);
+    expect(lines.stdout.toString()).toBe('id,name\n1,Ada\n');
+    expect(lines.stderr.toString()).toBe('');
+  });
+
+  test('rejects auto-detected ZIP input from a pipe', () => {
+    const result = Bun.spawnSync({
+      cmd: [process.execPath, cliPath, 'count', '/dev/stdin', '--chunk-size', '1'],
+      stdin: createZip([{ data: Buffer.from('a,b\n1,2\n'), method: 0, name: 'input.csv' }]),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 5_000,
+    });
+    expectCommandError(result, 'ZIP input requires a regular file');
+  });
+
   test('forwards the ZIP decompressed byte limit', () => {
     const result = runCli(
       'count',

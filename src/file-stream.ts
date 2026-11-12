@@ -1,6 +1,9 @@
 import { ptr } from 'bun:ffi';
 import { createReadStream } from 'node:fs';
-import { open } from 'node:fs/promises';
+import {
+  open,
+  stat,
+} from 'node:fs/promises';
 import { extname } from 'node:path';
 import { ReadableStream as WebReadableStream } from 'node:stream/web';
 import {
@@ -553,9 +556,13 @@ async function* readAutoDetectedCsvFileChunks(
     }
     const sample = prefix.subarray(0, length);
     if (isZipSignature(sample)) {
-      throw new Error(
-        'ZIP input requires an entry; use compression: { format: \'zip\', entry: \'*\' } or --compression zip --zip-entry <path>',
-      );
+      if (!(await stat(path)).isFile()) {
+        throw new Error('ZIP input requires a regular file; save the archive before reading it');
+      }
+      // The native reader seeks through the ZIP central directory using its own file handle.
+      await closeCsvFileIterator(iterator);
+      yield* readZipEntryChunks(path, { format: 'zip', entry: '*' }, chunkSize);
+      return;
     }
     const compression = compressionFromPrefix(path, sample);
     const replay = replayCsvFileChunks(buffered, iterator);

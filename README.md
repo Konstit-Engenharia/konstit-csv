@@ -166,7 +166,8 @@ File APIs and the CLI detect compression by default and read plain CSV, TSV, and
 For a plain file with an unrecognized name, use `compression: 'none'` or `--compression none`.
 Decompression streams into the parser.
 
-For a ZIP archive, select an entry with `compression: { format: 'zip', entry: 'data.csv' }`. See
+ZIP archives automatically select the only data file, ignoring directories and OS metadata.
+For archives with multiple data files, select an entry with `compression: { format: 'zip', entry: 'data.csv' }`. See
 [Compression](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#compression-and-delimiter-detection)
 for supported formats, detection rules, and limits.
 

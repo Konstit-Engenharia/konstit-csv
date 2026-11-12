@@ -56,8 +56,10 @@ export interface CsvZipCompression {
 /**
  * Compression accepted for file input.
  *
- * The default, `'auto'`, detects compression and reads recognized text files
- * directly. Use `'none'` to read raw bytes. A ZIP object selects one archive entry. Byte-offset sharding
+ * The default, `'auto'`, detects compression, reads recognized text files
+ * directly, and selects the only ZIP data file after ignoring directories and
+ * OS metadata. ZIP input requires a regular file. Use `'none'` to read raw bytes.
+ * A ZIP object selects an exact entry or custom ZIP limits. Byte-offset sharding
  * requires an uncompressed file.
  */
 export type CsvCompression = Bun.CompressionFormat | 'auto' | 'none' | CsvZipCompression;

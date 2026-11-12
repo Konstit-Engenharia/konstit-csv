@@ -40,6 +40,7 @@ Run without installing:
 const countHelp = `Usage: csv count <path> [options]
 
 Count every CSV record, including the header row.
+ZIP input automatically selects the only data file, ignoring OS metadata.
 
 File options:
   --delimiter <value>              One safe ASCII character or auto (default: auto)
@@ -90,6 +91,7 @@ const linesHelp = `Usage: csv lines <path> [options]
 
 Parse a CSV file and stream matching records as normalized UTF-8 CSV or NDJSON.
 CSV output uses comma delimiters and LF record endings by default.
+ZIP input automatically selects the only data file, ignoring OS metadata.
 
 File options:
   --delimiter <value>              Input delimiter: one safe ASCII character or auto (default: auto)

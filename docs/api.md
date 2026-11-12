@@ -139,7 +139,8 @@ full-field match. Patterns are limited to 4096 UTF-8 bytes, and one operation ca
 ## Compression and delimiter detection
 
 File operations default to `compression: 'auto'`. They stream gzip, deflate, raw deflate, Brotli, and Zstandard input
-into the parser and read recognized plain text files directly. For ZIP, select an entry explicitly:
+into the parser and read recognized plain text files directly. ZIP archives automatically select the only data file,
+ignoring directories and OS metadata. Select an entry explicitly for archives containing multiple data files.
 
 ```ts
 for await (const batch of csv.rows('data.csv.gz')) {
@@ -159,6 +160,7 @@ ZIP entry names must match exactly. `entry: '*'` selects the only file after ign
 Ignored metadata includes files inside `__MACOSX/` or `.AppleDouble/` directories at any depth, filenames starting
 with `._`, and `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `ehthumbs_vista.db`, and `desktop.ini` (case-insensitive).
 Explicit entry names can select these files. Automatic selection fails when zero or multiple data files remain.
+ZIP input requires a regular file because the native reader seeks through the archive's central directory.
 Encrypted entries and methods other than stored and DEFLATE are rejected. ZIP output is limited
 by default to 64 GiB and a declared compression ratio of 1000; use `maxDecompressedBytes` and `maxCompressionRatio`
 to apply stricter limits or to permit a larger trusted entry.

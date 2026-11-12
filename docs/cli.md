@@ -143,7 +143,8 @@ from a bounded prefix while ignoring separators inside quoted fields. Pass a fix
 delimiter for empty, single-column, ragged, or ambiguous input. To force the traditional
 comma and UTF-8 settings, use `--delimiter ',' --encoding utf8`.
 
-With automatic compression, `csv count data.csv.gz` decompresses gzip and `csv count data.csv` reads plain text.
+With automatic compression, `csv count data.csv.gz` decompresses gzip, `csv count data.csv` reads plain text,
+and `csv count data.csv.zip` reads the archive's only data file after ignoring directories and OS metadata.
 Plain CSV, TSV, and text MIME types are recognized, as are `.psv`, `.ssv`, and `.tab`. Use `--compression none`
 to read a known plain file with an unrecognized name, or to read plain input from `/dev/stdin`.
 The advanced byte-boundary helpers
@@ -156,6 +157,7 @@ Automatic ZIP selection skips files inside `__MACOSX/` or `.AppleDouble/` direct
 filenames starting with `._`, and `.DS_Store`, `Thumbs.db`, `ehthumbs.db`, `ehthumbs_vista.db`, and
 `desktop.ini` (case-insensitive). Explicit entry names can select these files. Automatic selection requires
 exactly one data file after these exclusions.
+ZIP input requires a regular file because the native reader seeks through the archive's central directory.
 
 For the repository's large Latin-1 corpus, follow the [dataset setup](./benchmarks.md#prepare-the-datasets),
 then pass both the delimiter and encoding explicitly:

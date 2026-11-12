@@ -206,7 +206,27 @@ describe('compressed CSV file streams', () => {
     await Bun.write(path, compress(source, 'gzip').subarray(0, 8));
     expect((await rejectedError(csv.count(path))).message).not.toBe('');
     await Bun.write(path, createZip([{ data: source, name: 'input.csv', method: 0 }]));
-    expect((await rejectedError(csv.count(path))).message).toContain('ZIP');
+    expect(await csv.count(path, { chunkSize: 1, delimiter: ';' })).toBe(4);
+  });
+
+  test('auto-detects ZIP files and selects the only data entry', async () => {
+    for (const name of ['stored.zip', 'single-file.zip', 'with-metadata.zip']) {
+      const path = join(temporaryDirectory, name);
+      expect(await csv.count(path, { chunkSize: 1, delimiter: 'auto' })).toBe(4);
+      expect(await countCsvFile(path, { chunkSize: 1, compression: 'auto', delimiter: ';' })).toBe(4);
+      const rows = await Array.fromAsync(csv.rows(path, { chunkSize: 1, delimiter: ';', encoding: 'latin1' }));
+      expect(rows.flat()).toEqual(expectedRows);
+    }
+    const path = join(temporaryDirectory, 'zip-without-extension');
+    await Bun.write(path, Bun.file(join(temporaryDirectory, 'with-metadata.zip')));
+    expect(await csv.count(path, { delimiter: ';' })).toBe(4);
+  });
+
+  test('auto-detected ZIP input requires exactly one data entry', async () => {
+    for (const name of ['input.zip', 'empty.zip', 'metadata-only.zip']) {
+      const error = await rejectedError(csv.count(join(temporaryDirectory, name)));
+      expect(error.message).toContain('entry \'*\' requires exactly one file');
+    }
   });
 
   test('reads printable zlib-header collisions as plain CSV without hiding invalid compressed files', async () => {
