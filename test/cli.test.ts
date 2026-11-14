@@ -124,7 +124,7 @@ describe('csv CLI', () => {
     expectUsageError(await runCli('count', 'input.csv', '--where', '{"column":0}'), '--where is missing property: equals');
   });
 
-  test('an invalid option value fails before a later override or help request', async () => {
+  test('an invalid option value fails before a repeated option or help request', async () => {
     const path = csvFixturePath('rfc4180/simple-lf.csv');
     for (const suffix of [['--limit', '1'], ['--help']]) {
       expectUsageError(await runCli('lines', path, '--limit', 'bad', ...suffix), 'invalid value \'bad\' for \'--limit\'', 'lines');
@@ -142,9 +142,37 @@ describe('csv CLI', () => {
     expect(await runCli('lines', '--help', '--limit', 'bad')).toEqual(await runCli('lines', '--help'));
   });
 
-  test('accepts decimal counts and applies the last valid limit', async () => {
+  test.each(['count', 'lines'])('%s rejects an invalid --columns value at its first occurrence', async (command) => {
     const path = csvFixturePath('rfc4180/simple-lf.csv');
-    const result = await runCli('lines', path, '--strict', '--fixed-columns', '03', '--limit', '2', '--limit', '+1');
+    for (
+      const [value, reason,] of [
+        ['bogus', 'columns must be an integer greater than or equal to 0: bogus'],
+        ['0,0', 'selected column repeated: 0'],
+      ] as const
+    ) {
+      const result = await runCli(command, path, '--columns', value, '--columns', '1');
+      expectUsageError(result, `invalid value '${value}' for '--columns': ${reason}`, command);
+    }
+  });
+
+  for (
+    const [command, args,] of [
+      ['count', ['--columns', '0', '--columns', '1']],
+      ['lines', ['--columns', '0', '--columns', '2,1']],
+      ['lines', ['--limit', '2', '--limit=1']],
+      ['lines', ['--json', '--json']],
+      ['probe', ['--zip-entry', 'rows.csv', '--zip-entry', 'rows.csv']],
+    ] as const
+  ) {
+    test(`${command} rejects duplicate ${args[0]}`, async () => {
+      const result = await runCli(command, csvFixturePath('rfc4180/simple-lf.csv'), ...args);
+      expectUsageError(result, `argument '${args[0]}' cannot be used more than once`, command);
+    });
+  }
+
+  test('accepts decimal counts and a signed positive limit', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    const result = await runCli('lines', path, '--strict', '--fixed-columns', '03', '--limit', '+1');
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toBe('id,name,total\n');
     const count = await runCli('count', path, '--strict', '--min-data-rows=0');
@@ -906,20 +934,22 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
-  test('supports filters and projected output columns', async () => {
+  test('streams rows matching repeated --where-in values in the requested column order', async () => {
     const result = await runCli(
       'lines',
       csvFixturePath('api/unquoted-people-sp-filter.csv'),
       '--delimiter',
       ';',
       '--columns',
-      '0,1',
-      '--where-eq',
+      '1,0',
+      '--where-in',
       '2=SP',
+      '--where-in',
+      '2=RJ',
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.toString()).toBe('1,Ana\n3,Bia\n');
+    expect(result.stdout.toString()).toBe('Ana,1\nJoao,2\nBia,3\n');
     expect(result.stderr.toString()).toBe('');
   });
 
@@ -1452,7 +1482,7 @@ describe('csv CLI', () => {
     },
     {
       arguments: ['--columns', '2025'],
-      message: 'selected column out of range: 2025',
+      message: 'invalid value \'2025\' for \'--columns\': selected column out of range: 2025',
       name: 'an excessive selected column',
     },
     {

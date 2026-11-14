@@ -7,13 +7,11 @@ import {
   type CountArguments,
   csvCommand,
   type LinesArguments,
+  parseColumnIndex,
 } from './cli-schema.js';
 import { formatBytes } from './format-bytes.js';
 import { inspectCsvFile } from './inspect-file.js';
-import {
-  normalizeColumns,
-  normalizeFilterColumn,
-} from './normalize.js';
+import { normalizeFilterColumn } from './normalize.js';
 import type {
   CsvColumns,
   CsvCompression,
@@ -168,7 +166,7 @@ function parseCommonOptions(values: CountArguments, fixedFormat = false): Mutabl
     options.fixedColumns = values['fixed-columns'];
   }
   if (values.columns !== undefined) {
-    options.columns = parseColumns(values.columns, 'columns');
+    options.columns = values.columns;
   }
   if (values['expected-header'].length > 0) {
     options.expectedHeaders = values['expected-header'];
@@ -181,20 +179,6 @@ function parseCommonOptions(values: CountArguments, fixedFormat = false): Mutabl
   }
   options.compression = parseCompression(values) ?? (fixedFormat ? 'none' : 'auto');
   return options;
-}
-
-function parseColumnIndex(value: string, label: string): number {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) {
-    throw new Error(`${label} must be an integer greater than or equal to 0: ${value}`);
-  }
-  return number;
-}
-
-function parseColumns(value: string, label: string): number[] {
-  const columns = value.length === 0 ? [] : value.split(',').map((column) => parseColumnIndex(column, label));
-  normalizeColumns(columns);
-  return columns;
 }
 
 function parseCompression(values: CountArguments): CsvCompression | undefined {

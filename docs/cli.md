@@ -43,8 +43,10 @@ or `csv <command> --help` for command options. Parsing stops when it reaches
 `-h` or `--help`, so `csv count --help --unknown` prints help and exits successfully.
 An unknown option before `--help` produces a usage error (exit code 2). The same applies to values
 checked during argument parsing. For example, `csv lines data.csv --limit 0 --help` exits with code 2.
-When repeating a scalar option, pass valid values at each occurrence. `--limit 2 --limit 1` selects
-one record, while `--limit bad --limit 1` fails at `bad`.
+
+Scalar options and flags may be supplied once per invocation. For example, `--limit 2 --limit 1`
+exits with code 2. In scripts that append overrides, pass only the intended value.
+`--expected-header` and the friendly `--where-*` options accept multiple occurrences.
 
 ## Shell completion
 
@@ -228,8 +230,7 @@ and removes an initial UTF-16 byte-order mark using its default streaming behavi
 
 ## Projection
 
-`--columns` selects input columns and controls their output order. The indexes
-remain zero-based and refer to the input, even when the output is reordered:
+Pass all zero-based input indexes in one comma-separated `--columns` value, in the desired output order.
 
 ```sh
 bunx @konstit/csv lines data.csv --columns 2,1,0

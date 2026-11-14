@@ -8,7 +8,10 @@ import {
   positional,
 } from '@konstit/cli';
 import packageInfo from '../package.json';
-import { resolveInputEncoding } from './normalize.js';
+import {
+  normalizeColumns,
+  resolveInputEncoding,
+} from './normalize.js';
 
 const encodings = parsers.enum([
   'auto',
@@ -76,6 +79,11 @@ const positiveByteSize = parsers.refine(byteSize, (bytes) => bytes > 0, 'expecte
 const chunkSize = parsers.refine(positiveByteSize, (bytes) => bytes <= 64 * 1024 * 1024, 'expected at most 64 MiB');
 const inputDelimiter = parsers.regex(/^(?:auto|[\p{ASCII}--["\r\n]])$/v);
 const outputDelimiter = parsers.regex(/^[\p{ASCII}--["\r\n]]$/v);
+const columns = parsers.custom('INDEXES', (value) => {
+  const indexes = value.length === 0 ? [] : value.split(',').map((column) => parseColumnIndex(column, 'columns'));
+  normalizeColumns(indexes);
+  return indexes;
+});
 const path = positional('path', parsers.string, { required: true, valueHint: 'file', describe: 'Input file path' });
 const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => value.length > 0, 'expected a non-empty ZIP entry name'), {
   valueName: 'PATH',
@@ -104,8 +112,7 @@ const fileArgs = [
   option('max-decompressed-bytes', positiveByteSize, { describe: 'Maximum decompressed ZIP size (default: 64GiB)' }),
   flag('strict', { describe: 'Enable strict RFC 4180 validation' }),
   option('fixed-columns', positiveUint32, { valueName: 'COUNT', describe: 'Require this positive field count in strict mode' }),
-  option('columns', parsers.string, {
-    valueName: 'INDEXES',
+  option('columns', columns, {
     describe: 'Zero-based column indexes in output order. The count command validates the indexes only',
   }),
   option('expected-header', parsers.string, { repeatable: true, describe: 'Expected header value. Repeat once per column in strict mode' }),
@@ -167,7 +174,6 @@ const count = command('count', {
   ...fileRelations,
   about: 'Count CSV records, including the header row',
   args: fileArgs,
-  argsOverrideSelf: true,
   afterHelp: `${fileHelp}
 
 Examples:
@@ -192,7 +198,6 @@ const lines = command('lines', {
       describe: 'Stop after matching output record N, numbered from 1. Incompatible with --min-data-rows',
     }),
   ],
-  argsOverrideSelf: true,
   afterHelp: `${fileHelp}
 
 With --strict and --limit, validation stops at the selected record. Set a fixed
@@ -217,7 +222,6 @@ export const csvCommand = command('csv', {
     command('probe', {
       about: 'Inspect file size, compression, encoding, delimiter, line endings, and first record width',
       args: [path, zipEntry],
-      argsOverrideSelf: true,
       afterHelp: 'Samples up to 64 KiB of CSV. For a ZIP archive with multiple data files, select one with --zip-entry.',
     }),
     command('completion', {
@@ -227,3 +231,11 @@ export const csvCommand = command('csv', {
   ],
   afterHelp: 'Run without installing: bunx @konstit/csv <command> <path>',
 });
+
+export function parseColumnIndex(value: string, label: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error(`${label} must be an integer greater than or equal to 0: ${value}`);
+  }
+  return number;
+}
