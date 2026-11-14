@@ -23,6 +23,8 @@ test.each(cases)('option hover documentation with $declaration options and stric
       encoding: 'latin1',
       columns: ${method === 'batches' && strict === 'true' ? 'undefined' : '[2, 0, 2] as const'},
       fixedColumns: 3,
+      skipRows: 1,
+      limit: 2,
       expectedHeaders: ['a', 'b', 'c'],
       requireHeader: true,
       minDataRows: 1,
@@ -83,7 +85,7 @@ test.each(cases)('option hover documentation with $declaration options and stric
     }
 
     checkHover(sourceFile);
-    expect(checkedProperties).toBe(strict === 'omitted' ? 46 : 50);
+    expect(checkedProperties).toBe(strict === 'omitted' ? 54 : 58);
   } finally {
     service.dispose();
   }

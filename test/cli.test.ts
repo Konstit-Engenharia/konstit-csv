@@ -158,6 +158,7 @@ describe('csv CLI', () => {
   for (
     const [command, args,] of [
       ['count', ['--columns', '0', '--columns', '1']],
+      ['count', ['--skip-rows', '2', '--skip-rows=1']],
       ['lines', ['--columns', '0', '--columns', '2,1']],
       ['lines', ['--limit', '2', '--limit=1']],
       ['lines', ['--json', '--json']],
@@ -349,9 +350,10 @@ describe('csv CLI', () => {
     expectCommandError(await runCli('probe', join(temporaryDirectory, 'missing')), 'missing');
   });
 
-  test('rejects an encoding probe when strict line limits forbid read-ahead', async () => {
-    const result = await runCli('lines', join(temporaryDirectory, 'strict-prefix.csv'), '--encoding', 'auto', '--strict', '--limit', '1');
-    expectUsageError(result, '--strict with --limit requires a fixed input encoding', 'lines');
+  test('detects the encoding and delimiter with a strict line limit', async () => {
+    const result = await runCli('lines', join(temporaryDirectory, 'windows-1252.csv'), '--strict', '--skip-rows', '1', '--limit', '1');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('1,€\n');
   });
 
   test('supports compression options', async () => {
@@ -1005,6 +1007,42 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
+  test('count and lines skip input records before filtering', async () => {
+    const path = csvFixturePath('api/unquoted-people-sp-filter.csv');
+    const selection = ['--skip-rows', '1', '--where-eq', '2=SP', '--chunk-size', '8'];
+    const count = await runCli('count', path, ...selection);
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout.toString()).toBe('2\n');
+    const lines = await runCli('lines', path, ...selection, '--limit', '1', '--columns', '1', '--json');
+    expect(lines.exitCode).toBe(0);
+    expect(lines.stdout.toString()).toBe('["Ana"]\n');
+  });
+
+  test('skips a multiline record as one record across chunks', async () => {
+    const path = join(temporaryDirectory, 'quoted.csv');
+    const lines = await runCli('lines', path, '--skip-rows', '3', '--chunk-size', '1');
+    expect(lines.exitCode).toBe(0);
+    expect(lines.stdout.toString()).toBe('3,plain,done\n');
+    const count = await runCli('count', path, '--skip-rows', '99');
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout.toString()).toBe('0\n');
+  });
+
+  test('accepts zero for skip and limit', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    const count = await runCli('count', path, '--skip-rows', '0');
+    expect(count.exitCode).toBe(0);
+    expect(count.stdout.toString()).toBe('2\n');
+    const lines = await runCli('lines', path, '--skip-rows', '1', '--limit', '0');
+    expect(lines.exitCode).toBe(0);
+    expect(lines.stdout.length).toBe(0);
+  });
+
+  test('validates filter options even when the line limit is zero', async () => {
+    const result = await runCli('lines', 'input.csv', '--limit', '0', '--where', '{"column":1}');
+    expectUsageError(result, '--where must contain equals, in, notEquals, notIn, startsWith, or regex', 'lines');
+  });
+
   test('counts a quoted multiline record as one output record', async () => {
     const result = await runCli(
       'lines',
@@ -1048,18 +1086,17 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toContain('strict CSV quote syntax error');
   });
 
-  test('rejects strict line limits with compressed input', async () => {
+  test('applies a strict line limit to compressed input', async () => {
     const result = await runCli(
       'lines',
       join(temporaryDirectory, 'input.csv.gz'),
-      '--compression',
-      'gzip',
       '--strict',
       '--limit',
       '1',
     );
 
-    expectUsageError(result, '--strict with --limit does not support compressed input', 'lines');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('id,name\n');
   });
 
   test('exits successfully when the output pipe closes', () => {
@@ -1146,6 +1183,7 @@ describe('csv CLI', () => {
         '--delimiter',
         '--encoding',
         '--chunk-size',
+        '--skip-rows',
         '--compression',
         '--zip-entry',
         '--max-compression-ratio',
@@ -1203,7 +1241,7 @@ describe('csv CLI', () => {
       expect(result.stderr.length).toBe(0);
       const script = result.stdout.toString();
       expect(script).toStartWith(header);
-      for (const candidate of ['probe', '--chunk-size', '--encoding', 'shift_jis', 'deflate-raw']) {
+      for (const candidate of ['probe', '--chunk-size', '--skip-rows', '--encoding', 'shift_jis', 'deflate-raw']) {
         expect(script).toContain(candidate);
       }
     }
@@ -1220,10 +1258,9 @@ describe('csv CLI', () => {
     for (const option of Object.keys(countOptionNames).concat('--json', '--output-delimiter', '--limit')) {
       expect(stdout).toContain(option);
     }
-    expect(stdout).toContain('matching output record N, numbered from 1');
+    expect(stdout).toContain('Emit at most N matching records');
     expect(stdout).toContain('Filters use original input column indexes.');
-    expect(stdout).toContain('validation stops');
-    expect(stdout).toContain('at the selected record');
+    expect(stdout).toContain('Strict validation includes skipped records');
     expect(stdout).not.toContain('--worker-count');
     expect(result.stderr.toString()).toBe('');
   });
@@ -1235,17 +1272,14 @@ describe('csv CLI', () => {
 
   for (
     const [value, message,] of [
-      ['0', 'expected an integer from 1 to 9007199254740991'],
-      ['-1', 'expected an integer from 1 to 9007199254740991'],
+      ['-1', 'expected an integer from 0 to 9007199254740991'],
       ['1.5', 'expected an integer'],
       ['9007199254740992', 'integer is outside the safe range'],
     ] as const
   ) {
-    test(`rejects lines limit ${value}`, async () => {
-      const limitArguments = value.startsWith('-') ? [`--limit=${value}`] : ['--limit', value];
-      const result = await runCli('lines', csvFixturePath('rfc4180/simple-lf.csv'), ...limitArguments);
-
-      expectUsageError(result, `invalid value '${value}' for '--limit': ${message}`, 'lines');
+    test.each(['--skip-rows', '--limit'])(`rejects %s ${value}`, async (option) => {
+      const result = await runCli('lines', csvFixturePath('rfc4180/simple-lf.csv'), `${option}=${value}`);
+      expectUsageError(result, `invalid value '${value}' for '${option}': ${message}`, 'lines');
     });
   }
 
@@ -1272,46 +1306,46 @@ describe('csv CLI', () => {
     expectUsageError(result, 'arguments \'--json\' and \'--output-delimiter\' cannot be used together', 'lines');
   });
 
-  test('rejects a line limit with a whole-file row requirement', async () => {
-    const result = await runCli(
-      'lines',
-      csvFixturePath('rfc4180/simple-lf.csv'),
-      '--strict',
-      '--min-data-rows',
-      '1',
-      '--limit',
-      '1',
-    );
-
-    expectUsageError(result, 'arguments \'--limit\' and \'--min-data-rows\' cannot be used together', 'lines');
+  test('checks minimum data rows within the consumed prefix', async () => {
+    const path = csvFixturePath('rfc4180/simple-lf.csv');
+    const args = ['--strict', '--min-data-rows', '1', '--limit', '1'];
+    const short = await runCli('lines', path, ...args);
+    expect(short.exitCode).toBe(1);
+    expect(short.stderr.toString()).toContain('expected at least 1 data row(s), got 0');
+    const result = await runCli('lines', path, ...args, '--skip-rows', '1');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('7,Ada,12\n');
   });
 
-  test('rejects strict line limits with read-ahead options', async () => {
+  test('strict parsing stops inside a chunk at the requested record', async () => {
     const result = await runCli(
       'lines',
-      csvFixturePath('rfc4180/simple-lf.csv'),
+      join(temporaryDirectory, 'strict-prefix.csv'),
       '--strict',
       '--limit',
       '1',
       '--chunk-size',
-      '2',
+      '1024',
     );
 
-    expectUsageError(result, '--strict with --limit requires --chunk-size 1', 'lines');
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('id,name\n');
   });
 
-  test('rejects strict line limits with automatic delimiter detection', async () => {
+  test('strict validation checks the original header when skipping rows', async () => {
     const result = await runCli(
       'lines',
       csvFixturePath('rfc4180/simple-lf.csv'),
       '--strict',
       '--limit',
       '1',
-      '--delimiter',
-      'auto',
+      '--skip-rows',
+      '1',
+      '--expected-header',
+      'wrong',
     );
 
-    expectUsageError(result, '--strict with --limit requires a fixed input delimiter', 'lines');
+    expectCommandError(result, 'strict CSV schema error: expected 1 header field(s), got 3');
   });
 
   test('reports invalid usage without a stack trace', async () => {
@@ -1620,6 +1654,7 @@ const countOptionNames = {
   '--max-decompressed-bytes': true,
   '--min-data-rows': true,
   '--require-header': true,
+  '--skip-rows': true,
   '--strict': true,
   '--where': true,
   '--where-eq': true,

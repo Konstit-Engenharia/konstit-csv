@@ -40,7 +40,7 @@ export class CsvStrictSchemaValidator {
     }
   }
 
-  finish(): void {
+  finish(skippedDataRows = 0): void {
     if (!this.enabled) {
       return;
     }
@@ -49,8 +49,9 @@ export class CsvStrictSchemaValidator {
     }
 
     const minDataRows = this.#options.minDataRows;
-    if (minDataRows !== undefined && this.#dataRows < minDataRows) {
-      throw new Error(`strict CSV schema error: expected at least ${String(minDataRows)} data row(s), got ${String(this.#dataRows)}`);
+    const dataRows = this.#dataRows + skippedDataRows;
+    if (minDataRows !== undefined && dataRows < minDataRows) {
+      throw new Error(`strict CSV schema error: expected at least ${String(minDataRows)} data row(s), got ${String(dataRows)}`);
     }
   }
 

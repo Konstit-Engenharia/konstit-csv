@@ -1,4 +1,5 @@
 import { NativeCsvBatch } from './batches.js';
+import type { CsvFileInput } from './file-stream.js';
 import {
   EMPTY_BUFFER,
   native,
@@ -18,6 +19,10 @@ import {
   rejectSelectedColumns,
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
+import {
+  type CsvStrictSchemaValidator,
+  strictSchemaValidator,
+} from './strict-schema.js';
 import type {
   CsvColumns,
   CsvEqualsFilter,
@@ -34,6 +39,60 @@ function destroyNativeCsvParser(handle: NativePointer): void {
 }
 
 export const nativeCsvParserFinalizer = new FinalizationRegistry<NativePointer>(destroyNativeCsvParser);
+
+export async function* parseFileChunks(
+  input: CsvFileInput,
+  parser: PreparedCsvParser,
+  limit: number | undefined,
+): AsyncGenerator<NativeCsvBatch, void> {
+  let remaining = limit;
+  if (remaining !== 0) {
+    for await (const chunk of input.chunks()) {
+      const batch = parser.writeBatch(chunk);
+      const count = batch.rowCount;
+      if (count > 0) {
+        yield batch;
+      } else {
+        batch.close();
+      }
+      if (remaining !== undefined) {
+        remaining -= count;
+        if (remaining === 0) {
+          break;
+        }
+      }
+    }
+  }
+  const final = parser.endBatch();
+  if (final.rowCount > 0) {
+    yield final;
+  } else {
+    final.close();
+  }
+}
+
+export async function countFileChunks(
+  input: CsvFileInput,
+  parser: PreparedCsvParser,
+  options: Pick<CsvParserOptions, 'limit' | 'strict'>,
+): Promise<number> {
+  let total = 0;
+  if (options.strict === true) {
+    for await (using batch of parseFileChunks(input, parser, options.limit)) {
+      total += batch.rowCount;
+    }
+    return total;
+  }
+  if (options.limit !== 0) {
+    for await (const chunk of input.chunks()) {
+      total += parser.writeCount(chunk);
+      if (total === options.limit) {
+        break;
+      }
+    }
+  }
+  return total + parser.endCount();
+}
 
 /**
  * The fixed-configuration parser surface used by high-level streaming APIs.
@@ -75,7 +134,7 @@ export function createPreparedParser(
   projected = false,
 ): PreparedCsvParser {
   if (!projected && columns === undefined && program === undefined) {
-    return new NativeCsvParser(options);
+    return NativeCsvParser[createSchemaParser](options);
   }
   if (options.strict === true) {
     throw new Error('strict CSV validation is not supported for projected batches');
@@ -149,17 +208,15 @@ export function prepareNativeParser(
 class PreparedNativeCsvParser implements PreparedCsvParser {
   #handle: NativePointer | null;
   readonly #writer: PreparedNativeWriter;
-  readonly #fixedValidator: NativeCsvParser | undefined;
 
   constructor(
     options: CsvParserOptions,
     columns: CsvColumns | undefined,
     program: readonly CsvNativeFilterProgramEntry[] | undefined,
   ) {
-    const handle = createNativeCsvParser(options);
+    const handle = createNativeCsvParser(options, true);
     try {
       this.#writer = prepareNativeParser(handle, columns, program);
-      this.#fixedValidator = options.fixedColumns === undefined ? undefined : new NativeCsvParser(options);
     } catch (error) {
       destroyNativeCsvParser(handle);
       throw error;
@@ -170,10 +227,6 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
 
   writeBatch(chunk: NodeJS.TypedArray | DataView, final = false): NativeCsvBatch {
     const handle = this.#requireHandle();
-    if (this.#fixedValidator !== undefined) {
-      // Validate physical rows, including those rejected by the filter.
-      this.#fixedValidator.writeBatch(chunk, final).close();
-    }
     const batch = this.#writer.writeBatch(normalizeChunk(chunk), final);
     if (batch === null) {
       throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
@@ -187,9 +240,6 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
 
   writeCount(chunk: NodeJS.TypedArray | DataView, final = false): number {
     this.#requireHandle();
-    if (this.#fixedValidator !== undefined) {
-      this.#fixedValidator.writeBatch(chunk, final).close();
-    }
     const count = this.#writer.writeCount(normalizeChunk(chunk), final);
     return u64ToSafeNumber(count, 'CSV filtered row count');
   }
@@ -205,7 +255,6 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
     }
     this.#handle = null;
     nativeCsvParserFinalizer.unregister(this);
-    this.#fixedValidator?.close();
     destroyNativeCsvParser(handle);
   }
 
@@ -221,7 +270,29 @@ class PreparedNativeCsvParser implements PreparedCsvParser {
   }
 }
 
-function createNativeCsvParser(options: CsvParserOptions): NativePointer {
+export function validateRowSelection({ skipRows, limit }: Pick<CsvParserOptions, 'skipRows' | 'limit'>): void {
+  if (skipRows !== undefined && (!Number.isSafeInteger(skipRows) || skipRows < 0)) {
+    throw new RangeError('skipRows must be a non-negative safe integer');
+  }
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+    throw new RangeError('limit must be a non-negative safe integer');
+  }
+}
+
+export function setRowSelection(handle: NativePointer, options: CsvParserOptions, captureHeader = false): void {
+  if (options.skipRows !== undefined || options.limit !== undefined) {
+    native.symbols.csv_parser_set_row_selection(
+      handle,
+      BigInt(options.skipRows ?? 0),
+      options.limit === undefined ? 0xffff_ffff_ffff_ffffn : BigInt(options.limit),
+      captureHeader,
+    );
+  }
+}
+
+function createNativeCsvParser(options: CsvParserOptions, prepared = false): NativePointer {
+  const { skipRows, limit } = options;
+  validateRowSelection({ skipRows, limit });
   const delimiter = options.delimiter ?? ',';
   if (delimiter === 'auto') {
     throw new Error('automatic delimiter detection is only supported by file APIs');
@@ -229,12 +300,18 @@ function createNativeCsvParser(options: CsvParserOptions): NativePointer {
   if (delimiter.length !== 1) {
     throw new Error('delimiter must be one character');
   }
-  const handle = native.symbols.csv_parser_create(encodingCode(options.encoding), delimiter.charCodeAt(0));
+  const encoding = encodingCode(options.encoding);
+  const handle = prepared
+    ? native.symbols.csv_parser_create_prepared(encoding, delimiter.charCodeAt(0), options.fixedColumns ?? 0)
+    : native.symbols.csv_parser_create(encoding, delimiter.charCodeAt(0));
   if (handle === null) {
     throw new Error('failed to create native CSV parser');
   }
+  setRowSelection(handle, { skipRows, limit });
   return handle;
 }
+
+const createSchemaParser = Symbol('createSchemaParser');
 
 /**
  * Incrementally parses caller-owned CSV chunks through the native parser.
@@ -262,12 +339,25 @@ export class NativeCsvParser {
   #handle: NativePointer | null;
   readonly #strict: boolean;
   readonly #fixedColumns: number | undefined;
+  #validator: CsvStrictSchemaValidator | undefined;
+  #captureSkippedHeader = false;
+
+  static [createSchemaParser](options: CsvParserOptions): NativeCsvParser {
+    const validator = strictSchemaValidator(options);
+    const parser = new NativeCsvParser(options);
+    parser.#validator = validator;
+    if (validator !== undefined && (options.skipRows ?? 0) > 0) {
+      parser.#captureSkippedHeader = true;
+      setRowSelection(parser.#requireHandle(), options, true);
+    }
+    return parser;
+  }
 
   /**
    * Creates an open parser.
    *
-   * @param options Base parser settings. `encoding`, `delimiter`, `strict`, and
-   * `fixedColumns` are captured by this parser; the delimiter defaults to `,`.
+   * @param options Base parser settings. The parser captures `encoding`, `delimiter`,
+   * `strict`, `fixedColumns`, `skipRows`, and `limit`. The delimiter defaults to `,`.
    * Automatic delimiter detection (`"auto"`) is available through file APIs,
    * not this manual parser. `columns` is validated for compatibility
    * but does not configure `writeBatch()`; apply projection with one of the
@@ -357,7 +447,7 @@ export class NativeCsvParser {
     if (batch === null) {
       throw new Error(`native CSV parser failed: ${this.#lastError()}`);
     }
-    return new NativeCsvBatch(batch);
+    return this.#validatedBatch(batch, final);
   }
 
   /**
@@ -461,7 +551,7 @@ export class NativeCsvParser {
     if (batch === null) {
       throw new Error(`native CSV parser failed: ${this.#lastError()}`);
     }
-    return new NativeCsvBatch(batch);
+    return this.#validatedBatch(batch, true);
   }
 
   /**
@@ -943,6 +1033,7 @@ export class NativeCsvParser {
   /**
    * Discards buffered row state and parser errors while keeping this parser open.
    *
+   * Row skipping and limiting restart with the constructor's values.
    * Callers must supply projection or filter settings again after a reset.
    *
    * @throws {Error} If the parser is already closed.
@@ -983,6 +1074,34 @@ export class NativeCsvParser {
 
   #lastError(): string {
     return native.symbols.csv_parser_last_error(this.#requireHandle()) ?? 'native parser error unavailable';
+  }
+
+  #validatedBatch(pointer: NativePointer, final: boolean): NativeCsvBatch {
+    const batch = new NativeCsvBatch(pointer);
+    if (this.#validator === undefined) {
+      return batch;
+    }
+    try {
+      const handle = this.#requireHandle();
+      if (this.#captureSkippedHeader) {
+        const header = native.symbols.csv_parser_take_skipped_header(handle);
+        if (header !== null) {
+          using first = new NativeCsvBatch(header);
+          this.#validator.validateBatch(first);
+        }
+      }
+      this.#validator.validateBatch(batch);
+      if (final) {
+        const skipped = this.#captureSkippedHeader
+          ? u64ToSafeNumber(native.symbols.csv_parser_skipped_rows(handle), 'CSV skipped row count')
+          : 0;
+        this.#validator.finish(Math.max(0, skipped - 1));
+      }
+      return batch;
+    } catch (error) {
+      batch.close();
+      throw error;
+    }
   }
 
   #throwIfNativeError(): void {

@@ -55,7 +55,7 @@ interface CompressionExtensionHint {
   signatureRequired: boolean;
 }
 
-interface CsvFileInput extends AsyncDisposable {
+export interface CsvFileInput extends AsyncDisposable {
   readonly delimiter: CsvDelimiter;
   /** Encoding expected by the native parser after any stream transcoding. */
   readonly parserEncoding: 'utf8' | 'latin1';

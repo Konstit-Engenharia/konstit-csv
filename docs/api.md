@@ -87,6 +87,24 @@ The `csv` namespace provides these helpers:
 
 `columns` contains zero-based physical input indexes and preserves the requested output order.
 
+### Skip and limit records
+
+`skipRows` skips the first input records, including any header, before applying filters. `limit` caps the total
+number of matching records emitted or counted. Quoted fields containing newlines still belong to one record.
+Both options accept non-negative safe integers. The defaults are zero skipped rows and unlimited output.
+A zero limit or a skip beyond the end yields no records.
+
+```ts
+const rows = await csv.parse(source, { skipRows: 1, limit: 1 });
+// [['1', 'Ada', 'SP']]
+```
+
+These options apply to buffer parsing, file streams, native batches, counts, and manual parsers.
+Strict validation starts at the first input record, including skipped rows. The original header is checked
+against `expectedHeaders`, and skipped data rows contribute to `minDataRows`. Parsing stops when the output
+limit is reached, so schema requirements must be satisfied within the consumed prefix. A zero limit
+validates an empty prefix. File format detection and decompression can read ahead.
+
 ## Filters
 
 Create filters with `csv.column(index)`. The index is a zero-based physical input column. A column builder can create
@@ -274,8 +292,7 @@ const checked = await csv.parse(source, {
 ```
 
 `expectedHeaders` compares the first row exactly. `requireHeader` rejects empty input when a header row is required.
-`minDataRows` counts records after the first row. The header remains in the returned rows and in `csv.count()`; these
-options validate it rather than remove it.
+`minDataRows` counts records after the first row. By default the header is included in returned rows and in `csv.count()`.
 
 Strict validation cannot be combined with `where`. Use `csv.rows()` for strict parsing with column selection.
 Native batches support strict validation only when `columns` is omitted.
@@ -391,7 +408,8 @@ apply at the current stream position. Keep them consistent across chunks that ma
 that row or call `reset()` before changing them. `columns` passed to the constructor is validated but does not
 configure `writeBatch()`; use the explicit projected methods for low-level projection.
 
-`NativeCsvParser` accepts native UTF-8 and Latin-1 labels. It captures `encoding`, `delimiter`, `strict`, and
-`fixedColumns` at construction. It does not support
+`NativeCsvParser` accepts native UTF-8 and Latin-1 labels. It captures `encoding`, `delimiter`, `strict`,
+`fixedColumns`, `skipRows`, and `limit` at construction. The skip and limit apply across writes and restart on `reset()`.
+It does not support
 `delimiter: 'auto'` or schema metadata options. Dispose the parser with `close()` or `using`; its
 `closed` property reports whether the native handle has been released.

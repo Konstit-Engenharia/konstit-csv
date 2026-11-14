@@ -42,7 +42,7 @@ bunx @konstit/csv help count
 or `csv <command> --help` for command options. Parsing stops when it reaches
 `-h` or `--help`, so `csv count --help --unknown` prints help and exits successfully.
 An unknown option before `--help` produces a usage error (exit code 2). The same applies to values
-checked during argument parsing. For example, `csv lines data.csv --limit 0 --help` exits with code 2.
+checked during argument parsing. For example, `csv lines data.csv --limit=-1 --help` exits with code 2.
 
 Scalar options and flags may be supplied once per invocation. For example, `--limit 2 --limit 1`
 exits with code 2. In scripts that append overrides, pass only the intended value.
@@ -154,12 +154,13 @@ only NDJSON records to stdout and cannot be combined with
 | `--delimiter <value>`              | One safe ASCII character, or `auto` (the default) to infer the input delimiter.                                             |
 | `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding.                                                |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                                                        |
+| `--skip-rows <N>`                  | Skip the first N input records, including any header, before filtering. Defaults to 0.                                       |
 | `--compression <format>`           | `auto` (default), `none`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                                     |
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file after ignoring directories and OS metadata. |
 | `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.                                               |
 | `--max-decompressed-bytes <bytes>` | Maximum decompressed ZIP output size as a positive safe integer. Defaults to 64 GiB.                                        |
 
-`--fixed-columns`, `--min-data-rows`, `--limit`, and `--max-compression-ratio` take base-10 integers.
+`--skip-rows`, `--fixed-columns`, `--min-data-rows`, `--limit`, and `--max-compression-ratio` take base-10 integers.
 For example, write `--limit 100` for one hundred records and `--min-data-rows 0` for a zero minimum.
 
 `--chunk-size` and `--max-decompressed-bytes` accept a bare byte count or a size with a unit.
@@ -335,18 +336,15 @@ checks (`--expected-header`, `--require-header`, and `--min-data-rows`) are
 strict schema metadata and also require `--strict`. Strict mode cannot be
 combined with filter options. `count --strict` likewise cannot use filters.
 
-`lines --limit N` stops after matching output record `N`, numbered from 1. A
-quoted field containing embedded newlines still counts as one record. The
-header is counted only when it is emitted. Because early stopping validates
-only the consumed input prefix, `--limit` cannot be combined with
-`--min-data-rows`.
+`count` and `lines` apply `--skip-rows N` before filtering. A quoted field containing
+embedded newlines belongs to one input record. `lines --limit N` emits at most N matching
+records across all chunks. Both options accept non-negative safe integers. A zero limit emits no records.
 
-When `--strict` and `--limit` are used together, the input delimiter and encoding must be
-fixed (defaulting to comma and UTF-8), compression defaults to `none` and must stay disabled, and
-the chunk size must be omitted or set to `1`. The CLI uses one-byte chunks in
-this mode to avoid read-ahead. A later input error can occur after earlier
-records have already been written.
+Strict validation starts at the first input record, including skipped rows, and stops when the output limit
+is reached. Header checks use the original header. Skipped data rows count toward `--min-data-rows`,
+which must be satisfied within the consumed prefix. With a zero limit, schema checks see an empty prefix.
+The usual format detection and compression settings apply and can read ahead.
 
 ```sh
-bunx @konstit/csv lines data.csv --strict --limit 2
+bunx @konstit/csv lines data.csv --strict --skip-rows 1 --limit 2
 ```

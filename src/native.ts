@@ -60,6 +60,18 @@ const CSV_SYMBOLS = {
     returns: 'ptr',
   },
   // C signature:
+  // void* csv_parser_create_prepared(int encoding, uint8_t delimiter, uint32_t fixed_columns);
+  csv_parser_create_prepared: { args: ['int', 'u8', 'u32'], returns: 'ptr' },
+  // C signature:
+  // void csv_parser_set_row_selection(void* parser, uint64_t skip, uint64_t limit, bool capture_header);
+  csv_parser_set_row_selection: { args: ['ptr', 'u64', 'u64', 'bool'], returns: 'void' },
+  // C signature:
+  // void* csv_parser_take_skipped_header(void* parser);
+  csv_parser_take_skipped_header: { args: ['ptr'], returns: 'ptr' },
+  // C signature:
+  // uint64_t csv_parser_skipped_rows(void* parser);
+  csv_parser_skipped_rows: { args: ['ptr'], returns: 'u64' },
+  // C signature:
   // void csv_parser_destroy(void* parser);
   csv_parser_destroy: {
     args: ['ptr'],

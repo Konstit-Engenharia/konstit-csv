@@ -26,11 +26,13 @@ import {
 } from './normalize.js';
 import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
-import { createPreparedParser } from './parser.js';
 import {
-  rejectStrictSchemaUnsupported,
-  strictSchemaValidator,
-} from './strict-schema.js';
+  countFileChunks,
+  createPreparedParser,
+  parseFileChunks,
+  validateRowSelection,
+} from './parser.js';
+import { rejectStrictSchemaUnsupported } from './strict-schema.js';
 import type {
   CsvApiFileOptions,
   CsvBatchesOptions,
@@ -78,11 +80,8 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   const input = prepareCsvBufferInput(buffer, options.encoding, options.delimiter);
   using parser = createPreparedParser(toParserOptions(options, input.parserEncoding), projected ? columns : undefined, filters);
-  const validator = strictSchemaValidator(options);
   const batch = parser.writeBatch(input.bytes, true);
   try {
-    validator?.validateBatch(batch);
-    validator?.finish();
     return materializeRows<TColumns>(batch, columns, projected);
   } finally {
     batch.close();
@@ -122,50 +121,21 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   await using input = await prepareCsvFileInput(path, options, 'read-ahead', probeFormat);
   const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
-  const validator = strictSchemaValidator(options);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
-  if (options.strict !== true && validator === undefined && input.parserEncoding === 'latin1') {
+  if (options.strict !== true && input.parserEncoding === 'latin1') {
+    validateRowSelection(options);
     const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
     const createParser = latin1RowsParser(fixedColumns);
-    yield* latin1Rows(input.chunks(), input.delimiter, columns, filters, createParser, reusableRows) as AsyncGenerator<
+    const chunks = options.limit === 0 ? [] : input.chunks();
+    yield* latin1Rows(chunks, input.delimiter, columns, filters, createParser, reusableRows, parserOptions) as AsyncGenerator<
       CsvProjectedRow<TColumns>[],
       void
     >;
     return;
   }
   using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters);
-  for await (const chunk of input.chunks()) {
-    const batch = parser.writeBatch(chunk);
-    if (batch.rowCount > 0) {
-      try {
-        validator?.validateBatch(batch);
-        const values = materializeRows<TColumns>(batch, columns, projected, reusableRows);
-        if (values.length > 0) {
-          yield values;
-        }
-      } finally {
-        batch.close();
-      }
-    } else {
-      batch.close();
-    }
-  }
-
-  const batch = parser.endBatch();
-  if (batch.rowCount > 0) {
-    try {
-      validator?.validateBatch(batch);
-      validator?.finish();
-      const values = materializeRows<TColumns>(batch, columns, projected, reusableRows);
-      if (values.length > 0) {
-        yield values;
-      }
-    } finally {
-      batch.close();
-    }
-  } else {
-    validator?.finish();
-    batch.close();
+  for await (using batch of parseFileChunks(input, parser, options.limit)) {
+    yield materializeRows<TColumns>(batch, columns, projected, reusableRows);
   }
 }
 
@@ -197,36 +167,7 @@ async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncG
   }
   await using input = await prepareCsvFileInput(path, options);
   using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters);
-  const validator = strictSchemaValidator(options);
-  for await (const chunk of input.chunks()) {
-    const batch = parser.writeBatch(chunk);
-    if (batch.rowCount > 0) {
-      try {
-        validator?.validateBatch(batch);
-      } catch (error) {
-        batch.close();
-        throw error;
-      }
-      yield batch;
-    } else {
-      batch.close();
-    }
-  }
-
-  const batch = parser.endBatch();
-  if (batch.rowCount > 0) {
-    try {
-      validator?.validateBatch(batch);
-      validator?.finish();
-    } catch (error) {
-      batch.close();
-      throw error;
-    }
-    yield batch;
-  } else {
-    batch.close();
-    validator?.finish();
-  }
+  yield* parseFileChunks(input, parser, options.limit);
 }
 
 /**
@@ -249,34 +190,7 @@ export async function count(path: string, suppliedOptions: CsvCountOptions = {})
     throw new Error('strict CSV validation is not supported for count filters');
   }
   using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), undefined, filters);
-  const validator = strictSchemaValidator(options);
-  let total = 0;
-  if (options.strict === true && filters === undefined) {
-    for await (const chunk of input.chunks()) {
-      const batch = parser.writeBatch(chunk);
-      try {
-        validator?.validateBatch(batch);
-        total += batch.rowCount;
-      } finally {
-        batch.close();
-      }
-    }
-    const batch = parser.endBatch();
-    try {
-      validator?.validateBatch(batch);
-      validator?.finish();
-      total += batch.rowCount;
-    } finally {
-      batch.close();
-    }
-    return total;
-  }
-
-  for await (const chunk of input.chunks()) {
-    total += parser.writeCount(chunk);
-  }
-  total += parser.endCount();
-  return total;
+  return await countFileChunks(input, parser, options);
 }
 
 /**
@@ -447,6 +361,11 @@ function toParserOptions(
     strict: options.strict,
     columns: options.columns,
     fixedColumns: options.fixedColumns,
+    skipRows: options.skipRows,
+    limit: options.limit,
+    expectedHeaders: options.expectedHeaders,
+    requireHeader: options.requireHeader,
+    minDataRows: options.minDataRows,
   };
 }
 

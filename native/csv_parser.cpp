@@ -573,6 +573,19 @@ public:
              uint32_t fixed_columns = 0)
       : encoding_(encoding), delimiter_(delimiter), layout_(layout), fixed_columns_(fixed_columns) {}
 
+  void set_row_selection(uint64_t skip, uint64_t limit, bool capture_header) {
+    initial_skip_ = skip;
+    rows_to_skip_ = skip;
+    initial_limit_ = limit;
+    rows_left_ = limit;
+    capture_header_ = capture_header;
+  }
+
+  bool limit_reached() const { return rows_left_ == 0; }
+
+  csv_batch* take_skipped_header() { return skipped_header_.release(); }
+  uint64_t skipped_rows() const { return initial_skip_ - rows_to_skip_; }
+
   bool prepare_configuration(const uint32_t* selected_columns, size_t selected_columns_len,
                              std::vector<row_filter> filters, const uint8_t* values_data, size_t values_data_len,
                              const uint32_t* value_offsets, size_t total_value_count) {
@@ -624,6 +637,7 @@ public:
       return nullptr;
     }
     auto batch = std::make_unique<csv_batch>();
+    select_input(data, len, false);
     batch->reserve(len, encoding_);
     mode_ = output_mode::batch;
     batch_ = batch.get();
@@ -645,8 +659,9 @@ public:
     mode_ = output_mode::count;
     direct_projection_ = false;
     emitted_rows_ = 0;
+    select_input(data, len, false);
     parse(data, len);
-    if (final) {
+    if (final && !limit_reached()) {
       finish_stream();
     }
     return error_.empty() ? emitted_rows_ : prepared_count_error;
@@ -680,6 +695,7 @@ public:
       return nullptr;
     }
 
+    select_input(data, len, true);
     auto batch = std::make_unique<csv_batch>();
     batch->reserve_fixed(len, encoding_, fixed_columns);
     mode_ = output_mode::batch;
@@ -690,7 +706,7 @@ public:
     parse_failed_ = false;
     emitted_rows_ = 0;
     parse(data, len);
-    if (!parse_failed_ && final) {
+    if (!parse_failed_ && final && !limit_reached()) {
       finish_stream();
     } else if (!parse_failed_) {
       spill_unfinished_batch_row();
@@ -713,6 +729,7 @@ public:
   csv_batch* write_projected_batch_where_all(const uint8_t* data, size_t len, bool final,
                                              const uint32_t* selected_columns, size_t selected_columns_len,
                                              const row_filter* filters, size_t filter_count) {
+    select_input(data, len, false);
     auto batch = std::make_unique<csv_batch>();
     batch->reserve(len, encoding_);
     mode_ = output_mode::batch;
@@ -777,8 +794,9 @@ public:
       return 0;
     }
     emitted_rows_ = 0;
+    select_input(data, len, false);
     parse(data, len);
-    if (final) {
+    if (final && !limit_reached()) {
       finish_stream();
     }
     return emitted_rows_;
@@ -799,6 +817,10 @@ public:
   }
 
   void reset() {
+    skipped_header_.reset();
+    rows_to_skip_ = initial_skip_;
+    rows_left_ = initial_limit_;
+    skip_state_ = {};
     configuration_initialized_ = false;
     prepared_configuration_ = false;
     prepared_direct_projection_ = false;
@@ -851,6 +873,36 @@ public:
   void set_error(const char* value) { error_ = value; }
 
 private:
+  // Unvalidated prefixes need only structural scanning. Strict and fixed-width
+  // writes parse from the first record so skipped rows participate in validation.
+  void select_input(const uint8_t*& data, size_t& len, bool validate_rows) {
+    if (limit_reached()) {
+      len = 0;
+      return;
+    }
+    if (rows_to_skip_ == 0 || validate_rows || fixed_columns_ != 0 || data == nullptr || len == 0) {
+      return;
+    }
+    size_t consumed = len;
+    scan_csv_row_ends<false>(data, len, delimiter_, 0, skip_state_, [&](uint64_t end) {
+      if (--rows_to_skip_ != 0) {
+        return true;
+      }
+      consumed = static_cast<size_t>(end);
+      previous_was_cr_ = skip_state_.previous_was_cr;
+      return false;
+    });
+    data += consumed;
+    len -= consumed;
+  }
+
+  void record_emitted_row() {
+    ++emitted_rows_;
+    if (rows_left_ != std::numeric_limits<uint64_t>::max()) {
+      --rows_left_;
+    }
+  }
+
   void parse_projected_batch(const uint8_t* data, size_t len, bool final, bool try_quoted_records = false) {
     parse_failed_ = false;
     emitted_rows_ = 0;
@@ -862,7 +914,7 @@ private:
     if (parse_failed_) {
       return;
     }
-    if (final) {
+    if (final && !limit_reached()) {
       finish_stream();
     } else {
       spill_unfinished_direct_projection_row();
@@ -871,6 +923,7 @@ private:
   }
 
   csv_batch* write_latin1_batch_impl(const uint8_t* data, size_t len, bool final, bool strict) {
+    select_input(data, len, strict);
     auto batch = std::make_unique<csv_batch>();
     batch->reserve(len, csv_encoding::latin1);
     mode_ = output_mode::batch;
@@ -881,7 +934,7 @@ private:
     parse_failed_ = false;
     emitted_rows_ = 0;
     parse_latin1_batch(data, len, strict);
-    if (final) {
+    if (final && !limit_reached()) {
       finish_latin1_batch_stream(strict);
     } else {
       spill_unfinished_batch_row();
@@ -895,6 +948,7 @@ private:
   }
 
   csv_batch* write_batch_impl(const uint8_t* data, size_t len, bool final, bool strict) {
+    select_input(data, len, strict);
     auto batch = std::make_unique<csv_batch>();
     batch->reserve(len, encoding_);
     mode_ = output_mode::batch;
@@ -905,7 +959,7 @@ private:
     parse_failed_ = false;
     emitted_rows_ = 0;
     parse(data, len);
-    if (final) {
+    if (final && !limit_reached()) {
       finish_stream();
     } else {
       spill_unfinished_batch_row();
@@ -1164,6 +1218,9 @@ private:
 
       if (byte == '\n' || byte == '\r') {
         finish_latin1_batch_row(strict);
+        if (limit_reached() || parse_failed_) {
+          return;
+        }
         previous_was_cr_ = byte == '\r';
         ++i;
         continue;
@@ -1183,6 +1240,9 @@ private:
           }
           if (terminator == '\n' || terminator == '\r') {
             finish_latin1_batch_row(strict);
+            if (limit_reached() || parse_failed_) {
+              return;
+            }
             previous_was_cr_ = terminator == '\r';
             i = terminator_index + 1;
             continue;
@@ -1286,6 +1346,10 @@ private:
     if (fixed_columns_ != 0 && field_count != fixed_columns_) {
       return 0;
     }
+    if (rows_to_skip_ != 0) {
+      --rows_to_skip_;
+      return cursor;
+    }
 
     const auto field_at = [&](size_t column) {
       // A closing quote, delimiter and opening quote separate consecutive payloads.
@@ -1330,7 +1394,7 @@ private:
       }
     }
     finish_batch_row();
-    ++emitted_rows_;
+    record_emitted_row();
     return cursor;
   }
 
@@ -1426,7 +1490,7 @@ private:
 
       if (byte == '\n' || byte == '\r') {
         finish_row();
-        if (parse_failed_) {
+        if (parse_failed_ || limit_reached()) {
           return;
         }
         previous_was_cr_ = byte == '\r';
@@ -1439,6 +1503,9 @@ private:
           if (!saw_row_data_ && current_column_ == 0) {
             const size_t consumed = try_quoted_record(data + i, len - i);
             if (consumed != 0) {
+              if (limit_reached()) {
+                return;
+              }
               misses_left = quoted_record_miss_limit;
               i += consumed;
               continue;
@@ -1466,7 +1533,7 @@ private:
           }
           if (terminator == '\n' || terminator == '\r') {
             finish_row();
-            if (parse_failed_) {
+            if (parse_failed_ || limit_reached()) {
               return;
             }
             previous_was_cr_ = terminator == '\r';
@@ -1529,8 +1596,16 @@ private:
         .previous_was_cr = previous_was_cr_,
         .saw_row_data = saw_row_data_,
     };
-    csv_row_counter on_row_end{emitted_rows_, current_column_};
-    scan_csv_row_ends<false, true>(data, len, delimiter_, 0, state, on_row_end);
+    if (rows_left_ == std::numeric_limits<uint64_t>::max()) {
+      csv_row_counter on_row_end{emitted_rows_, current_column_};
+      scan_csv_row_ends<false, true>(data, len, delimiter_, 0, state, on_row_end);
+    } else {
+      scan_csv_row_ends<false>(data, len, delimiter_, 0, state, [&](uint64_t) {
+        current_column_ = 0;
+        record_emitted_row();
+        return !limit_reached();
+      });
+    }
     in_quotes_ = state.in_quotes;
     pending_quote_ = state.pending_quote;
     at_field_start_ = state.at_field_start;
@@ -1799,7 +1874,15 @@ private:
       }
     }
     finish_latin1_batch_offsets(strict);
-    ++emitted_rows_;
+    if (parse_failed_) {
+      return;
+    }
+    if (rows_to_skip_ != 0) {
+      --rows_to_skip_;
+      discard_batch_row();
+    } else {
+      record_emitted_row();
+    }
     reset_row_state();
     saw_row_data_ = false;
     at_field_start_ = true;
@@ -1819,6 +1902,9 @@ private:
     }
     if (saw_row_data_) {
       finish_latin1_batch_row(strict);
+    } else if (rows_to_skip_ != 0 && skip_state_.saw_row_data) {
+      --rows_to_skip_;
+      skip_state_ = {};
     }
   }
 
@@ -1855,7 +1941,12 @@ private:
   }
 
   void emit_matching_row() {
-    const bool emit_row = row_matches_filters();
+    const bool skipping = rows_to_skip_ != 0;
+    if (skipping) {
+      --rows_to_skip_;
+    }
+    // Strict width validation inspects the completed batch row, including a skipped header.
+    const bool emit_row = (!skipping || strict_quote_syntax_) && row_matches_filters();
     if (mode_ == output_mode::batch && emit_row) {
       if (direct_projection_) {
         finish_direct_projection_row();
@@ -1864,12 +1955,35 @@ private:
       } else {
         finish_batch_row();
       }
+      if (skipping && !parse_failed_) {
+        discard_batch_row();
+      }
+    } else if (mode_ == output_mode::batch && skipping) {
+      discard_uncommitted_fields();
     } else if (mode_ == output_mode::batch && direct_projection_) {
       rollback_direct_projection_row();
     }
-    if (emit_row) {
-      ++emitted_rows_;
+    if (emit_row && !skipping) {
+      record_emitted_row();
     }
+  }
+
+  void discard_batch_row() {
+    if (capture_header_ && skipped_rows() == 1) {
+      // Schema validation needs the original header even when no row is returned.
+      skipped_header_ = std::make_unique<csv_batch>();
+      skipped_header_->data.swap(batch_->data);
+      skipped_header_->row_offsets.swap(batch_->row_offsets);
+      skipped_header_->field_offsets.swap(batch_->field_offsets);
+      return;
+    }
+    batch_->row_offsets.pop_back();
+    discard_uncommitted_fields();
+  }
+
+  void discard_uncommitted_fields() {
+    batch_->field_offsets.resize(batch_->row_offsets.back() + 1);
+    batch_->data.resize(batch_->field_offsets.back());
   }
 
   bool use_deferred_rows() const { return projection_enabled_ || !filters_.empty() || deferred_batch_row_; }
@@ -2312,6 +2426,9 @@ private:
     }
     if (saw_row_data_) {
       finish_row();
+    } else if (rows_to_skip_ != 0 && skip_state_.saw_row_data) {
+      --rows_to_skip_;
+      skip_state_ = {};
     }
   }
 
@@ -2381,6 +2498,13 @@ private:
   bool allow_direct_projection_ = false;
   bool deferred_batch_row_ = false;
   uint64_t emitted_rows_ = 0;
+  uint64_t initial_skip_ = 0;
+  uint64_t initial_limit_ = std::numeric_limits<uint64_t>::max();
+  uint64_t rows_to_skip_ = 0;
+  uint64_t rows_left_ = std::numeric_limits<uint64_t>::max();
+  csv_structural_state skip_state_;
+  bool capture_header_ = false;
+  std::unique_ptr<csv_batch> skipped_header_;
 };
 
 csv_parser* checked_parser(void* parser) { return static_cast<csv_parser*>(parser); }
@@ -2644,6 +2768,28 @@ CSV_EXPORT void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimit
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }
+
+CSV_EXPORT void csv_parser_set_row_selection(void* parser, uint64_t skip, uint64_t limit, bool capture_header) {
+  if (parser != nullptr) {
+    csv_native::checked_parser(parser)->set_row_selection(skip, limit, capture_header);
+  }
+}
+
+CSV_EXPORT void* csv_parser_take_skipped_header(void* parser) {
+  return parser == nullptr ? nullptr : csv_native::checked_parser(parser)->take_skipped_header();
+}
+
+CSV_EXPORT uint64_t csv_parser_skipped_rows(void* parser) {
+  return parser == nullptr ? 0 : csv_native::checked_parser(parser)->skipped_rows();
+}
+
+CSV_EXPORT void* csv_parser_create_prepared(int encoding, uint8_t delimiter, uint32_t fixed_columns) {
+  if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
+    return nullptr;
+  }
+  const auto selected = encoding == 1 ? csv_native::csv_encoding::latin1 : csv_native::csv_encoding::utf8;
+  return new csv_native::csv_parser(selected, delimiter, csv_native::batch_layout::utf8, fixed_columns);
+}
 
 // Internal fixed-configuration entry points used by high-level operations.
 CSV_EXPORT bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,

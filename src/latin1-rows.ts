@@ -15,21 +15,24 @@ import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import {
   nativeCsvParserFinalizer,
   prepareNativeParser,
+  setRowSelection,
 } from './parser.js';
 import type {
   CsvColumns,
   CsvDelimiter,
+  CsvParserOptions,
   CsvRow,
 } from './types.js';
 
 // These opaque batches contain Latin1 bytes and are never wrapped in NativeCsvBatch.
 export async function* latin1Rows(
-  chunks: AsyncIterable<Uint8Array>,
+  chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
   delimiter: CsvDelimiter,
   columns: CsvColumns | undefined,
   filters: readonly CsvNativeFilterProgramEntry[] | undefined,
   createParser: (delimiter: number) => NativePointer | null,
   reusableRows?: CsvRow[],
+  options: CsvParserOptions = {},
 ): AsyncGenerator<CsvRow[], void> {
   if (delimiter === 'auto') {
     throw new Error('automatic delimiter detection is only supported by file APIs');
@@ -45,13 +48,24 @@ export async function* latin1Rows(
   const lifetime = {};
   nativeCsvParserFinalizer.register(lifetime, parser, lifetime);
   try {
+    setRowSelection(parser, options);
     const prepared = prepareNativeParser(parser, columns, filters);
+    let remaining = options.limit;
+    if (remaining === 0) {
+      return;
+    }
     for await (const chunk of chunks) {
       const input = normalizeChunk(chunk);
       const batch = prepared.writeBatch(input, false);
       const rows = consumeLatin1Batch(parser, batch, reusableRows);
       if (rows.length > 0) {
+        if (remaining !== undefined) {
+          remaining -= rows.length;
+        }
         yield rows;
+        if (remaining === 0) {
+          return;
+        }
       }
     }
     const batch = prepared.writeBatch(EMPTY_BUFFER, true);

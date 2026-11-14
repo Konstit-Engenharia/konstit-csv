@@ -71,6 +71,7 @@ const encodingParser = {
 
 const compressionFormats = ['auto', 'none', 'gzip', 'deflate', 'deflate-raw', 'brotli', 'zstd', 'zip'] as const;
 const positiveUint32 = parsers.range(1, 0xffff_ffff, { integer: true });
+const rowCount = parsers.range(0, Number.MAX_SAFE_INTEGER, { integer: true });
 const byteSize = parsers.custom(parsers.byteSize.label, (input) => {
   const bare = Number(input);
   return parsers.byteSize.parse(Number.isNaN(bare) ? input : `${bare}B`);
@@ -104,6 +105,7 @@ const fileArgs = [
   option('chunk-size', chunkSize, {
     describe: 'Read 1 B through 64 MiB per chunk (default: 1MiB). Example: 256KiB',
   }),
+  option('skip-rows', rowCount, { valueName: 'N', describe: 'Skip the first N input records before filtering, including any header' }),
   zipEntry,
   option('max-compression-ratio', positiveUint32, {
     valueName: 'RATIO',
@@ -117,7 +119,7 @@ const fileArgs = [
   }),
   option('expected-header', parsers.string, { repeatable: true, describe: 'Expected header value. Repeat once per column in strict mode' }),
   flag('require-header', { describe: 'Require a header row in strict mode' }),
-  option('min-data-rows', parsers.range(0, Number.MAX_SAFE_INTEGER, { integer: true }), {
+  option('min-data-rows', rowCount, {
     valueName: 'COUNT',
     describe: 'Require at least this many data rows in strict mode',
   }),
@@ -183,7 +185,7 @@ Examples:
 });
 const lines = command('lines', {
   ...fileRelations,
-  conflicts: [['json', 'output-delimiter'], ['limit', 'min-data-rows']],
+  conflicts: [['json', 'output-delimiter']],
   about: 'Stream matching records as normalized UTF-8 CSV or NDJSON',
   args: [
     ...fileArgs,
@@ -193,19 +195,18 @@ const lines = command('lines', {
       default: ',',
       describe: 'One safe ASCII output delimiter (default: comma). Incompatible with --json',
     }),
-    option('limit', parsers.range(1, Number.MAX_SAFE_INTEGER, { integer: true }), {
+    option('limit', rowCount, {
       valueName: 'N',
-      describe: 'Stop after matching output record N, numbered from 1. Incompatible with --min-data-rows',
+      describe: 'Emit at most N matching records (0 emits none)',
     }),
   ],
   afterHelp: `${fileHelp}
 
-With --strict and --limit, validation stops at the selected record. Set a fixed
-delimiter and encoding (defaults: comma and UTF-8). Input must be uncompressed
-and the chunk size must be 1 byte. Earlier records can be written before a later error.
+Strict validation includes skipped records and stops when the output limit is reached.
+Header and minimum data row checks apply to the consumed input prefix.
 
 Examples:
-  csv lines data.csv --json --limit 10
+  csv lines data.csv --json --skip-rows 1 --limit 10
   csv lines data.csv --columns 0,2 --where-eq 3=active`,
 });
 export type CountArguments = Infer<typeof count>;

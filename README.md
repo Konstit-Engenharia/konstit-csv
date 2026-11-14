@@ -87,6 +87,9 @@ for await (const batch of csv.rows('data.csv')) {
 Each iteration yields a **batch of rows** in file order, so use the inner loop to process individual records. Process
 batches as they arrive to avoid collecting the complete file in memory. The header is returned as the first row.
 
+Pass `{ skipRows: 1, limit: 10 }` to skip the header and emit up to ten rows. With a filter, `skipRows` counts
+input records and `limit` counts matches across all batches.
+
 To count records without materializing rows:
 
 ```ts
@@ -203,9 +206,9 @@ bunx @konstit/csv probe data.csv
 bunx @konstit/csv count data.csv
 # 3
 
-bunx @konstit/csv lines data.csv --json --limit 2
-# ["id","name","state"]
+bunx @konstit/csv lines data.csv --json --skip-rows 1 --limit 2
 # ["1","Ada","SP"]
+# ["2","Grace","RJ"]
 ```
 
 The CLI detects input encoding and delimiter by default. Without `--json`, `lines` writes normalized UTF-8 CSV.

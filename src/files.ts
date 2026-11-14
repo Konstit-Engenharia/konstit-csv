@@ -14,13 +14,12 @@ import {
 } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import {
+  countFileChunks,
   createPreparedParser,
   NativeCsvParser,
+  parseFileChunks,
 } from './parser.js';
-import {
-  rejectStrictSchemaUnsupported,
-  strictSchemaValidator,
-} from './strict-schema.js';
+import { rejectStrictSchemaUnsupported } from './strict-schema.js';
 import type {
   CsvEncoding,
   CsvFileOptions,
@@ -61,12 +60,9 @@ export function parseCsvBuffer(
 ): CsvRow[] {
   const options = snapshotCsvOptions(suppliedOptions);
   const input = prepareCsvBufferInput(buffer, options.encoding, options.delimiter);
-  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding });
-  const validator = strictSchemaValidator(options);
+  using parser = createPreparedParser({ ...options, encoding: input.parserEncoding });
   const batch = parser.writeBatch(input.bytes, true);
   try {
-    validator?.validateBatch(batch);
-    validator?.finish();
     return batch.rowsInto([], options.columns);
   } finally {
     batch.close();
@@ -204,31 +200,9 @@ export function parseCsvFile(path: string, options: CsvFileOptions = {}): AsyncG
 
 async function* iterateCsvFile(path: string, options: CsvFileOptions): AsyncGenerator<CsvRow[], void> {
   await using input = await prepareCsvFileInput(path, options);
-  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
-  const validator = strictSchemaValidator(options);
-  for await (const chunk of input.chunks()) {
-    const batch = parser.writeBatch(chunk);
-    try {
-      validator?.validateBatch(batch);
-      const rows = batch.rowsInto([], options.columns);
-      if (rows.length > 0) {
-        yield rows;
-      }
-    } finally {
-      batch.close();
-    }
-  }
-
-  const batch = parser.endBatch();
-  try {
-    validator?.validateBatch(batch);
-    validator?.finish();
-    const rows = batch.rowsInto([], options.columns);
-    if (rows.length > 0) {
-      yield rows;
-    }
-  } finally {
-    batch.close();
+  using parser = createPreparedParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
+  for await (using batch of parseFileChunks(input, parser, options.limit)) {
+    yield batch.rowsInto([], options.columns);
   }
 }
 
@@ -281,26 +255,8 @@ async function* iterateCsvFileProjected(
     projectionFilterProgram(options),
     true,
   );
-  for await (const chunk of input.chunks()) {
-    const batch = parser.writeBatch(chunk);
-    try {
-      const rows = batch.rows();
-      if (rows.length > 0) {
-        yield rows;
-      }
-    } finally {
-      batch.close();
-    }
-  }
-
-  const batch = parser.endBatch();
-  try {
-    const rows = batch.rows();
-    if (rows.length > 0) {
-      yield rows;
-    }
-  } finally {
-    batch.close();
+  for await (using batch of parseFileChunks(input, parser, options.limit)) {
+    yield batch.rows();
   }
 }
 
@@ -330,28 +286,5 @@ export async function countCsvFile(path: string, suppliedOptions: CsvFileOptions
   rejectStrictSchemaUnsupported(options, 'count');
   await using input = await prepareCsvFileInput(path, options, 'count');
   using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
-  let rows = 0;
-  if (options.strict === true) {
-    for await (const chunk of input.chunks()) {
-      const batch = parser.writeBatch(chunk);
-      try {
-        rows += batch.rowCount;
-      } finally {
-        batch.close();
-      }
-    }
-    const batch = parser.endBatch();
-    try {
-      rows += batch.rowCount;
-    } finally {
-      batch.close();
-    }
-    return rows;
-  }
-
-  for await (const chunk of input.chunks()) {
-    rows += parser.writeCount(chunk);
-  }
-  rows += parser.endCount();
-  return rows;
+  return await countFileChunks(input, parser, options);
 }

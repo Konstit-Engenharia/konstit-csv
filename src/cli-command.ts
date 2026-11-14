@@ -98,15 +98,15 @@ async function runCount(args: CountArguments, output: CliOutput): Promise<number
 }
 
 async function runLines(args: LinesArguments, output: CliOutput): Promise<number> {
-  let input: LinesInput;
+  let options: CsvRowsOptions<CsvColumns | undefined>;
   try {
-    input = parseLinesInput(args);
+    options = { ...parseCommonOptions(args), limit: args.limit };
   } catch (error) {
     return usageError(output, error instanceof Error ? error.message : String(error), 'csv lines --help');
   }
 
   try {
-    await streamLines(input, output);
+    await streamLines(args, options, output);
     return 0;
   } catch (error) {
     if (isBrokenPipe(error)) {
@@ -118,47 +118,13 @@ async function runLines(args: LinesArguments, output: CliOutput): Promise<number
   }
 }
 
-interface LinesInput {
-  json: boolean;
-  limit?: number;
-  options: CsvRowsOptions<CsvColumns | undefined>;
-  outputDelimiter: string;
-  path: string;
-}
-
-function parseLinesInput(values: LinesArguments): LinesInput {
-  const { limit } = values;
-  const options = parseCommonOptions(values, values.strict === true && limit !== undefined);
-  if (limit !== undefined && options.strict === true) {
-    if (options.compression !== 'none') {
-      throw new Error('--strict with --limit does not support compressed input');
-    }
-    if (options.delimiter === 'auto') {
-      throw new Error('--strict with --limit requires a fixed input delimiter');
-    }
-    if (options.encoding === 'auto') {
-      throw new Error('--strict with --limit requires a fixed input encoding');
-    }
-    if (options.chunkSize !== undefined && options.chunkSize !== 1) {
-      throw new Error('--strict with --limit requires --chunk-size 1');
-    }
-    options.chunkSize = 1;
-  }
-  return {
-    json: values.json,
-    ...(limit === undefined ? {} : { limit }),
-    options,
-    outputDelimiter: values['output-delimiter'],
-    path: values.path,
-  };
-}
-
 type MutableCliOptions<TOptions> = { -readonly [Key in keyof TOptions]: TOptions[Key]; };
 
-function parseCommonOptions(values: CountArguments, fixedFormat = false): MutableCliOptions<CsvCountOptions> {
+function parseCommonOptions(values: CountArguments): CsvCountOptions {
   const options: MutableCliOptions<CsvCountOptions> = values.strict ? { strict: true } : { where: parseWhereOptions(values) };
-  options.delimiter = values.delimiter ?? (fixedFormat ? ',' : 'auto');
-  options.encoding = values.encoding ?? (fixedFormat ? 'utf8' : 'auto');
+  options.delimiter = values.delimiter ?? 'auto';
+  options.encoding = values.encoding ?? 'auto';
+  options.skipRows = values['skip-rows'];
   if (values['chunk-size'] !== undefined) {
     options.chunkSize = values['chunk-size'];
   }
@@ -177,7 +143,7 @@ function parseCommonOptions(values: CountArguments, fixedFormat = false): Mutabl
   if (values['min-data-rows'] !== undefined) {
     options.minDataRows = values['min-data-rows'];
   }
-  options.compression = parseCompression(values) ?? (fixedFormat ? 'none' : 'auto');
+  options.compression = parseCompression(values) ?? 'auto';
   return options;
 }
 
@@ -201,37 +167,25 @@ function parseCompression(values: CountArguments): CsvCompression | undefined {
   };
 }
 
-async function streamLines(input: LinesInput, output: CliOutput): Promise<void> {
-  let chunks: string[] = [];
-  let chunksLength = 0;
-  let emitted = 0;
-
-  batches: for await (const rows of csv.rows(input.path, input.options)) {
+async function streamLines(args: LinesArguments, options: CsvRowsOptions<CsvColumns | undefined>, output: CliOutput): Promise<void> {
+  for await (const rows of csv.rows(args.path, options)) {
+    let chunks: string[] = [];
+    let chunksLength = 0;
     for (const row of rows) {
-      const record = input.json ? `${JSON.stringify(row)}\n` : serializeCsvRecord(row, input.outputDelimiter);
+      const record = args.json ? `${JSON.stringify(row)}\n` : serializeCsvRecord(row, args['output-delimiter']);
       chunks.push(record);
       chunksLength += record.length;
-      ++emitted;
 
       if (chunksLength >= OUTPUT_BUFFER_SIZE) {
         await output.write(chunks.join(''));
         chunks = [];
         chunksLength = 0;
       }
-      if (emitted === input.limit) {
-        break batches;
-      }
     }
 
     if (chunksLength > 0) {
       await output.write(chunks.join(''));
-      chunks = [];
-      chunksLength = 0;
     }
-  }
-
-  if (chunksLength > 0) {
-    await output.write(chunks.join(''));
   }
 }
 
