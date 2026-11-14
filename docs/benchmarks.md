@@ -85,6 +85,31 @@ set -o pipefail
 bun --silent src/cli.ts lines corpus/large/example.csv.zip --where-eq 19=EX --columns 0,19 | shasum -a 256
 ```
 
+## Materialize every row from plain CSV and ZIP
+
+```sh
+bun run bench -- example-zip-materialization.bench.ts
+```
+
+This benchmark reads `corpus/large/example.csv` and `corpus/large/example.csv.zip` through `csv.rows()`.
+Both use automatic compression detection, a semicolon delimiter, Latin-1, `fixedColumns: 30` and
+`reuseArrays: true`. Each scan consumes every field before advancing the batch and checks for 29,093,533 rows,
+872,805,990 cells and 4,162,040,956 characters. The chunk size defaults to 1 MiB and can be set with
+`CSV_BENCH_CHUNK_SIZE`.
+
+On an Apple M4 with 16 GiB of RAM, macOS arm64 and Bun 1.4.4, each input ran once to warm up and then
+12 times with 1 MiB chunks. The inputs ran serially, plain CSV first, with the filesystem cache left warm.
+Throughput uses the 6,780,467,695-byte uncompressed size for both inputs.
+
+| Input | Mean wall time | Min–max | Throughput |
+| ----- | -------------: | ------: | ---------: |
+| `example.csv` | 16.70 s | 15.99–17.29 s | 387 MiB/s |
+| `example.csv.zip` | 16.64 s | 16.13–17.12 s | 389 MiB/s |
+
+The ZIP mean was 0.4% lower, within the observed run-to-run variation. The native ZIP reader inflates
+and CRC-checks the next chunk while the current chunk is parsed and materialized. In a separate
+three-scan comparison at 256 KiB, the medians were 16.06 s for plain CSV and 16.31 s for ZIP.
+
 ## Full-file filtered materialization
 
 Each command reads the complete ISO-8859-1 file at `corpus/large/example.csv` and materializes every field in rows
