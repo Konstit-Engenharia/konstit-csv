@@ -6,17 +6,17 @@ import {
 import type {
   CsvColumns,
   CsvEncoding,
-  CsvEqualsFilter,
   CsvFieldValue,
-  CsvInFilter,
   CsvNativeEncoding,
   CsvNativeFilter,
+  CsvNativeFilterOperator,
+  CsvNativeFilterProgramEntry,
   CsvNativeProjectionOptions,
   CsvRegex,
-  CsvStartsWithFilter,
 } from './types.js';
 
 const LATIN1_ENCODINGS = new Set<string>(['latin1', 'iso88591', 'iso-8859-1']);
+const EMPTY_COLUMNS = EMPTY_U32.subarray(0, 0);
 
 interface PreparedCsvBufferInput {
   readonly bytes: NodeJS.TypedArray | DataView;
@@ -42,29 +42,6 @@ export const MAX_REGEX_FILTER_COUNT = 32;
 export const MAX_FILTER_PROGRAM_LENGTH = 4_096;
 const MAX_REGEX_PATTERN_BYTES = 4_096;
 
-/**
- * Boolean operation in a postfix filter program accepted by `NativeCsvParser`.
- *
- * Predicates push results onto a stack. An operator consumes the most recent
- * results and pushes one combined result. Missing columns produce an unknown
- * result, which remains unknown under `not` and does not select a row by itself.
- */
-export interface CsvNativeFilterOperator {
-  /** Number of preceding stack results to consume; positive, and exactly one for `not`. */
-  readonly operandCount: number;
-  /** Combine operands with AND, OR, or unary negation. */
-  readonly operator: 'all' | 'any' | 'not';
-}
-
-/**
- * Predicate or boolean operator in a low-level postfix filter program.
- *
- * Place predicates before the operators that consume them. A complete program
- * must leave exactly one result on the stack and contain at most 4096 entries.
- * Most applications can use `csv.column()` and its boolean combinators instead.
- */
-export type CsvNativeFilterProgramEntry = CsvNativeFilter | CsvNativeFilterOperator;
-
 export function projectionFilterProgram(
   options: CsvNativeProjectionOptions,
 ): readonly CsvNativeFilterProgramEntry[] | undefined {
@@ -75,8 +52,17 @@ export function projectionFilterProgram(
     return [options.equalsFilter];
   }
   const filters = options.filters;
-  if (filters === undefined || filters.length === 0) {
+  if (filters === undefined) {
     return undefined;
+  }
+  if (!Array.isArray(filters)) {
+    throw new TypeError('filters must be an array of predicates');
+  }
+  if (filters.length === 0) {
+    return undefined;
+  }
+  if (filters.length > MAX_FILTER_COUNT) {
+    throw new RangeError(`filter count out of range: ${filters.length}`);
   }
   return filters.length === 1 ? filters : [...filters, { operator: 'all', operandCount: filters.length }];
 }
@@ -170,16 +156,20 @@ export function rejectSelectedColumns(options: object): void {
 
 export function normalizeColumns(columns: CsvColumns | undefined): Uint32Array {
   if (columns === undefined) {
-    return EMPTY_U32;
+    return EMPTY_COLUMNS;
   }
 
-  if (columns.length > MAX_PROJECTION_LENGTH) {
-    throw new RangeError(`selected column count out of range: ${columns.length}`);
+  const count = columns.length;
+  if (count === 0) {
+    return EMPTY_COLUMNS;
+  }
+  if (count > MAX_PROJECTION_LENGTH) {
+    throw new RangeError(`selected column count out of range: ${count}`);
   }
 
-  const normalized = new Uint32Array(columns.length);
+  const normalized = new Uint32Array(count);
   const seen = new Set<number>();
-  for (let index = 0; index < columns.length; ++index) {
+  for (let index = 0; index < count; ++index) {
     const column = columns[index] ?? NaN;
     normalizeColumnIndex(column, 'selected column');
     if (seen.has(column)) {
@@ -188,7 +178,7 @@ export function normalizeColumns(columns: CsvColumns | undefined): Uint32Array {
     seen.add(column);
     normalized[index] = column;
   }
-  return normalized.length === 0 ? EMPTY_U32 : normalized;
+  return normalized;
 }
 
 export function normalizeColumnIndex(column: number, label: string): number {
@@ -198,37 +188,14 @@ export function normalizeColumnIndex(column: number, label: string): number {
   return column;
 }
 
-export function normalizeEqualsFilter(filter: CsvEqualsFilter | undefined): {
-  enabled: boolean;
-  column: number;
-  value: Uint8Array;
-  valueLength: number;
-} {
-  if (filter === undefined) {
-    return {
-      enabled: false,
-      column: 0,
-      value: EMPTY_BUFFER,
-      valueLength: 0,
-    };
-  }
-
-  normalizeColumnIndex(filter.column, 'filter column');
-
-  const value = typeof filter.value === 'string' ? Buffer.from(filter.value) : filter.value;
-  return {
-    enabled: true,
-    column: filter.column,
-    value: value.byteLength === 0 ? EMPTY_BUFFER : value,
-    valueLength: value.byteLength,
-  };
-}
-
 export function normalizeFilterColumn(column: number): number {
   return normalizeColumnIndex(column, 'filter column');
 }
 
 export function normalizeFilterValue(value: CsvFieldValue): Uint8Array {
+  if (typeof value !== 'string' && !(value instanceof Uint8Array)) {
+    throw new TypeError('filter value must be a string, Buffer, or Uint8Array');
+  }
   return typeof value === 'string' ? Buffer.from(value) : value;
 }
 
@@ -344,61 +311,6 @@ function convertJavaScriptRegexSource(source: string, unicode: boolean): string 
 
 function isSurrogate(codePoint: number): boolean {
   return codePoint >= 0xd800 && codePoint <= 0xdfff;
-}
-
-export function normalizeInFilter(filter: CsvInFilter): {
-  column: number;
-  valuesData: Uint8Array;
-  valuesDataLength: number;
-  offsets: Uint32Array;
-  valueCount: number;
-} {
-  const column = normalizeFilterColumn(filter.column);
-  if (filter.values.length === 0) {
-    throw new RangeError('filter values must not be empty');
-  }
-
-  const values = filter.values.map((value) => normalizeFilterValue(value));
-  let valuesDataLength = 0;
-  for (const value of values) {
-    valuesDataLength += value.byteLength;
-    if (valuesDataLength > 0xffff_ffff) {
-      throw new RangeError('filter values exceed native offset range');
-    }
-  }
-
-  const valuesData = valuesDataLength === 0 ? EMPTY_BUFFER : new Uint8Array(valuesDataLength);
-  const offsets = new Uint32Array(values.length + 1);
-  let offset = 0;
-  for (let index = 0; index < values.length; ++index) {
-    const value = values[index] ?? EMPTY_BUFFER;
-    offsets[index] = offset;
-    valuesData.set(value, offset);
-    offset += value.byteLength;
-  }
-  offsets[values.length] = offset;
-
-  return {
-    column,
-    valuesData,
-    valuesDataLength,
-    offsets,
-    valueCount: values.length,
-  };
-}
-
-export function normalizeStartsWithFilter(filter: CsvStartsWithFilter): {
-  column: number;
-  value: Uint8Array;
-  valueLength: number;
-} {
-  const column = normalizeFilterColumn(filter.column);
-  const value = normalizeFilterValue(filter.prefix);
-  return {
-    column,
-    value: value.byteLength === 0 ? EMPTY_BUFFER : value,
-    valueLength: value.byteLength,
-  };
 }
 
 export function normalizeNativeFilters(filters: readonly CsvNativeFilter[] | undefined): {
@@ -519,6 +431,9 @@ export function normalizeNativeFilterProgram(program: readonly CsvNativeFilterPr
   valueOffsets: Uint32Array;
   valueCount: number;
 } {
+  if (!Array.isArray(program)) {
+    throw new TypeError('filterProgram must be an array');
+  }
   if (program.length === 0) {
     throw new RangeError('filter program must contain at least one predicate');
   }
@@ -532,6 +447,9 @@ export function normalizeNativeFilterProgram(program: readonly CsvNativeFilterPr
     const entry = program[index];
     if (entry === undefined) {
       throw new TypeError(`filter program entry missing at index ${index}`);
+    }
+    if (typeof entry !== 'object' || entry === null) {
+      throw new TypeError(`invalid filter program entry at index ${index}`);
     }
     if (!isNativeFilterOperator(entry)) {
       predicates.push(entry);
@@ -600,5 +518,7 @@ function nativeFilterOperatorCode(operator: CsvNativeFilterOperator['operator'])
       return NATIVE_FILTER_ANY;
     case 'not':
       return NATIVE_FILTER_NOT;
+    default:
+      throw new TypeError(`unknown filter operator: ${String(operator)}`);
   }
 }

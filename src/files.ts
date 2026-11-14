@@ -10,7 +10,7 @@ import {
 import {
   normalizeChunk,
   prepareCsvBufferInput,
-  projectionFilterProgram,
+  rejectSelectedColumns,
 } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import {
@@ -240,7 +240,26 @@ export function parseCsvFileProjected(
   path: string,
   options: CsvFileOptions & CsvNativeProjectionOptions = {},
 ): AsyncGenerator<CsvRow[], void> {
-  return iterateCsvFileProjected(path, snapshotCsvOptions(options));
+  rejectSelectedColumns(options);
+  return iterateCsvFileProjected(
+    path,
+    snapshotCsvOptions({
+      encoding: options.encoding,
+      delimiter: options.delimiter,
+      compression: options.compression,
+      chunkSize: options.chunkSize,
+      columns: options.columns,
+      equalsFilter: options.equalsFilter,
+      filters: options.filters,
+      fixedColumns: options.fixedColumns,
+      skipRows: options.skipRows,
+      limit: options.limit,
+      strict: options.strict,
+      expectedHeaders: options.expectedHeaders,
+      requireHeader: options.requireHeader,
+      minDataRows: options.minDataRows,
+    }),
+  );
 }
 
 async function* iterateCsvFileProjected(
@@ -249,12 +268,10 @@ async function* iterateCsvFileProjected(
 ): AsyncGenerator<CsvRow[], void> {
   rejectStrictSchemaUnsupported(options, 'projected file parsing');
   await using input = await prepareCsvFileInput(path, options);
-  using parser = createPreparedParser(
-    { ...options, encoding: input.parserEncoding, delimiter: input.delimiter },
-    options.columns,
-    projectionFilterProgram(options),
-    true,
-  );
+  if (options.strict === true) {
+    throw new Error('strict CSV validation is not supported for projected batches');
+  }
+  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
   for await (using batch of parseFileChunks(input, parser, options.limit)) {
     yield batch.rows();
   }
@@ -285,6 +302,6 @@ export async function countCsvFile(path: string, suppliedOptions: CsvFileOptions
   const options = snapshotCsvOptions(suppliedOptions);
   rejectStrictSchemaUnsupported(options, 'count');
   await using input = await prepareCsvFileInput(path, options, 'count');
-  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
+  using parser = createPreparedParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
   return await countFileChunks(input, parser, options);
 }

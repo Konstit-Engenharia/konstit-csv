@@ -20,6 +20,7 @@ void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_t fixed_col
 void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
 void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
+void csv_parser_reset_stream(void* parser);
 bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
                         uint64_t selected_columns_len, const uint32_t* filter_descriptors, uint64_t filter_count,
                         const uint8_t* values_data, uint64_t values_data_len, const uint32_t* value_offsets,
@@ -837,6 +838,29 @@ TEST_CASE("native prepared parser requires preparation and supports reset") {
   require_two_field_batch(batch, "new", "value");
   REQUIRE(std::string_view(csv_parser_last_error(parser)).empty());
   csv_batch_destroy(batch);
+  csv_parser_destroy(parser);
+}
+
+TEST_CASE("stream reset keeps prepared filters and projection after a partial row") {
+  const uint32_t columns[] = {1};
+  const uint32_t filters[] = {1, 0, 0, 1};
+  const uint8_t values[] = {'y'};
+  const uint32_t offsets[] = {0, 1};
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  REQUIRE(csv_parser_prepare(parser, true, columns, 1, filters, 1, values, 1, offsets, 1));
+  std::vector<std::vector<std::string>> rows;
+  const std::string partial = "y,\"unfinished";
+  append_batch_rows(
+      csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(partial.data()), partial.size(), false),
+      rows);
+  REQUIRE(rows.empty());
+  csv_parser_reset_stream(parser);
+  const std::string replacement = "n,skip\ny,keep";
+  append_batch_rows(csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(replacement.data()),
+                                                    replacement.size(), true),
+                    rows);
+  REQUIRE(rows == std::vector<std::vector<std::string>>{{"keep"}});
   csv_parser_destroy(parser);
 }
 

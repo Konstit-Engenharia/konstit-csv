@@ -32,23 +32,20 @@ import {
   u64ToSafeNumber,
 } from '../src/native.ts';
 import {
-  type CsvNativeFilterProgramEntry,
   encodingCode,
   MAX_FILTER_PROGRAM_LENGTH,
   normalizeChunk,
   normalizeColumns,
-  normalizeEqualsFilter,
   normalizeFixedColumnsCount,
-  normalizeInFilter,
   normalizeNativeFilterProgram,
   normalizeNativeFilters,
   normalizeRegex,
-  normalizeStartsWithFilter,
   projectionFilterProgram,
   resolveInputEncoding,
   validateRegex,
 } from '../src/normalize.ts';
 import { requireBunRuntime } from '../src/runtime.ts';
+import type { CsvNativeFilterProgramEntry } from '../src/types.ts';
 import { readZipEntryChunks } from '../src/zip-reader.ts';
 import { createZip } from './zip-fixture.ts';
 
@@ -118,10 +115,6 @@ describe('coverage input boundaries', () => {
     expect(() => normalizeColumns([1, 1])).toThrow();
     expect(() => normalizeColumns(Array.from({ length: 2025 }, () => 1))).toThrow();
     expect(() => normalizeColumns([2025])).toThrow();
-    expect(normalizeEqualsFilter(undefined).enabled).toBe(false);
-    expect(normalizeEqualsFilter({ column: 1, value: '' }).valueLength).toBe(0);
-    expect(normalizeInFilter({ column: 0, values: ['', 'a'] }).offsets).toEqual(new Uint32Array([0, 0, 1]));
-    expect(normalizeStartsWithFilter({ column: 0, prefix: '' }).valueLength).toBe(0);
     expect(new TextDecoder().decode(normalizeRegex({ source: '\\u{1f600}', flags: 'u' }))).toContain('x{1f600}');
     validateRegex({ source: '', flags: '' });
     validateRegex({ source: 'a+', flags: '' });
@@ -140,10 +133,7 @@ describe('coverage input boundaries', () => {
     expect(() => normalizeRegex({ source: '\\uD834x', flags: 'u' })).toThrow();
     expect(() => normalizeRegex({ source: '\\uD834\\u0041', flags: 'u' })).toThrow();
     expect(() => normalizeRegex({ source: '\\uDD1E', flags: 'u' })).toThrow();
-    expect(() => normalizeInFilter({ column: 0, values: [] })).toThrow();
     const hugeValue = { byteLength: 0x1_0000_0000 } as never;
-    const mappedHuge = { length: 1, map: () => [hugeValue] } as never;
-    expect(() => normalizeInFilter({ column: 0, values: mappedHuge })).toThrow();
     expect(() => normalizeNativeFilters([{ column: 0, value: hugeValue }])).toThrow();
     const hugeValues = { length: 0x1_0000_0000, [Symbol.iterator]: function*() {} } as never;
     expect(() => normalizeNativeFilters([{ column: 0, values: hugeValues }])).toThrow();

@@ -90,15 +90,15 @@ async function consumeMaterializedRowsFromApi(): Promise<BenchResult> {
 }
 
 async function consumeMaterializedRowsFromRowsInto(): Promise<BenchResult> {
-  using parser = new NativeCsvParser({ delimiter: DELIMITER });
+  using parser = new NativeCsvParser({ delimiter: DELIMITER, columns: SELECTED_COLUMNS });
   const rowsBuffer: string[][] = [];
   const result = emptyResult();
   for await (const chunk of createReadStream(FILE, { highWaterMark: CHUNK_SIZE })) {
-    using batch = parser.writeProjectedBatch(chunk as Buffer, { columns: SELECTED_COLUMNS });
+    using batch = parser.writeBatch(chunk as Buffer);
     consumeMaterializedRows(batch.rowsInto(rowsBuffer), result);
   }
 
-  using batch = parser.endProjectedBatch({ columns: SELECTED_COLUMNS });
+  using batch = parser.endBatch();
   consumeMaterializedRows(batch.rowsInto(rowsBuffer), result);
   return result;
 }

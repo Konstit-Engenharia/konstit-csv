@@ -12,42 +12,42 @@ describe('NativeCsvParser native filters', () => {
     const empty = new Uint8Array(new ArrayBuffer(1), 0, 0);
 
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
-      let count = parser.writeCountWhereEquals(empty, { column: 1, value: '' });
-      count += parser.writeCountWhereEquals(input, { column: 1, value: '' });
-      count += parser.endCountWhereEquals({ column: 1, value: '' });
+      using parser = new NativeCsvParser({ delimiter: ';', equalsFilter: { column: 1, value: '' } });
+      let count = parser.writeCount(empty);
+      count += parser.writeCount(input);
+      count += parser.endCount();
       expect(count).toBe(1);
     }
 
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
-      let count = parser.writeCountWhereIn(input, { column: 1, values: [''] });
-      count += parser.endCountWhereIn({ column: 1, values: [''] });
+      using parser = new NativeCsvParser({ delimiter: ';', filters: [{ column: 1, values: [''] }] });
+      let count = parser.writeCount(input);
+      count += parser.endCount();
       expect(count).toBe(1);
     }
 
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
-      let count = parser.writeCountWhereStartsWith(input, { column: 1, prefix: '' });
-      count += parser.endCountWhereStartsWith({ column: 1, prefix: '' });
+      using parser = new NativeCsvParser({ delimiter: ';', filters: [{ column: 1, prefix: '' }] });
+      let count = parser.writeCount(input);
+      count += parser.endCount();
       expect(count).toBe(2);
     }
 
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
       const filters = [{ column: 1, value: '' }] as const;
-      let count = parser.writeCountWhereAll(input, filters);
-      count += parser.endCountWhereAll(filters);
+      using parser = new NativeCsvParser({ delimiter: ';', filters });
+      let count = parser.writeCount(input);
+      count += parser.endCount();
       expect(count).toBe(1);
     }
 
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
       const options = { equalsFilter: { column: 1, value: '' }, columns: [0] } as const;
+      using parser = new NativeCsvParser({ delimiter: ';', ...options });
       const rows: string[][] = [];
-      using batch = parser.writeProjectedBatch(input, options);
+      using batch = parser.writeBatch(input);
       rows.push(...batch.rows());
-      using finalBatch = parser.endProjectedBatch(options);
+      using finalBatch = parser.endBatch();
       rows.push(...finalBatch.rows());
       expect(rows).toEqual([['a']]);
     }
@@ -60,24 +60,24 @@ describe('NativeCsvParser native filters', () => {
   });
 
   test('projects and filters inside native parser', () => {
-    using parser = new NativeCsvParser({ delimiter: ';' });
     const rows: string[][] = [];
     const options = {
       columns: [2, 0],
       equalsFilter: { column: 2, value: 'SP' },
     };
+    using parser = new NativeCsvParser({ delimiter: ';', ...options });
 
     const input = readCsvFixture('native/quoted-semicolon-people-with-header.csv');
     {
-      using batch = parser.writeProjectedBatch(input.subarray(0, 21), options);
+      using batch = parser.writeBatch(input.subarray(0, 21));
       rows.push(...batch.rows());
     }
     {
-      using batch = parser.writeProjectedBatch(input.subarray(21), options);
+      using batch = parser.writeBatch(input.subarray(21));
       rows.push(...batch.rows());
     }
     {
-      using batch = parser.endProjectedBatch(options);
+      using batch = parser.endBatch();
       rows.push(...batch.rows());
     }
 
@@ -88,20 +88,20 @@ describe('NativeCsvParser native filters', () => {
   });
 
   test('projects and filters rows split across tiny chunks', () => {
-    using parser = new NativeCsvParser();
     const input = readCsvFixture('native/projected-rows.csv');
     const rows: string[][] = [];
     const options = {
       columns: [0, 2],
       equalsFilter: { column: 1, value: '5' },
     };
+    using parser = new NativeCsvParser(options);
 
     for (let offset = 0; offset < input.byteLength; ++offset) {
-      using batch = parser.writeProjectedBatch(input.subarray(offset, offset + 1), options);
+      using batch = parser.writeBatch(input.subarray(offset, offset + 1));
       rows.push(...batch.rows());
     }
 
-    using batch = parser.endProjectedBatch(options);
+    using batch = parser.endBatch();
     rows.push(...batch.rows());
     expect(rows).toEqual([['4', '6']]);
   });
@@ -109,93 +109,60 @@ describe('NativeCsvParser native filters', () => {
   test('streams ordered projections across tiny chunks', () => {
     const input = readCsvFixture('native/projected-multiline-rows.csv');
     const columns = [2, 0];
-    using parser = new NativeCsvParser();
+    using parser = new NativeCsvParser({ columns });
     const rows: string[][] = [];
     for (let offset = 0; offset < input.byteLength; ++offset) {
-      using batch = parser.writeProjectedBatch(input.subarray(offset, offset + 1), { columns });
+      using batch = parser.writeBatch(input.subarray(offset, offset + 1));
       rows.push(...batch.rows());
     }
 
-    using batch = parser.endProjectedBatch({ columns });
+    using batch = parser.endBatch();
     rows.push(...batch.rows());
     expect(rows).toEqual([['c', 'a'], ['z', 'x\nx'], ['3', '1']]);
   });
 
-  test('enforces projected column uniqueness and configured limits', () => {
-    {
-      using parser = new NativeCsvParser();
-      expect(() => parser.writeProjectedBatch(readCsvFixture('native/three-column-header.csv'), { columns: [2, 2] })).toThrow(
-        'selected column repeated: 2',
-      );
-      expect(() => parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { columns: [2025] })).toThrow(
-        'selected column out of range: 2025',
-      );
-      expect(() =>
-        parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), {
-          columns: Array.from({ length: 2025 }, (_, index) => index),
-        })
-      ).toThrow('selected column count out of range: 2025');
+  test('enforces projected column uniqueness and configured limits at construction', () => {
+    expect(() => new NativeCsvParser({ columns: [2, 2] })).toThrow('selected column repeated: 2');
+    expect(() => new NativeCsvParser({ columns: [2025] })).toThrow('selected column out of range: 2025');
+    const columns = Array.from({ length: 2025 }, (_, index) => index);
+    expect(() => new NativeCsvParser({ columns })).toThrow('selected column count out of range: 2025');
 
-      using maximumIndex = parser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { columns: [2024] }, true);
-      expect(maximumIndex.rows()).toEqual([['']]);
-    }
-
-    {
-      using maximumProjectionParser = new NativeCsvParser();
-      const columns = Array.from({ length: 2024 }, (_, index) => index);
-      using batch = maximumProjectionParser.writeProjectedBatch(readCsvFixture('native/single-value.csv'), { columns }, true);
-      const rows = batch.rows();
-      expect(rows[0]).toHaveLength(2024);
-      expect(rows[0]?.[0]).toBe('a');
-      expect(rows[0]?.[2023]).toBe('');
-    }
+    const input = readCsvFixture('native/single-value.csv');
+    using maximumIndex = new NativeCsvParser({ columns: [2024] });
+    expect(maximumIndex.write(input, true)).toEqual([['']]);
+    using maximumProjection = new NativeCsvParser({ columns: columns.slice(0, 2024) });
+    const rows = maximumProjection.write(input, true);
+    expect(rows[0]).toHaveLength(2024);
+    expect(rows[0]?.[0]).toBe('a');
+    expect(rows[0]?.[2023]).toBe('');
   });
 
   test('enforces the maximum filter column across native filter variants', () => {
-    {
-      using parser = new NativeCsvParser();
-      expect(parser.writeCountWhereEquals(readCsvFixture('native/single-value.csv'), { column: 2024, value: 'a' }, true)).toBe(0);
-    }
-
-    {
-      using invalidParser = new NativeCsvParser();
-      expect(() => invalidParser.writeCountWhereEquals(readCsvFixture('native/single-value.csv'), { column: 2025, value: 'a' })).toThrow(
-        'filter column out of range: 2025',
-      );
-      expect(() => invalidParser.writeCountWhereIn(readCsvFixture('native/single-value.csv'), { column: 2025, values: ['a'] })).toThrow(
-        'filter column out of range: 2025',
-      );
-      expect(() => invalidParser.writeCountWhereStartsWith(readCsvFixture('native/single-value.csv'), { column: 2025, prefix: 'a' }))
-        .toThrow(
-          'filter column out of range: 2025',
-        );
+    using parser = new NativeCsvParser({ equalsFilter: { column: 2024, value: 'a' } });
+    expect(parser.writeCount(readCsvFixture('native/single-value.csv'), true)).toBe(0);
+    for (const filter of [{ column: 2025, value: 'a' }, { column: 2025, values: ['a'] }, { column: 2025, prefix: 'a' }]) {
+      expect(() => new NativeCsvParser({ filters: [filter] })).toThrow('filter column out of range: 2025');
     }
   });
 
   test('NativeCsvParser streams in and startsWith native filters across chunks', () => {
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
+      using parser = new NativeCsvParser({ delimiter: ';', filters: [{ column: 1, values: ['SP', 'RJ'] }] });
       const input = readCsvFixture('native/quoted-semicolon-state-filter.csv');
       let count = 0;
-      count += parser.writeCountWhereIn(input.subarray(0, 16), { column: 1, values: ['SP', 'RJ'] });
-      count += parser.writeCountWhereIn(input.subarray(16), { column: 1, values: ['SP', 'RJ'] });
-      count += parser.endCountWhereIn({ column: 1, values: ['SP', 'RJ'] });
+      count += parser.writeCount(input.subarray(0, 16));
+      count += parser.writeCount(input.subarray(16));
+      count += parser.endCount();
       expect(count).toBe(2);
     }
 
     {
-      using startsWithParser = new NativeCsvParser({ delimiter: ';' });
+      using startsWithParser = new NativeCsvParser({ delimiter: ';', filters: [{ column: 1, prefix: 'Sa' }] });
       const input = readCsvFixture('native/quoted-semicolon-city-prefix.csv');
       let count = 0;
-      count += startsWithParser.writeCountWhereStartsWith(input.subarray(0, 19), {
-        column: 1,
-        prefix: 'Sa',
-      });
-      count += startsWithParser.writeCountWhereStartsWith(input.subarray(19), {
-        column: 1,
-        prefix: 'Sa',
-      });
-      count += startsWithParser.endCountWhereStartsWith({ column: 1, prefix: 'Sa' });
+      count += startsWithParser.writeCount(input.subarray(0, 19));
+      count += startsWithParser.writeCount(input.subarray(19));
+      count += startsWithParser.endCount();
       expect(count).toBe(1);
     }
   });
@@ -204,29 +171,23 @@ describe('NativeCsvParser native filters', () => {
     const missing = Array.from({ length: 31 }, (_, index) => `missing-${index}`);
     const values = [...missing, 'SP', ''];
     {
-      using parser = new NativeCsvParser({ delimiter: ';' });
+      using parser = new NativeCsvParser({ delimiter: ';', filters: [{ column: 1, values }] });
       const input = readCsvFixture('native/unquoted-semicolon-states.csv');
       let count = 0;
-      count += parser.writeCountWhereIn(input.subarray(0, 3), { column: 1, values });
-      count += parser.writeCountWhereIn(input.subarray(3), { column: 1, values });
-      count += parser.endCountWhereIn({ column: 1, values });
+      count += parser.writeCount(input.subarray(0, 3));
+      count += parser.writeCount(input.subarray(3));
+      count += parser.endCount();
       expect(count).toBe(2);
     }
 
     const latin1Values = [...missing.slice(0, 7), 'João'];
     {
-      using latin1Parser = new NativeCsvParser({ delimiter: ';', encoding: 'latin1' });
+      using latin1Parser = new NativeCsvParser({ delimiter: ';', encoding: 'latin1', filters: [{ column: 1, values: latin1Values }] });
       const input = readCsvFixture('native/latin1-names.csv');
       let count = 0;
-      count += latin1Parser.writeCountWhereIn(input.subarray(0, 5), {
-        column: 1,
-        values: latin1Values,
-      });
-      count += latin1Parser.writeCountWhereIn(input.subarray(5), {
-        column: 1,
-        values: latin1Values,
-      });
-      count += latin1Parser.endCountWhereIn({ column: 1, values: latin1Values });
+      count += latin1Parser.writeCount(input.subarray(0, 5));
+      count += latin1Parser.writeCount(input.subarray(5));
+      count += latin1Parser.endCount();
       expect(count).toBe(1);
     }
   });

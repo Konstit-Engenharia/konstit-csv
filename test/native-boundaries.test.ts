@@ -18,10 +18,7 @@ import {
   type NativePointer,
   resolveNativeLibraryPath,
 } from '../src/native.ts';
-import {
-  createPreparedParser,
-  NativeCsvParser,
-} from '../src/parser.ts';
+import { NativeCsvParser } from '../src/parser.ts';
 import type { CsvRegex } from '../src/types.ts';
 import { csvFixturePath } from './fixtures.ts';
 
@@ -38,53 +35,41 @@ test('resolves both packaged and explicitly configured native library paths', ()
 
 test('empty final writes emit the pending matching row in every filtered count mode', () => {
   const equals = { column: 0, value: 'yes' };
-  using parser = new NativeCsvParser();
-  const countWriters = [
-    (data: Buffer, final: boolean) => parser.writeCountWhereEquals(data, equals, final),
-    (data: Buffer, final: boolean) => parser.writeCountWhereIn(data, { column: 0, values: ['yes'] }, final),
-    (data: Buffer, final: boolean) => parser.writeCountWhereStartsWith(data, { column: 0, prefix: 'y' }, final),
-    (data: Buffer, final: boolean) => parser.writeCountWhereAll(data, [equals], final),
-    (data: Buffer, final: boolean) => parser.writeCountWhere(data, [equals], final),
-  ];
-  for (const write of countWriters) {
-    parser.reset();
-    expect(write(Buffer.from('no\nyes'), false)).toBe(0);
-    expect(write(Buffer.alloc(0), true)).toBe(1);
+  for (
+    const options of [
+      { equalsFilter: equals },
+      { filters: [{ column: 0, values: ['yes'] }] },
+      { filters: [{ column: 0, prefix: 'y' }] },
+      { filters: [equals] },
+      { filterProgram: [equals] },
+    ]
+  ) {
+    using parser = new NativeCsvParser(options);
+    expect(parser.writeCount(Buffer.from('no\nyes'))).toBe(0);
+    expect(parser.writeCount(Buffer.alloc(0), true)).toBe(1);
   }
 });
 
 test('empty final writes emit pending projections with and without a filter program', () => {
   const equals = { column: 0, value: 'yes' };
-  using parser = new NativeCsvParser();
-  for (
-    const write of [
-      (data: Uint8Array, final: boolean) => parser.writeProjectedBatch(data, { columns: [1], equalsFilter: equals }, final),
-      (data: Uint8Array, final: boolean) => parser.writeProjectedBatchWhere(data, [1], [equals], final),
-    ]
-  ) {
-    parser.reset();
-    using head = write(Buffer.from('no,A\nyes,B'), false);
-    using tail = write(EMPTY_BUFFER, true);
+  for (const options of [{ equalsFilter: equals }, { filterProgram: [equals] }]) {
+    using parser = new NativeCsvParser({ columns: [1], ...options });
+    using head = parser.writeBatch(Buffer.from('no,A\nyes,B'));
+    using tail = parser.writeBatch(EMPTY_BUFFER, true);
     expect(head.rows()).toEqual([]);
     expect(tail.rows()).toEqual([['B']]);
   }
 });
 
-test('native filter compilation errors propagate from prepare, write, and finish', () => {
-  // JavaScript callers can supply a descriptor that RE2 cannot compile.
+test('native filter compilation errors propagate from the constructor', () => {
   const invalid = [{ column: 0, regex: { source: '(?=x)', flags: '' } as CsvRegex }];
-  const error = 'invalid regular expression';
-  expect(() => createPreparedParser({}, [0], invalid)).toThrow(error);
-  using parser = new NativeCsvParser();
-  const input = Buffer.from('x\n');
-  expect(() => parser.writeProjectedBatch(input, { filters: invalid })).toThrow(error);
-  expect(() => parser.endProjectedBatch({ filters: invalid })).toThrow(error);
-  expect(() => parser.writeProjectedBatchWhere(input, [0], invalid)).toThrow(error);
-  expect(() => parser.endProjectedBatchWhere([0], invalid)).toThrow(error);
+  for (const options of [{ filters: invalid }, { filterProgram: invalid }]) {
+    expect(() => new NativeCsvParser(options)).toThrow('invalid regular expression');
+  }
 });
 
 test('prepared parsers distinguish native errors from empty results and reject use after close', () => {
-  using parser = createPreparedParser({}, [0]);
+  using parser = new NativeCsvParser({ columns: [0] });
   using failedCount = spyOn(native.symbols, 'csv_parser_write_prepared_count');
   using failedBatch = spyOn(native.symbols, 'csv_parser_write_prepared_batch');
   failedCount.mockReturnValueOnce(0xffff_ffff_ffff_ffffn);
@@ -98,8 +83,9 @@ test('prepared parsers distinguish native errors from empty results and reject u
 test('incremental parsers enforce delimiter and strict-mode restrictions', () => {
   expect(() => new NativeCsvParser({ delimiter: ',,' })).toThrow('delimiter must be one character');
   expect(() => new NativeCsvParser({ delimiter: '"' })).toThrow('failed to create native CSV parser');
-  using parser = new NativeCsvParser({ strict: true });
-  expect(() => parser.endProjectedBatch()).toThrow('strict CSV validation is not supported for projected batches');
+  for (const options of [{ columns: [] }, { filters: [{ column: 0, value: 'x' }] }]) {
+    expect(() => new NativeCsvParser({ strict: true, ...options })).toThrow('strict CSV validation');
+  }
 });
 
 test('missing columns return null and invalid row intervals fail before iteration', () => {

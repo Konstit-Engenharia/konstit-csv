@@ -34,9 +34,8 @@ describe('native RE2 filters', () => {
 
   test('propagates native validation errors for forged regex descriptors', () => {
     const invalid = { flags: '', source: '(?=SP)' } as unknown as CsvRegex;
-    using parser = new NativeCsvParser();
 
-    expect(() => parser.writeCountWhereAll(Buffer.from('SP\n'), [{ column: 0, regex: invalid }], true)).toThrow(
+    expect(() => new NativeCsvParser({ filters: [{ column: 0, regex: invalid }] })).toThrow(
       'invalid perl operator',
     );
   });
@@ -67,12 +66,12 @@ describe('native RE2 filters', () => {
       { column: 2, regex: csv.re(/^(?:SP|RJ)$/) },
       { column: 0, prefix: '1' },
     ] satisfies readonly CsvNativeFilter[];
-    using parser = new NativeCsvParser({ delimiter: ';' });
+    using parser = new NativeCsvParser({ delimiter: ';', filters });
 
-    let count = parser.writeCountWhereAll(input.subarray(0, 7), filters);
-    count += parser.writeCountWhereAll(input.subarray(7, 19), filters);
-    count += parser.writeCountWhereAll(input.subarray(19), filters);
-    count += parser.endCountWhereAll(filters);
+    let count = parser.writeCount(input.subarray(0, 7));
+    count += parser.writeCount(input.subarray(7, 19));
+    count += parser.writeCount(input.subarray(19));
+    count += parser.endCount();
 
     expect(count).toBe(1);
   });

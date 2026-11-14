@@ -62,6 +62,25 @@ describe('NativeCsvParser batches and materialization', () => {
     expect(batch.countWhereEquals(2, 'SP')).toBe(1);
   });
 
+  test('scanColumns captures the requested columns before invoking callbacks', () => {
+    using parser = new NativeCsvParser();
+    using batch = parser.writeBatch(Buffer.from('a,b,c\nx,y,z\n'), true);
+    const columns = [2, 0];
+    const rows: string[][] = [];
+    batch.scanColumns(columns, (rowIndex, ranges, data) => {
+      rows.push([data.toString('utf8', ranges[0], ranges[1]), data.toString('utf8', ranges[2], ranges[3])]);
+      if (rowIndex === 0) {
+        columns.splice(0, 2, 1);
+      }
+    });
+    expect(rows).toEqual([['c', 'a'], ['z', 'x']]);
+
+    batch.scanColumns(columns, (_rowIndex, ranges, data) => {
+      expect(ranges).toHaveLength(2);
+      expect(data.toString('utf8', ranges[0], ranges[1])).toBe('y');
+    }, 1);
+  });
+
   test('parses fixed-column batches with quoted newlines', () => {
     using parser = new NativeCsvParser({
       delimiter: ';',
@@ -161,6 +180,38 @@ describe('NativeCsvParser batches and materialization', () => {
     expect(rowView.fieldCount).toBe(2);
     fieldOffsets[1] = 2n;
     expect(rowView.get(0)).toBe('ab');
+  });
+
+  test('rowsInto captures the projection before writing to caller-owned rows', () => {
+    using parser = new NativeCsvParser();
+    using batch = parser.writeBatch(Buffer.from('a,b\nc,d'), true);
+    const columns = [1, 0];
+    const firstRow = new Proxy<string[]>([], {
+      set(row, key, value) {
+        if (key === '0') {
+          columns.splice(0, 2, 0);
+        }
+        return Reflect.set(row, key, value);
+      },
+    });
+    expect(batch.rowsInto([firstRow], columns)).toEqual([['b', 'a'], ['d', 'c']]);
+    expect(batch.rowsInto([], columns)).toEqual([['a'], ['c']]);
+    expect(batch.rowsInto([], [])).toEqual([[], []]);
+  });
+
+  test('pick captures the projection before reading any fields', () => {
+    using parser = new NativeCsvParser();
+    using batch = parser.writeBatch(Buffer.from('a,b'), true);
+    const columns = [1, 0, 1, 3];
+    class MutatingRowView extends NativeCsvRowView {
+      override get(columnIndex: number): string | null {
+        columns.length = 0;
+        return super.get(columnIndex);
+      }
+    }
+    const view = new MutatingRowView(batch.data(), batch.rowOffsets(), batch.fieldOffsets());
+    expect(view.pick(columns)).toEqual(['b', 'a', 'b', '']);
+    expect(view.pick(columns)).toEqual([]);
   });
 
   test('preserves projected row reuse and missing-column behavior', () => {

@@ -363,7 +363,8 @@ the callback. You can keep decoded strings. Copy borrowed bytes before closing t
 
 In `csv.batches()`, `columns` selects the stored fields in the requested order.
 Filters always use physical input indexes. Row accessors, including `get()` and `pick()`,
-and batch methods such as `scanColumns()` use positions in the resulting batch.
+and batch methods such as `scanColumns()` use positions in the resulting batch. `pick(columns)` captures the indexes
+before reading fields. `rowsInto(target, columns)` captures them before filling the target.
 
 ```ts
 for await (using batch of csv.batches('data.csv', { columns: [2, 0], where: csv.column(2).equals('SP') })) {
@@ -375,7 +376,8 @@ for await (using batch of csv.batches('data.csv', { columns: [2, 0], where: csv.
 
 `rowOffsets()` and `fieldOffsets()` return `BigUint64Array`. Convert an offset to `number` only after checking it is within
 `Number.MAX_SAFE_INTEGER` and the associated backing data. Columnar `scanColumns()` supplies JavaScript-safe numeric
-ranges in a `Float64Array`.
+ranges in a `Float64Array`. Each scan copies the requested column indexes before the first callback, so every row
+uses the column order supplied for that call.
 
 ## Manual parser
 
@@ -403,13 +405,25 @@ console.log(rows);
 write, or call `endBatch()` to flush it. Returned batches own native memory and must be closed or disposed. The
 convenience `write()` and `end()` methods materialize rows and close their temporary batches automatically.
 
-The parser also exposes projected-batch methods and direct native count-filter methods. Projection and filter settings
-apply at the current stream position. Keep them consistent across chunks that may belong to one logical row; complete
-that row or call `reset()` before changing them. `columns` passed to the constructor is validated but does not
-configure `writeBatch()`; use the explicit projected methods for low-level projection.
+Pass `columns` and predicates to the constructor. Filters match physical input columns, and rows contain the selected
+fields in the requested order. Use `equalsFilter` for a single equality check, `filters` for predicates combined with
+AND, or `filterProgram` for a postfix Boolean expression. Supply one filter form per parser.
+
+```ts
+using parser = new NativeCsvParser({ columns: [1], equalsFilter: { column: 2, value: 'SP' } });
+parser.write(Buffer.from('1,Ada,SP\n2,Bob,RJ\n'), true); // [['Ada']]
+parser.reset();
+parser.writeCount(Buffer.from('1,Ada,SP\n2,Bob,RJ\n'), true); // 1
+```
+
+To migrate from per-write settings, move the projection and predicates to `new NativeCsvParser(...)`.
+Replace `writeProjectedBatch*` and `endProjectedBatch*` with `writeBatch` and `endBatch`. Replace
+`writeCountWhere*` and `endCountWhere*` with `writeCount` and `endCount`. Pass only input bytes and the optional
+final flag to writes. The parser owns its configuration across writes, flushes, and resets.
 
 `NativeCsvParser` accepts native UTF-8 and Latin-1 labels. It captures `encoding`, `delimiter`, `strict`,
 `fixedColumns`, `skipRows`, and `limit` at construction. The skip and limit apply across writes and restart on `reset()`.
+Strict mode requires unfiltered, unprojected input.
 It does not support
 `delimiter: 'auto'` or schema metadata options. Dispose the parser with `close()` or `using`; its
 `closed` property reports whether the native handle has been released.

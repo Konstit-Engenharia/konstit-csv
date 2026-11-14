@@ -46,10 +46,6 @@ describe('operation options snapshots', () => {
     expect(() => csv.rows(path, options)).toThrow(message);
     expect(() => parseCsvFileProjected(path, options)).toThrow(message);
     expect(() => new NativeCsvParser(options)).toThrow(message);
-    using parser = new NativeCsvParser();
-    const projection = { columns: [0], selectedColumns: [1] };
-    expect(() => parser.writeProjectedBatch(Buffer.from(source), projection)).toThrow(message);
-    expect(() => parser.endProjectedBatch(projection)).toThrow(message);
   });
 
   test('rejects oversized configuration lists before reading their entries', () => {
@@ -64,6 +60,8 @@ describe('operation options snapshots', () => {
     }
     expect(() => csv.rows(path, { columns })).toThrow('selected column count out of range: 2025');
     expect(() => parseCsvFileProjected(path, { filters })).toThrow('filter count out of range: 2025');
+    expect(() => new NativeCsvParser({ columns })).toThrow('selected column count out of range: 2025');
+    expect(() => new NativeCsvParser({ filters })).toThrow('filter count out of range: 2025');
   });
 
   test('captures file parser options before the first next call', async () => {
@@ -114,6 +112,23 @@ describe('operation options snapshots', () => {
     options.fixedColumns = 1;
     options.strict = true;
     expect(await count).toBe(4);
+  });
+
+  test('projected file parsing only uses declared options', async () => {
+    const predicate = { column: 2, value: 'SP' };
+    const options = { delimiter: ';', columns: [0], skipRows: 1, filterProgram: [predicate] };
+    const stream = parseCsvFileProjected(path, options);
+    predicate.value = 'RJ';
+    expect(await collect(stream)).toEqual([['1'], ['2'], ['3']]);
+
+    const filtered = {
+      ...options,
+      equalsFilter: { column: 2, value: 'SP' },
+      get filterProgram(): never {
+        throw new Error('undeclared option was read');
+      },
+    };
+    expect(await collect(parseCsvFileProjected(path, filtered))).toEqual([['1'], ['3']]);
   });
 
   test('copies raw projected filter objects and byte values at invocation', async () => {
@@ -177,19 +192,24 @@ describe('operation options snapshots', () => {
     );
   });
 
-  test('keeps explicit per-write parser reconfiguration between complete records', () => {
-    using parser = new NativeCsvParser({ delimiter: ';' });
-    const columns = [0];
-    const equalsFilter = { column: 1, value: 'SP' };
-    const options = { equalsFilter, columns };
-    using first = parser.writeProjectedBatch(Buffer.from('1;SP\n'), options);
-    expect(first.rows()).toEqual([['1']]);
-    columns[0] = 1;
-    equalsFilter.value = 'RJ';
-    using second = parser.writeProjectedBatch(Buffer.from('2;RJ\n'), options);
-    expect(second.rows()).toEqual([['RJ']]);
-    using tail = parser.endProjectedBatch(options);
-    expect(tail.rows()).toEqual([]);
+  test('owns its constructor projection and filters across writes, finish and reset', () => {
+    const columns = [1];
+    const value = Buffer.from('SP');
+    const filters = [{ column: 0, value }];
+    using parser = new NativeCsvParser({ delimiter: ';', columns, filters, skipRows: 1, limit: 2 });
+    expect(parser.write(Buffer.from('header\nSP;"a'))).toEqual([]);
+    columns[0] = 0;
+    filters.length = 0;
+    value.fill(0);
+    expect(parser.write(Buffer.from('\nb"\nRJ;drop\nSP;tail'))).toEqual([['a\nb']]);
+    expect(parser.end()).toEqual([['tail']]);
+    parser.reset();
+    expect(parser.write(Buffer.from('header\nSP;unfinished'))).toEqual([]);
+    parser.reset();
+    expect(parser.writeCount(Buffer.from('header\nRJ;drop\nSP;keep'))).toBe(0);
+    expect(parser.endCount()).toBe(1);
+    parser.reset();
+    expect(parser.write(Buffer.from('header\nSP;again'), true)).toEqual([['again']]);
   });
 });
 

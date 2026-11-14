@@ -23,6 +23,8 @@ export type {
   CsvInFilter,
   CsvNativeEncoding,
   CsvNativeFilter,
+  CsvNativeFilterOperator,
+  CsvNativeFilterProgramEntry,
   CsvNativeProjectionOptions,
   CsvNotEqualsFilter,
   CsvNotInFilter,
@@ -38,6 +40,7 @@ export type {
   CsvShardingOptions,
   CsvStartsWithFilter,
   CsvZipCompression,
+  NativeCsvParserOptions,
   NativeCsvRowCallback,
 } from './types.js';
 

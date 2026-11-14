@@ -6,10 +6,20 @@ import {
   type CsvParseOptions,
   type CsvRowsOptions,
   defineRowsOptions,
+  NativeCsvParser,
+  type NativeCsvParserOptions,
 } from '../src/index.ts';
 
 const path = 'corpus/large/example.csv';
 const columns = [0, 2] as const;
+const parserOptions = { columns, filters: [{ column: 1, value: 'SP' }] } satisfies NativeCsvParserOptions;
+using manual = new NativeCsvParser(parserOptions);
+// @ts-expect-error projection and filters are constructor options
+void manual.writeBatch(new Uint8Array(), parserOptions);
+// @ts-expect-error endCount uses the constructor filter
+void manual.endCount(parserOptions);
+// @ts-expect-error the projected-write method was removed
+void manual.writeProjectedBatch;
 const commonDelimiter: CsvDelimiter = ';';
 const arbitraryDelimiter: CsvDelimiter = '@';
 void commonDelimiter;

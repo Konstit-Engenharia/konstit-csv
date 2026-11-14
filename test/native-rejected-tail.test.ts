@@ -3,7 +3,7 @@ import {
   test,
 } from 'bun:test';
 import { NativeCsvParser } from '../src/index.ts';
-import type { CsvNativeFilterProgramEntry } from '../src/normalize.ts';
+import type { CsvNativeFilterProgramEntry } from '../src/index.ts';
 
 test('rejected row tails preserve tolerant quotes, CRLF, and chunk boundaries', () => {
   const text = [
@@ -25,23 +25,22 @@ test('rejected row tails preserve tolerant quotes, CRLF, and chunk boundaries', 
     for (const encoding of ['utf8', 'iso88591'] as const) {
       const input = Buffer.from(text + ending, encoding === 'utf8' ? 'utf8' : 'latin1');
       for (const chunkSize of [1, 2, 3, 15, 16, 17, 31, 32, 33, 64, input.length]) {
-        using counter = new NativeCsvParser({ encoding });
+        using counter = new NativeCsvParser({ encoding, filters });
         let count = 0;
         for (let offset = 0; offset < input.length; offset += chunkSize) {
-          count += counter.writeCountWhereAll(input.subarray(offset, offset + chunkSize), filters);
+          count += counter.writeCount(input.subarray(offset, offset + chunkSize));
         }
-        count += counter.endCountWhereAll(filters);
+        count += counter.endCount();
         expect(count).toBe(expected.length);
 
         for (const columns of projections) {
-          using parser = new NativeCsvParser({ encoding });
+          using parser = new NativeCsvParser({ encoding, columns, filters });
           const rows: string[][] = [];
-          const options = columns === undefined ? { filters } : { filters, columns };
           for (let offset = 0; offset < input.length; offset += chunkSize) {
-            using batch = parser.writeProjectedBatch(input.subarray(offset, offset + chunkSize), options);
+            using batch = parser.writeBatch(input.subarray(offset, offset + chunkSize));
             rows.push(...batch.rows());
           }
-          using finalBatch = parser.endProjectedBatch(options);
+          using finalBatch = parser.endBatch();
           rows.push(...finalBatch.rows());
           expect(rows).toEqual(
             columns === undefined ? expected : expected.map((row) => columns.map((column) => row[column] ?? '')),
@@ -71,18 +70,18 @@ test('only definitive Boolean rejection skips a row tail', () => {
   ] satisfies readonly { program: readonly CsvNativeFilterProgramEntry[]; expected: string[][]; }[];
   for (const { program, expected } of cases) {
     for (let split = 0; split <= input.length; ++split) {
-      using parser = new NativeCsvParser();
-      using counter = new NativeCsvParser();
+      using parser = new NativeCsvParser({ filterProgram: program });
+      using counter = new NativeCsvParser({ filterProgram: program });
       const rows: string[][] = [];
       let count = 0;
       for (const chunk of [input.subarray(0, split), input.subarray(split)]) {
-        using batch = parser.writeProjectedBatchWhere(chunk, undefined, program);
+        using batch = parser.writeBatch(chunk);
         rows.push(...batch.rows());
-        count += counter.writeCountWhere(chunk, program);
+        count += counter.writeCount(chunk);
       }
-      using finalBatch = parser.endProjectedBatchWhere(undefined, program);
+      using finalBatch = parser.endBatch();
       rows.push(...finalBatch.rows());
-      count += counter.endCountWhere(program);
+      count += counter.endCount();
       expect(rows).toEqual(expected);
       expect(count).toBe(expected.length);
     }

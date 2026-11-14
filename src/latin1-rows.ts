@@ -11,7 +11,6 @@ import {
   u64ToSafeNumber,
 } from './native.js';
 import { normalizeChunk } from './normalize.js';
-import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import {
   nativeCsvParserFinalizer,
   prepareNativeParser,
@@ -20,6 +19,7 @@ import {
 import type {
   CsvColumns,
   CsvDelimiter,
+  CsvNativeFilterProgramEntry,
   CsvParserOptions,
   CsvRow,
 } from './types.js';

@@ -4,14 +4,12 @@ import {
   validateRegex,
 } from './normalize.js';
 import type {
-  CsvNativeFilterOperator,
-  CsvNativeFilterProgramEntry,
-} from './normalize.js';
-import type {
   CsvFieldValue,
   CsvFilter,
   CsvFilterColumn,
   CsvNativeFilter,
+  CsvNativeFilterOperator,
+  CsvNativeFilterProgramEntry,
   CsvRegex,
 } from './types.js';
 

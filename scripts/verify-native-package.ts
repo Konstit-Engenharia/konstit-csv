@@ -39,11 +39,8 @@ const sourceInputGlobs = [
 const requiredNativeSymbols = [
   'csv_zip_reader_enable_read_ahead',
   'csv_runtime_supports_avx2',
-  'csv_parser_write_projected_batch_where_all',
-  'csv_parser_finish_projected_batch_where_all',
-  'csv_parser_write_count_where_all',
-  'csv_parser_finish_count_where_all',
   'csv_parser_prepare',
+  'csv_parser_reset_stream',
   'csv_parser_write_prepared_batch',
   'csv_parser_write_prepared_count',
   'csv_parser_create_latin1_rows',

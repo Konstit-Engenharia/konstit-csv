@@ -24,7 +24,6 @@ import {
   prepareCsvBufferInput,
   resolveInputEncoding,
 } from './normalize.js';
-import type { CsvNativeFilterProgramEntry } from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import {
   countFileChunks,
@@ -39,6 +38,7 @@ import type {
   CsvColumns,
   CsvCountOptions,
   CsvFilter,
+  CsvNativeFilterProgramEntry,
   CsvParseOptions,
   CsvParserOptions,
   CsvProjectedRow,

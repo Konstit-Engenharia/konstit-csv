@@ -816,11 +816,30 @@ public:
     return write_count_where_all(nullptr, 0, true, filters, filter_count);
   }
 
-  void reset() {
+  void reset_stream() {
     skipped_header_.reset();
     rows_to_skip_ = initial_skip_;
     rows_left_ = initial_limit_;
     skip_state_ = {};
+    reset_row_state();
+    field_.clear();
+    error_.clear();
+    batch_ = nullptr;
+    parse_failed_ = false;
+    strict_expected_columns_ = 0;
+    strict_expected_columns_seen_ = false;
+    in_quotes_ = false;
+    pending_quote_ = false;
+    at_field_start_ = true;
+    saw_row_data_ = false;
+    previous_was_cr_ = false;
+    emitted_rows_ = 0;
+    field_in_arena_ = false;
+    complete_quoted_field_has_escape_ = false;
+  }
+
+  void reset() {
+    reset_stream();
     configuration_initialized_ = false;
     prepared_configuration_ = false;
     prepared_direct_projection_ = false;
@@ -828,44 +847,21 @@ public:
     owned_selected_columns_.clear();
     owned_filter_values_.clear();
     owned_filter_offsets_.clear();
-    field_.clear();
-    row_fields_.clear();
     projected_fields_.clear();
-    error_.clear();
-    batch_ = nullptr;
     selected_columns_ = nullptr;
     selected_columns_len_ = 0;
     projection_enabled_ = false;
-    parse_failed_ = false;
-    strict_expected_columns_ = 0;
-    strict_expected_columns_seen_ = false;
     filters_.clear();
     first_filter_by_column_.clear();
     next_filter_.clear();
     in_filter_caches_.clear();
     regex_filter_caches_.clear();
-    in_quotes_ = false;
-    pending_quote_ = false;
-    at_field_start_ = true;
-    saw_row_data_ = false;
-    previous_was_cr_ = false;
-    current_column_ = 0;
     row_filter_seen_.clear();
     row_filter_matched_.clear();
     filter_truth_stack_.clear();
-    filter_program_truth_ = filter_truth::unknown;
-    flat_filter_rejected_ = false;
     conjunctive_filters_ = true;
-    emitted_rows_ = 0;
-    field_in_arena_ = false;
-    complete_quoted_field_has_escape_ = false;
     direct_projection_ = false;
     allow_direct_projection_ = false;
-    deferred_batch_row_ = false;
-    direct_projection_row_started_ = false;
-    direct_projection_data_start_ = 0;
-    direct_projection_field_offsets_start_ = 0;
-    direct_projection_carry_count_ = 0;
   }
 
   const char* last_error() const { return error_.empty() ? "" : error_.c_str(); }
@@ -2791,7 +2787,7 @@ CSV_EXPORT void* csv_parser_create_prepared(int encoding, uint8_t delimiter, uin
   return new csv_native::csv_parser(selected, delimiter, csv_native::batch_layout::utf8, fixed_columns);
 }
 
-// Internal fixed-configuration entry points used by high-level operations.
+// The parser owns the projection and predicate buffers after preparation.
 CSV_EXPORT bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
                                    uint64_t selected_columns_len, const uint32_t* filter_descriptors,
                                    uint64_t filter_count, const uint8_t* values_data, uint64_t values_data_len,
@@ -2843,6 +2839,12 @@ CSV_EXPORT void csv_parser_reset(void* parser) {
     return;
   }
   csv_native::checked_parser(parser)->reset();
+}
+
+CSV_EXPORT void csv_parser_reset_stream(void* parser) {
+  if (parser != nullptr) {
+    csv_native::checked_parser(parser)->reset_stream();
+  }
 }
 
 CSV_EXPORT void* csv_parser_write_batch(void* parser, const uint8_t* data, uint64_t len, bool final) {

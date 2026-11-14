@@ -340,7 +340,7 @@ export interface CsvRegexFilter {
  *
  * High-level row and count APIs normally use the opaque `CsvFilter` returned by
  * the filter factories instead. High-level options copy operands at invocation
- * time; low-level parser calls normalize their operands for each write.
+ * time. The manual parser captures its operands at construction.
  */
 export type CsvNativeFilter =
   | CsvEqualsFilter
@@ -359,10 +359,39 @@ export type CsvNativeFilter =
 export interface CsvNativeProjectionOptions {
   /** Physical columns to emit, in output order. */
   readonly columns?: CsvColumns;
-  /** One equality predicate for the direct native fast path. */
+  /** One equality predicate on a physical column. */
   readonly equalsFilter?: CsvEqualsFilter;
   /** Native predicates combined for the operation. */
   readonly filters?: readonly CsvNativeFilter[];
+}
+
+/**
+ * Boolean operation in a postfix filter program accepted by `NativeCsvParser`.
+ *
+ * Predicates push results onto a stack. An operator consumes the most recent
+ * results and pushes one combined result. Missing columns produce an unknown
+ * result, which remains unknown under `not` and does not select a row by itself.
+ */
+export interface CsvNativeFilterOperator {
+  /** Number of preceding stack results to consume; positive, and exactly one for `not`. */
+  readonly operandCount: number;
+  /** Combine operands with AND, OR, or unary negation. */
+  readonly operator: 'all' | 'any' | 'not';
+}
+
+/**
+ * Predicate or boolean operator in a low-level postfix filter program.
+ *
+ * Place predicates before the operators that consume them. A complete program
+ * must leave exactly one result on the stack and contain at most 4096 entries.
+ * Most applications can use `csv.column()` and its boolean combinators instead.
+ */
+export type CsvNativeFilterProgramEntry = CsvNativeFilter | CsvNativeFilterOperator;
+
+/** Projection and filter settings captured when a manual parser is constructed. */
+export interface NativeCsvParserOptions extends CsvParserOptions, CsvNativeProjectionOptions {
+  /** Postfix Boolean program. Supply only one of `filterProgram`, `filters`, or `equalsFilter`. */
+  readonly filterProgram?: readonly CsvNativeFilterProgramEntry[];
 }
 
 /** Common file options for the high-level `csv` API. */

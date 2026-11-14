@@ -163,16 +163,16 @@ export class NativeCsvRowView {
    *
    * Missing fields are represented by empty strings, matching `rowsInto()`.
    *
-   * @param columns Zero-based field indexes. Duplicate indexes are allowed for
-   * this low-level accessor.
+   * @param columns Zero-based field indexes captured before the first read. Duplicate indexes are allowed.
    * @returns A newly allocated array of decoded UTF-8 strings.
    */
   pick(columns: CsvColumns): string[] {
     this.#requireActive();
+    const selectedColumns = [...columns];
     const values: string[] = [];
-    values.length = columns.length;
-    for (let index = 0; index < columns.length; ++index) {
-      values[index] = this.get(columns[index] ?? 0) ?? '';
+    values.length = selectedColumns.length;
+    for (let index = 0; index < selectedColumns.length; ++index) {
+      values[index] = this.get(selectedColumns[index] ?? 0) ?? '';
     }
     return values;
   }
@@ -308,14 +308,14 @@ export class NativeCsvBatch {
    * missing field is represented by `''`.
    *
    * @param target Array to fill. It is truncated or extended to `rowCount`.
-   * @param columns Optional zero-based field indexes relative to this batch.
+   * @param columns Optional zero-based field indexes captured before writing to the target.
    * Duplicate indexes are rejected.
    * @returns The same `target` array passed by the caller.
    * @throws {RangeError} If a column index is invalid, repeated, or an offset
    * exceeds the batch backing storage.
    */
   rowsInto(target: CsvRow[], columns?: CsvColumns): CsvRow[] {
-    normalizeColumns(columns);
+    const selectedColumns = normalizeColumns(columns);
     const rowCount = this.rowCount;
     const totalFields = this.totalFields;
     const rowOffsetWords = this.#rowOffsetWordsView();
@@ -329,10 +329,10 @@ export class NativeCsvBatch {
         const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
         const existing = target[rowIndex];
         const row = existing === undefined ? [] : existing;
-        row.length = columns.length;
+        row.length = selectedColumns.length;
 
-        for (let outputIndex = 0; outputIndex < columns.length; ++outputIndex) {
-          const column = columns[outputIndex] ?? 0;
+        for (let outputIndex = 0; outputIndex < selectedColumns.length; ++outputIndex) {
+          const column = selectedColumns[outputIndex] ?? 0;
           const fieldIndex = fieldStart + column;
           if (fieldIndex >= fieldEnd) {
             row[outputIndex] = '';
@@ -626,7 +626,7 @@ export class NativeCsvBatch {
    * reported as `[-1, -1]`. Both `ranges` and `data` are reused/borrowed and
    * must be consumed synchronously by the callback.
    *
-   * @param columns Zero-based field indexes relative to each row.
+   * @param columns Zero-based field indexes relative to each row, copied once at the start of the scan.
    * @param callback Receives `(rowIndex, ranges, data)` for each row.
    * @param startRow Inclusive first row; defaults to `0`.
    * @param endRow Exclusive end row; defaults to `rowCount`.
@@ -640,19 +640,20 @@ export class NativeCsvBatch {
   ): void {
     const resolvedEndRow = this.#resolveEndRow(endRow);
     this.#validateRowRange(startRow, resolvedEndRow);
+    const selectedColumns = [...columns];
     const rowOffsetWords = this.#rowOffsetWordsView();
     const fieldOffsetWords = this.#fieldOffsetWordsView();
     const data = this.data();
     const totalFields = this.totalFields;
-    const ranges = new Float64Array(columns.length * 2);
+    const ranges = new Float64Array(selectedColumns.length * 2);
 
     for (let rowIndex = startRow; rowIndex < resolvedEndRow; ++rowIndex) {
       this.#requireHandle(); // A callback can close the batch between rows.
       const rowStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
       const rowEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
 
-      for (let columnOffset = 0; columnOffset < columns.length; ++columnOffset) {
-        const columnIndex = columns[columnOffset] ?? 0;
+      for (let columnOffset = 0; columnOffset < selectedColumns.length; ++columnOffset) {
+        const columnIndex = selectedColumns[columnOffset] ?? 0;
         const fieldIndex = rowStart + columnIndex;
         const rangeIndex = columnOffset * 2;
         if (fieldIndex < rowStart || fieldIndex >= rowEnd) {

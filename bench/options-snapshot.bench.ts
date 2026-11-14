@@ -19,9 +19,8 @@ import type {
 } from '../src/index.ts';
 
 // Measures complete file operations with a fixed projection/filter configuration.
-// Explicit per-write configuration is the baseline. Small chunks expose repeated
-// setup costs; large chunks show whether preparation still helps when parsing dominates.
-// Run these same cases on the base revision to measure changes to the high-level APIs.
+// Manual file streaming is the baseline. The chunk sizes expose the cost of
+// crossing the stream and parser boundaries at different frequencies.
 const ROW_COUNT = 8_192;
 const COLUMN_COUNT = 24;
 const columns = [0, 5, 12, 23] as const;
@@ -52,17 +51,17 @@ for (const encoding of ['utf8', 'latin1'] as const) {
     const label = `${encoding}, ${chunkSize / 1024} KiB chunks`;
     const options = { chunkSize, columns, delimiter: ';' as const, encoding, where };
     summary(() => {
-      bench(`per-write projected rows (${label})`, async () => {
-        using parser = new NativeCsvParser({ delimiter: ';', encoding });
+      bench(`manual projected rows (${label})`, async () => {
+        using parser = new NativeCsvParser({ delimiter: ';', encoding, columns, filters });
         let rows = 0;
         let chars = 0;
         for await (const chunk of createReadStream(path, { highWaterMark: chunkSize })) {
-          using batch = parser.writeProjectedBatch(chunk as Buffer, { columns, filters });
+          using batch = parser.writeBatch(chunk as Buffer);
           const materialized = batch.rows();
           rows += materialized.length;
           chars += consumeRows(materialized);
         }
-        using batch = parser.endProjectedBatch({ columns, filters });
+        using batch = parser.endBatch();
         const materialized = batch.rows();
         rows += materialized.length;
         chars += consumeRows(materialized);

@@ -77,19 +77,19 @@ describe('API and native coverage contracts', () => {
   });
 
   test('finishes filtered count through explicit parser end operation', () => {
-    using parser = new NativeCsvParser();
-    expect(parser.writeCountWhereEquals(Buffer.from('id,name\n1,Ana\n'), { column: 0, value: '1' })).toBe(1);
-    expect(parser.endCountWhereEquals({ column: 0, value: '1' })).toBe(0);
+    using parser = new NativeCsvParser({ equalsFilter: { column: 0, value: '1' } });
+    expect(parser.writeCount(Buffer.from('id,name\n1,Ana\n'))).toBe(1);
+    expect(parser.endCount()).toBe(0);
   });
 
-  test('runs in and starts-with count filters and reset', () => {
-    using parser = new NativeCsvParser();
+  test('runs membership and prefix count filters after reset', () => {
     const input = Buffer.from('1,Ana\n2,Bob\n');
-    expect(parser.writeCountWhereIn(input, { column: 0, values: ['1'] })).toBe(1);
-    expect(parser.endCountWhereIn({ column: 0, values: ['1'] })).toBe(0);
+    using parser = new NativeCsvParser({ filters: [{ column: 0, values: ['1'] }, { column: 1, prefix: 'A' }] });
+    expect(parser.writeCount(input)).toBe(1);
+    expect(parser.endCount()).toBe(0);
     parser.reset();
-    expect(parser.writeCountWhereStartsWith(input, { column: 1, prefix: 'A' })).toBe(1);
-    expect(parser.endCountWhereStartsWith({ column: 1, prefix: 'A' })).toBe(0);
+    expect(parser.writeCount(input)).toBe(1);
+    expect(parser.endCount()).toBe(0);
     expect(parser.closed).toBe(false);
   });
 });

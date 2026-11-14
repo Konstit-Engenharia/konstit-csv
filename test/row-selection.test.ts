@@ -70,10 +70,9 @@ test('counts logical records across CRLF, empty rows, quotes, and an unterminate
 });
 
 test('shares one skip and limit across manual projected batches and count calls', () => {
-  using parser = new NativeCsvParser({ skipRows: 1, limit: 2 });
-  const filter = { column: 0, value: 'yes' };
-  expect(parser.writeCountWhereEquals(Buffer.from('no\nyes\nno\n'), filter)).toBe(1);
-  using batch = parser.writeProjectedBatch(Buffer.from('no,0\nyes,1\nyes,2\n'), { columns: [1], equalsFilter: filter });
+  using parser = new NativeCsvParser({ skipRows: 1, limit: 2, columns: [1], equalsFilter: { column: 0, value: 'yes' } });
+  expect(parser.writeCount(Buffer.from('no\nyes\nno\n'))).toBe(1);
+  using batch = parser.writeBatch(Buffer.from('no,0\nyes,1\nyes,2\n'));
   expect(batch.rows()).toEqual([['1']]);
   expect(parser.writeCount(Buffer.from('yes\n'))).toBe(0);
   expect(parser.end()).toEqual([]);
