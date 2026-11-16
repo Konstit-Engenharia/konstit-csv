@@ -94,6 +94,21 @@ test.each(['utf8', 'latin1'] as const)('strict %s validation includes the skippe
   await rejects(collect(csv.rows(path, { ...fileOptions, minDataRows: 3 })), /got 2/);
 });
 
+test('a large filtered write preserves long quoted fields, row limits, and width errors', () => {
+  const payload = 'x,'.repeat(192 * 1024);
+  const first = `keep,"a""b\n${payload}"\r\n`;
+  const options = { fixedColumns: 2, columns: [1], equalsFilter: { column: 0, value: 'keep' } };
+  using limited = new NativeCsvParser({ ...options, limit: 1 });
+  using batch = limited.writeBatch(Buffer.from(`${first}wrong-width\n`), true);
+  expect(batch.rows()).toEqual([[`a"b\n${payload}`]]);
+  limited.reset();
+  using early = limited.writeBatch(Buffer.from(`keep,first\nwrong-width\n${first}`), true);
+  expect(early.rows()).toEqual([['first']]);
+
+  using invalid = new NativeCsvParser(options);
+  expect(() => invalid.writeBatch(Buffer.from(`wrong-width\n${first}`), true)).toThrow('column count mismatch');
+});
+
 test('zero limits emit no rows and skip past EOF finishes normally', async () => {
   for (const options of [{ limit: 0 }, { skipRows: 99 }]) {
     expect(await csv.parse(source, options)).toEqual([]);

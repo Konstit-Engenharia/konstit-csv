@@ -713,6 +713,25 @@ TEST_CASE("native C ABI validates filter column indexes") {
   }
 }
 
+TEST_CASE("per-write projection can reorder remaining columns of an unfinished row") {
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  const uint32_t ordered[] = {0, 1, 2};
+  const uint32_t reordered[] = {0, 2, 1};
+  const uint8_t prefix[] = {'a', ','};
+  const uint8_t suffix[] = {'b', ',', 'c', '\n'};
+  std::vector<std::vector<std::string>> rows;
+  append_batch_rows(
+      csv_parser_write_projected_batch(parser, prefix, sizeof(prefix), false, true, ordered, 3, false, 0, nullptr, 0),
+      rows);
+  REQUIRE(rows.empty());
+  append_batch_rows(
+      csv_parser_write_projected_batch(parser, suffix, sizeof(suffix), true, true, reordered, 3, false, 0, nullptr, 0),
+      rows);
+  csv_parser_destroy(parser);
+  REQUIRE(rows == std::vector<std::vector<std::string>>{{"a", "c", "b"}});
+}
+
 TEST_CASE("native prepared configuration owns caller buffers across chunk boundaries") {
   const std::string input = "alpha,SP,1,\"a\"\"b\r\nc\"\r\nalpine,RJ,2,ignored\r\n"
                             "alba,MG,1,ignored\nalbatross,RJ,3,last";

@@ -106,6 +106,8 @@ struct csv_split_offsets_batch {
 constexpr size_t npos = std::numeric_limits<size_t>::max();
 constexpr uint32_t max_column_index = 2024;
 constexpr uint64_t max_projection_length = 2024;
+constexpr uint16_t no_selected_output = std::numeric_limits<uint16_t>::max();
+static_assert(max_projection_length <= no_selected_output);
 constexpr uint64_t max_filter_count = 2024;
 constexpr uint64_t max_filter_program_length = 4096;
 constexpr uint64_t max_regex_filter_count = 32;
@@ -638,14 +640,23 @@ public:
     }
     auto batch = std::make_unique<csv_batch>();
     select_input(data, len, false);
-    batch->reserve(len, encoding_);
+    if (filters_.empty()) {
+      batch->reserve(len, encoding_);
+    } else {
+      reserve_filtered_batch(*batch, len);
+    }
     mode_ = output_mode::batch;
     batch_ = batch.get();
     direct_projection_ = prepared_direct_projection_;
-    restore_direct_projection_row();
     parse_projected_batch(data, len, final, prepared_quoted_records_);
     if (!batch->quoted_rows.empty()) {
       batch->quoted_rows.resize(batch->row_offsets.size() - 1, 0);
+    }
+    if (!parse_failed_ && !filters_.empty() && len != 0) {
+      filtered_batch_input_len_ = len;
+      filtered_batch_data_size_ = batch->data.size();
+      filtered_batch_field_count_ = batch->field_offsets.size() - 1;
+      filtered_batch_row_count_ = batch->row_offsets.size() - 1;
     }
     batch_ = nullptr;
     return parse_failed_ ? nullptr : batch.release();
@@ -834,6 +845,10 @@ public:
     saw_row_data_ = false;
     previous_was_cr_ = false;
     emitted_rows_ = 0;
+    filtered_batch_input_len_ = 0;
+    filtered_batch_data_size_ = 0;
+    filtered_batch_field_count_ = 0;
+    filtered_batch_row_count_ = 0;
     field_in_arena_ = false;
     complete_quoted_field_has_escape_ = false;
   }
@@ -869,6 +884,40 @@ public:
   void set_error(const char* value) { error_ = value; }
 
 private:
+  void reserve_filtered_batch(csv_batch& batch, size_t input_len, size_t sample_input_len = 0) const {
+    constexpr size_t initial_input_hint = 32 * 1024;
+    const size_t initial_len = std::min(input_len, initial_input_hint);
+    const size_t data_multiplier = encoding_ == csv_encoding::latin1 ? 2 : 1;
+    const size_t data_limit = std::min(input_len, batch.data.max_size() / data_multiplier) * data_multiplier;
+    const size_t field_limit = (input_len / 6) + 32;
+    const size_t row_limit = (input_len / 160) + 32;
+    const size_t observed_input_len = sample_input_len != 0 ? sample_input_len : filtered_batch_input_len_;
+    const size_t observed_fields = sample_input_len != 0 ? batch.row_offsets.back() : filtered_batch_field_count_;
+    const size_t observed_data =
+        sample_input_len != 0 ? batch.field_offsets[observed_fields] : filtered_batch_data_size_;
+    const size_t observed_rows = sample_input_len != 0 ? batch.row_offsets.size() - 1 : filtered_batch_row_count_;
+
+    // Use committed output from a first-write sample or the last chunk, with
+    // headroom for changing match density. Input-based caps bound guesses after
+    // a large carried row; normal growth handles denser chunks and wide rows.
+    const auto capacity_hint = [&](size_t observed_size, size_t initial_size, size_t minimum, size_t maximum) {
+      if (observed_input_len == 0) {
+        return std::min(initial_size, maximum);
+      }
+      // A short prefix may miss a large row that is still being parsed.
+      const double headroom = sample_input_len != 0 ? 2.0 : 1.25;
+      const double estimate = static_cast<double>(observed_size) / static_cast<double>(observed_input_len) *
+                              static_cast<double>(input_len) * headroom;
+      if (estimate >= static_cast<double>(maximum)) {
+        return maximum;
+      }
+      return std::max(std::min(minimum, maximum), static_cast<size_t>(estimate));
+    };
+    batch.data.reserve(capacity_hint(observed_data, initial_len * data_multiplier, 4096, data_limit));
+    batch.field_offsets.reserve(capacity_hint(observed_fields, (initial_len / 6) + 32, 256, field_limit));
+    batch.row_offsets.reserve(capacity_hint(observed_rows, (initial_len / 160) + 32, 32, row_limit));
+  }
+
   // Unvalidated prefixes need only structural scanning. Strict and fixed-width
   // writes parse from the first record so skipped rows participate in validation.
   void select_input(const uint8_t*& data, size_t& len, bool validate_rows) {
@@ -902,10 +951,30 @@ private:
   void parse_projected_batch(const uint8_t* data, size_t len, bool final, bool try_quoted_records = false) {
     parse_failed_ = false;
     emitted_rows_ = 0;
-    if (try_quoted_records) {
-      parse<true>(data, len);
-    } else {
-      parse(data, len);
+    if (prepared_configuration_ && !filters_.empty() && filtered_batch_input_len_ == 0 && len > 256 * 1024) {
+      const size_t sample_len = std::clamp<size_t>(len / 64, 64 * 1024, 256 * 1024);
+      if (try_quoted_records) {
+        parse<true>(data, sample_len);
+      } else {
+        parse(data, sample_len);
+      }
+      if (parse_failed_) {
+        return;
+      }
+      // Continue the same row and batch without finalizing the sampled prefix.
+      // A limit reached within the sample must also stop the remaining input.
+      if (!limit_reached()) {
+        reserve_filtered_batch(*batch_, len, sample_len);
+        data += sample_len;
+        len -= sample_len;
+      }
+    }
+    if (!limit_reached()) {
+      if (try_quoted_records) {
+        parse<true>(data, len);
+      } else {
+        parse(data, len);
+      }
     }
     if (parse_failed_) {
       return;
@@ -969,8 +1038,15 @@ private:
   }
 
   struct in_filter_cache {
+    in_filter_cache() = default;
+    in_filter_cache(const in_filter_cache&) = delete;
+    in_filter_cache& operator=(const in_filter_cache&) = delete;
+    in_filter_cache(in_filter_cache&&) noexcept = default;
+    in_filter_cache& operator=(in_filter_cache&&) noexcept = default;
+
     std::vector<std::string> values;
-    ankerl::unordered_dense::set<std::string> value_set;
+    // Views refer to values after the vector has been fully populated.
+    ankerl::unordered_dense::set<std::string_view> value_set;
     bool use_set = false;
   };
 
@@ -1024,12 +1100,8 @@ private:
         }
       }
     }
-    selected_column_counts_.clear();
-    selected_column_outputs_.clear();
+    selected_output_by_column_.clear();
 
-    if (projection_enabled_ && projected_fields_.size() != selected_columns_len_) {
-      projected_fields_.assign(selected_columns_len_, std::string{});
-    }
     if (projection_enabled_) {
       uint32_t max_column = 0;
       for (size_t i = 0; i < selected_columns_len_; ++i) {
@@ -1037,16 +1109,25 @@ private:
           max_column = selected_columns_[i];
         }
       }
-      selected_column_counts_.assign(static_cast<size_t>(max_column) + 1, 0);
-      selected_column_outputs_.assign(static_cast<size_t>(max_column) + 1, std::vector<uint32_t>{});
+      selected_output_by_column_.assign(static_cast<size_t>(max_column) + 1, no_selected_output);
+      // Projection validation gives each physical column exactly one output slot.
       for (size_t i = 0; i < selected_columns_len_; ++i) {
         const uint32_t column = selected_columns_[i];
-        ++selected_column_counts_[column];
-        selected_column_outputs_[column].push_back(checked_u32(i));
+        selected_output_by_column_[column] = static_cast<uint16_t>(i);
       }
     }
     direct_projection_ = can_use_direct_projection();
-    restore_direct_projection_row();
+    if (projection_enabled_ && !direct_projection_ && mode_ == output_mode::batch) {
+      if (projected_fields_.size() != selected_columns_len_) {
+        projected_fields_.assign(selected_columns_len_, std::string{});
+      }
+    } else if (!saw_row_data_) {
+      // A per-write mode change may still have deferred fields in the current row.
+      projected_fields_.clear();
+    }
+    if (!direct_projection_ && mode_ == output_mode::batch) {
+      defer_direct_projection_carry();
+    }
     return true;
   }
 
@@ -1138,6 +1219,7 @@ private:
       return;
     }
 
+    cache.value_set.clear();
     cache.values.clear();
     cache.values.reserve(filter.value_count);
     for (size_t index = 0; index < filter.value_count; ++index) {
@@ -1150,7 +1232,6 @@ private:
       }
     }
 
-    cache.value_set.clear();
     cache.value_set.reserve(filter.value_count);
     for (const auto& value : cache.values) {
       cache.value_set.insert(value);
@@ -1416,6 +1497,15 @@ private:
   }
 
   template <bool try_quoted_records = false> void parse(const uint8_t* data, size_t len) {
+    // Choose once per input span so unfiltered fields skip the borrowing checks.
+    if (!filters_.empty() && encoding_ == csv_encoding::utf8) {
+      parse_fields<try_quoted_records, true>(data, len);
+    } else {
+      parse_fields<try_quoted_records, false>(data, len);
+    }
+  }
+
+  template <bool try_quoted_records, bool can_borrow_fields> void parse_fields(const uint8_t* data, size_t len) {
     if (data == nullptr || len == 0) {
       return;
     }
@@ -1430,6 +1520,26 @@ private:
     const bool can_skip_rejected_tail = !strict_quote_syntax_ && fixed_columns_ == 0;
     constexpr unsigned quoted_record_miss_limit = 4;
     unsigned misses_left = quoted_record_miss_limit;
+    const auto finish_borrowed_field = [this, data, len, can_skip_rejected_tail](std::string_view field,
+                                                                                 size_t terminator_index) -> size_t {
+      saw_row_data_ = true;
+      at_field_start_ = false;
+      const uint8_t terminator = data[terminator_index];
+      size_t next_index = terminator_index + 1;
+      if (terminator == delimiter_) {
+        finish_field(field);
+        if (can_skip_rejected_tail && row_filter_rejected()) {
+          next_index += skip_rejected_row_tail(data + next_index, len - next_index);
+        }
+        return next_index;
+      }
+
+      finish_row(field);
+      if (!parse_failed_ && !limit_reached()) {
+        previous_was_cr_ = terminator == '\r';
+      }
+      return next_index;
+    };
     if (can_skip_rejected_tail && row_filter_rejected()) {
       i = skip_rejected_row_tail(data, len);
     }
@@ -1475,7 +1585,7 @@ private:
       previous_was_cr_ = false;
 
       if (byte == delimiter_) {
-        finish_field();
+        finish_field(field_);
         saw_row_data_ = true;
         ++i;
         if (can_skip_rejected_tail && row_filter_rejected()) {
@@ -1485,7 +1595,7 @@ private:
       }
 
       if (byte == '\n' || byte == '\r') {
-        finish_row();
+        finish_row(field_);
         if (parse_failed_ || limit_reached()) {
           return;
         }
@@ -1509,17 +1619,26 @@ private:
             // Repeated misses would scan escaped or mixed-format records twice.
             // Resume at this record in the general loop until the next chunk.
             if (--misses_left == 0) {
-              return parse<false>(data + i, len - i);
+              return parse_fields<false, can_borrow_fields>(data + i, len - i);
             }
           }
         }
         const size_t close_quote = find_complete_quoted_field_close(data + i, len - i);
         if (close_quote != npos) {
-          append_complete_quoted_field(data + i, close_quote);
           const size_t terminator_index = i + close_quote + 1;
+          if (can_borrow_fields && !complete_quoted_field_has_escape_ && can_borrow_current_filter_field()) {
+            const std::string_view field(reinterpret_cast<const char*>(data + i + 1), close_quote - 1);
+            i = finish_borrowed_field(field, terminator_index);
+            if (parse_failed_ || limit_reached()) {
+              return;
+            }
+            continue;
+          }
+
+          append_complete_quoted_field(data + i, close_quote);
           const uint8_t terminator = data[terminator_index];
           if (terminator == delimiter_) {
-            finish_field();
+            finish_field(field_);
             saw_row_data_ = true;
             i = terminator_index + 1;
             if (can_skip_rejected_tail && row_filter_rejected()) {
@@ -1528,7 +1647,7 @@ private:
             continue;
           }
           if (terminator == '\n' || terminator == '\r') {
-            finish_row();
+            finish_row(field_);
             if (parse_failed_ || limit_reached()) {
               return;
             }
@@ -1553,6 +1672,15 @@ private:
       }
 
       const size_t span = find_plain_span(data + i, len - i);
+      if (can_borrow_fields && can_borrow_current_filter_field() && span < len - i &&
+          is_quoted_field_terminator(data[i + span], delimiter_)) {
+        const std::string_view field(reinterpret_cast<const char*>(data + i), span);
+        i = finish_borrowed_field(field, i + span);
+        if (parse_failed_ || limit_reached()) {
+          return;
+        }
+        continue;
+      }
       append_plain_span(data + i, span, len - i);
       i += span;
     }
@@ -1579,7 +1707,7 @@ private:
     previous_was_cr_ = state.previous_was_cr;
     saw_row_data_ = state.saw_row_data;
     if (!unfinished) {
-      finish_row();
+      finish_row(field_);
     }
     return consumed;
   }
@@ -1722,6 +1850,11 @@ private:
 
   void append_decoded_byte(uint8_t byte) { append_decoded_span(&byte, 1); }
 
+  bool can_borrow_current_filter_field() const {
+    return is_filter_column(current_column_) && encoding_ == csv_encoding::utf8 && at_field_start_ && field_.empty() &&
+           !field_in_arena_ && !row_filter_rejected();
+  }
+
   void append_plain_span(const uint8_t* data, size_t len, size_t remaining) {
     if (can_append_complete_plain_field_to_arena(len, remaining)) {
       append_utf8_span_to_arena(data, len);
@@ -1765,7 +1898,6 @@ private:
     saw_row_data_ = true;
     at_field_start_ = false;
     field_in_arena_ = true;
-    ensure_direct_projection_row_started();
     if (len != 0) {
       batch_->data.append(reinterpret_cast<const char*>(data), len);
     }
@@ -1790,7 +1922,6 @@ private:
 
   void append_quoted_field_to_arena(const uint8_t* data, size_t close_quote) {
     field_in_arena_ = true;
-    ensure_direct_projection_row_started();
     if (!complete_quoted_field_has_escape_) {
       batch_->data.append(reinterpret_cast<const char*>(data + 1), close_quote - 1);
       return;
@@ -1904,12 +2035,12 @@ private:
     }
   }
 
-  void finish_field() {
+  template <typename Field> void finish_field(const Field& field) {
     if (use_deferred_rows()) {
-      finish_deferred_field();
+      finish_deferred_field(field);
     } else if (mode_ == output_mode::batch && batch_ != nullptr) {
       if (!field_in_arena_) {
-        batch_->data.append(field_);
+        batch_->data.append(field);
       }
       batch_->field_offsets.push_back(batch_->data.size());
     }
@@ -1919,12 +2050,12 @@ private:
     ++current_column_;
   }
 
-  void finish_row() {
+  template <typename Field> void finish_row(const Field& field) {
     if (!saw_row_data_) {
       at_field_start_ = true;
     }
 
-    finish_field();
+    finish_field(field);
     // Count every physical field before deciding whether to emit the row.
     if (fixed_columns_ != 0 && current_column_ != fixed_columns_) {
       fail_parse("fixed row column count mismatch");
@@ -1954,10 +2085,8 @@ private:
       if (skipping && !parse_failed_) {
         discard_batch_row();
       }
-    } else if (mode_ == output_mode::batch && skipping) {
+    } else if (mode_ == output_mode::batch && (skipping || direct_projection_)) {
       discard_uncommitted_fields();
-    } else if (mode_ == output_mode::batch && direct_projection_) {
-      rollback_direct_projection_row();
     }
     if (emit_row && !skipping) {
       record_emitted_row();
@@ -2005,7 +2134,9 @@ private:
            first_filter_by_column_[column] != std::numeric_limits<uint32_t>::max();
   }
 
-  bool should_store_current_field() const { return !projection_enabled_ || selected_output_count(current_column_) > 0; }
+  bool should_store_current_field() const {
+    return !projection_enabled_ || selected_output_index(current_column_) != no_selected_output;
+  }
 
   bool row_filter_rejected() const {
     return conjunctive_filters_ ? flat_filter_rejected_ : filter_program_truth_ == filter_truth::false_value;
@@ -2035,17 +2166,17 @@ private:
     return true;
   }
 
-  size_t selected_output_count(size_t column) const {
-    return column < selected_column_counts_.size() ? selected_column_counts_[column] : 0;
+  uint16_t selected_output_index(size_t column) const {
+    return column < selected_output_by_column_.size() ? selected_output_by_column_[column] : no_selected_output;
   }
 
-  void finish_deferred_field() {
+  template <typename Field> void finish_deferred_field(const Field& field) {
     if (direct_projection_) {
-      finish_direct_projection_field();
+      finish_direct_projection_field(field);
       return;
     }
 
-    evaluate_current_field_filters();
+    evaluate_current_field_filters(field);
 
     if (mode_ != output_mode::batch) {
       return;
@@ -2056,92 +2187,93 @@ private:
     }
 
     if (!projection_enabled_) {
-      row_fields_.push_back(field_);
+      row_fields_.emplace_back(field);
       return;
     }
 
-    if (current_column_ >= selected_column_outputs_.size()) {
-      return;
-    }
-
-    for (const uint32_t output_index : selected_column_outputs_[current_column_]) {
-      projected_fields_[output_index] = field_;
+    const uint16_t output_index = selected_output_index(current_column_);
+    if (output_index != no_selected_output) {
+      projected_fields_[output_index] = field;
     }
   }
 
-  void finish_direct_projection_field() {
-    evaluate_current_field_filters();
+  template <typename Field> void finish_direct_projection_field(const Field& field) {
+    evaluate_current_field_filters(field);
 
     if (batch_ == nullptr || row_filter_rejected() || !should_store_current_field()) {
       return;
     }
 
-    ensure_direct_projection_row_started();
-
     if (!field_in_arena_) {
-      batch_->data.append(field_);
+      // A buffered field can extend the carried prefix until the first field is written to this batch.
+      if (!direct_projection_carry_offsets_.empty() && batch_->field_offsets.size() == 1) {
+        direct_projection_carry_data_.append(field);
+        direct_projection_carry_offsets_.push_back(direct_projection_carry_data_.size());
+        return;
+      }
+      batch_->data.append(field);
     }
     batch_->field_offsets.push_back(batch_->data.size());
   }
 
-  void ensure_direct_projection_row_started() {
-    if (!direct_projection_ || batch_ == nullptr || direct_projection_row_started_) {
-      return;
-    }
-    direct_projection_row_started_ = true;
-    direct_projection_data_start_ = batch_->data.size();
-    direct_projection_field_offsets_start_ = batch_->field_offsets.size();
-  }
-
-  void rollback_direct_projection_row() {
-    if (batch_ == nullptr || !direct_projection_row_started_) {
-      return;
-    }
-    batch_->data.resize(direct_projection_data_start_);
-    batch_->field_offsets.resize(direct_projection_field_offsets_start_);
-  }
-
   void finish_direct_projection_row() {
-    ensure_direct_projection_row_started();
-    const size_t field_count = batch_->field_offsets.size() - direct_projection_field_offsets_start_;
+    if (!direct_projection_carry_offsets_.empty()) {
+      // A row carried from a preceding write is the first row in this batch.
+      // Fields completed in this write already occupy its suffix.
+      batch_->data.insert(0, direct_projection_carry_data_);
+      for (size_t index = 1; index < batch_->field_offsets.size(); ++index) {
+        batch_->field_offsets[index] += direct_projection_carry_data_.size();
+      }
+      batch_->field_offsets.insert(batch_->field_offsets.begin() + 1, direct_projection_carry_offsets_.begin(),
+                                   direct_projection_carry_offsets_.end());
+    }
+    const size_t field_count = batch_->field_offsets.size() - 1 - batch_->row_offsets.back();
     for (size_t index = field_count; index < selected_columns_len_; ++index) {
       batch_->field_offsets.push_back(batch_->data.size());
     }
     finish_batch_row();
   }
 
-  void restore_direct_projection_row() {
-    if (!direct_projection_ || batch_ == nullptr || direct_projection_carry_count_ == 0) {
+  void defer_direct_projection_carry() {
+    if (direct_projection_carry_offsets_.empty()) {
       return;
     }
 
-    direct_projection_row_started_ = true;
-    direct_projection_data_start_ = batch_->data.size();
-    direct_projection_field_offsets_start_ = batch_->field_offsets.size();
-    for (size_t index = 0; index < direct_projection_carry_count_; ++index) {
+    // Per-write configuration can switch a carried row to the general deferred path.
+    size_t start = 0;
+    for (size_t index = 0; index < direct_projection_carry_offsets_.size(); ++index) {
+      const size_t end = direct_projection_carry_offsets_[index];
       if (projection_enabled_) {
-        batch_->data.append(projected_fields_[index]);
+        if (index < projected_fields_.size()) {
+          projected_fields_[index].assign(direct_projection_carry_data_.data() + start, end - start);
+        }
       } else {
-        batch_->data.append(row_fields_[index]);
+        row_fields_.emplace_back(direct_projection_carry_data_.data() + start, end - start);
       }
-      batch_->field_offsets.push_back(batch_->data.size());
+      start = end;
     }
+    if (!projection_enabled_) {
+      deferred_batch_row_ = true;
+    }
+    direct_projection_carry_data_.clear();
+    direct_projection_carry_offsets_.clear();
   }
 
-  void evaluate_current_field_filters() {
+  template <typename Field> void evaluate_current_field_filters(const Field& field) {
     if (row_filter_rejected()) {
       return;
     }
-    if (current_column_ >= first_filter_by_column_.size()) {
+    if (!is_filter_column(current_column_)) {
       return;
     }
 
     // Private row materialization stores Latin1 bytes, but predicates always consume UTF-8.
-    if (layout_ != batch_layout::utf8 && is_filter_column(current_column_)) {
+    if (layout_ != batch_layout::utf8) {
       utf8_filter_field_.clear();
-      append_latin1(utf8_filter_field_, reinterpret_cast<const uint8_t*>(field_.data()), field_.size());
+      append_latin1(utf8_filter_field_, reinterpret_cast<const uint8_t*>(field.data()), field.size());
     }
-    const std::string& filter_field = layout_ != batch_layout::utf8 ? utf8_filter_field_ : field_;
+    const std::string_view filter_field =
+        layout_ != batch_layout::utf8 ? std::string_view(utf8_filter_field_) : std::string_view(field);
     bool changed = false;
     for (uint32_t filter_index = first_filter_by_column_[current_column_];
          filter_index != std::numeric_limits<uint32_t>::max(); filter_index = next_filter_[filter_index]) {
@@ -2227,7 +2359,7 @@ private:
     return filter_truth_stack_[0];
   }
 
-  bool field_matches_filter(size_t filter_index, const std::string& field) const {
+  bool field_matches_filter(size_t filter_index, std::string_view field) const {
     const auto& filter = filters_[filter_index];
     switch (filter.kind) {
     case row_filter_kind::equals:
@@ -2265,7 +2397,7 @@ private:
     return std::memcmp(field.data(), value, value_len) == 0;
   }
 
-  bool field_in_filter(const std::string& field, const row_filter& filter, const in_filter_cache& cache) const {
+  bool field_in_filter(std::string_view field, const row_filter& filter, const in_filter_cache& cache) const {
     if (filter.value_offsets == nullptr) {
       return false;
     }
@@ -2283,7 +2415,7 @@ private:
     return false;
   }
 
-  bool field_starts_with_filter(const std::string& field, const row_filter& filter) const {
+  bool field_starts_with_filter(std::string_view field, const row_filter& filter) const {
     if (field.size() < filter.value_len) {
       return false;
     }
@@ -2326,32 +2458,31 @@ private:
       field.clear();
     }
     deferred_batch_row_ = false;
-    direct_projection_row_started_ = false;
-    direct_projection_data_start_ = 0;
-    direct_projection_field_offsets_start_ = 0;
-    direct_projection_carry_count_ = 0;
+    if (!direct_projection_carry_offsets_.empty()) {
+      direct_projection_carry_data_.clear();
+      direct_projection_carry_offsets_.clear();
+    }
     filter_program_truth_ = filter_truth::unknown;
     flat_filter_rejected_ = false;
   }
 
   void spill_unfinished_direct_projection_row() {
-    if (batch_ == nullptr || !saw_row_data_ || !direct_projection_ || !direct_projection_row_started_) {
+    if (batch_ == nullptr || !saw_row_data_ || !direct_projection_) {
       return;
     }
-
-    const size_t field_count = batch_->field_offsets.size() - direct_projection_field_offsets_start_;
-    for (size_t index = direct_projection_carry_count_; index < field_count; ++index) {
-      const size_t offset_index = direct_projection_field_offsets_start_ + index;
-      const size_t start = batch_->field_offsets[offset_index - 1];
-      const size_t end = batch_->field_offsets[offset_index];
-      if (projection_enabled_) {
-        projected_fields_[index].assign(batch_->data.data() + start, end - start);
-      } else {
-        row_fields_.emplace_back(batch_->data.data() + start, end - start);
-      }
+    const size_t field_start = batch_->row_offsets.back() + 1;
+    if (field_start == batch_->field_offsets.size()) {
+      return;
     }
-    direct_projection_carry_count_ = field_count;
-    rollback_direct_projection_row();
+    // Save only fields completed since the last write. The committed row and
+    // field offsets identify the unfinished suffix for both spill and rollback.
+    const size_t data_start = batch_->field_offsets[field_start - 1];
+    const size_t carried_size = direct_projection_carry_data_.size();
+    direct_projection_carry_data_.append(batch_->data.data() + data_start, batch_->data.size() - data_start);
+    for (size_t index = field_start; index < batch_->field_offsets.size(); ++index) {
+      direct_projection_carry_offsets_.push_back(carried_size + (batch_->field_offsets[index] - data_start));
+    }
+    discard_uncommitted_fields();
   }
 
   void spill_unfinished_batch_row() {
@@ -2421,7 +2552,7 @@ private:
       in_quotes_ = false;
     }
     if (saw_row_data_) {
-      finish_row();
+      finish_row(field_);
     } else if (rows_to_skip_ != 0 && skip_state_.saw_row_data) {
       --rows_to_skip_;
       skip_state_ = {};
@@ -2450,13 +2581,16 @@ private:
   bool prepared_configuration_ = false;
   bool prepared_direct_projection_ = false;
   bool prepared_quoted_records_ = false;
+  size_t filtered_batch_input_len_ = 0;
+  size_t filtered_batch_data_size_ = 0;
+  size_t filtered_batch_field_count_ = 0;
+  size_t filtered_batch_row_count_ = 0;
   std::vector<uint32_t> owned_selected_columns_;
   std::vector<uint8_t> owned_filter_values_;
   std::vector<uint32_t> owned_filter_offsets_;
   const uint32_t* selected_columns_ = nullptr;
   size_t selected_columns_len_ = 0;
-  std::vector<uint8_t> selected_column_counts_;
-  std::vector<std::vector<uint32_t>> selected_column_outputs_;
+  std::vector<uint16_t> selected_output_by_column_;
   bool projection_enabled_ = false;
   bool direct_projection_ = false;
   bool strict_quote_syntax_ = false;
@@ -2464,10 +2598,8 @@ private:
   uint32_t strict_expected_columns_ = 0;
   bool strict_expected_columns_seen_ = false;
   bool parse_failed_ = false;
-  bool direct_projection_row_started_ = false;
-  size_t direct_projection_data_start_ = 0;
-  size_t direct_projection_field_offsets_start_ = 0;
-  size_t direct_projection_carry_count_ = 0;
+  std::string direct_projection_carry_data_;
+  std::vector<size_t> direct_projection_carry_offsets_;
   std::vector<row_filter> filters_;
   std::vector<uint32_t> first_filter_by_column_;
   std::vector<uint32_t> next_filter_;
