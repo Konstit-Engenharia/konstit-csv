@@ -408,19 +408,37 @@ export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scor
 
 function requireDelimiter(path: string, rows: readonly ArrayLike<number>[]): CsvDelimiter {
   const result = selectDelimiter(path, rows);
-  if ('error' in result) {
-    throw new Error(result.error);
+  if ('delimiter' in result) {
+    return result.delimiter;
   }
-  return result.delimiter;
+  switch (result.reason) {
+    case 'no-records':
+      throw new Error(
+        `delimiter auto-detection failed: the ${
+          String(FILE_PROBE_SIZE)
+        }-byte probe contains no complete non-empty row; specify delimiter explicitly`,
+      );
+    case 'no-stable-separator':
+      throw new Error(
+        'delimiter auto-detection failed: no supported delimiter has a stable positive count across the probe rows; specify delimiter explicitly',
+      );
+    case 'ambiguous':
+      throw new Error(
+        `delimiter auto-detection is ambiguous between ${
+          result.candidates.map((c) => JSON.stringify(c)).join(', ')
+        }; specify delimiter explicitly`,
+      );
+  }
 }
 
-export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]): { delimiter: CsvDelimiter; } | { error: string; } {
+type DelimiterChoice =
+  | { delimiter: CsvDelimiter; }
+  | { reason: 'no-records' | 'no-stable-separator'; }
+  | { reason: 'ambiguous'; candidates: readonly CsvDelimiter[]; };
+
+export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]): DelimiterChoice {
   if (rows.length === 0) {
-    return {
-      error: `delimiter auto-detection failed: the ${
-        String(FILE_PROBE_SIZE)
-      }-byte probe contains no complete non-empty row; specify delimiter explicitly`,
-    };
+    return { reason: 'no-records' };
   }
 
   const stableCandidates: StableDelimiterCandidate[] = [];
@@ -438,10 +456,7 @@ export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]
   }
 
   if (stableCandidates.length === 0) {
-    return {
-      error:
-        'delimiter auto-detection failed: no supported delimiter has a stable positive count across the probe rows; specify delimiter explicitly',
-    };
+    return { reason: 'no-stable-separator' };
   }
 
   const extensionHint = delimiterFromExtension(path);
@@ -458,11 +473,7 @@ export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]
     return { delimiter: strongestCandidates[0]?.delimiter ?? ',' };
   }
 
-  return {
-    error: `delimiter auto-detection is ambiguous between ${
-      strongestCandidates.map((candidate) => JSON.stringify(candidate.delimiter)).join(', ')
-    }; specify delimiter explicitly`,
-  };
+  return { reason: 'ambiguous', candidates: strongestCandidates.map((candidate) => candidate.delimiter) };
 }
 
 export function scanDelimiterCounts(probe: Uint8Array, sourceEnded: boolean): number[][] {

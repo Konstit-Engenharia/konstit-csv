@@ -8,6 +8,7 @@ import {
   csvCommand,
   type LinesArguments,
   parseColumnIndex,
+  type ProbeArguments,
 } from './cli-schema.js';
 import { formatBytes } from './format-bytes.js';
 import { inspectCsvFile } from './inspect-file.js';
@@ -49,7 +50,7 @@ export async function runCli(arguments_: readonly string[], customOutput?: CliOu
     case 'lines':
       return runLines(subcommand.args, output);
     case 'probe':
-      return runProbe(subcommand.args.path, subcommand.args['zip-entry'], output);
+      return runProbe(subcommand.args, output);
     case 'completion':
       return runCompletion(subcommand.args.shell, output);
   }
@@ -61,17 +62,30 @@ async function runCompletion(shell: CompletionShell, output: CliOutput): Promise
   return 0;
 }
 
-async function runProbe(path: string, entry: string | undefined, output: CliOutput): Promise<number> {
+async function runProbe(args: ProbeArguments, output: CliOutput): Promise<number> {
   try {
-    const result = await inspectCsvFile(path, entry);
-    output.log([
-      `File size: ${formatBytes(result.size)}`,
-      `Encoding: ${result.encoding}`,
-      `Delimiter: ${result.delimiter === undefined ? 'undetermined' : JSON.stringify(result.delimiter)}`,
+    const result = await inspectCsvFile(args.path, { zipEntry: args['zip-entry'], encoding: args.encoding, delimiter: args.delimiter });
+    if (args.json) {
+      output.log(JSON.stringify(result));
+      return 0;
+    }
+    const lines = [
+      `File size: ${formatBytes(result.fileSizeBytes)}`,
+      `Encoding: ${result.encoding}${result.encodingSource === 'explicit' ? ' (explicit)' : ''}`,
+      `Delimiter: ${result.delimiter === null ? 'undetermined' : JSON.stringify(result.delimiter)}${
+        result.delimiterSource === 'explicit' ? ' (explicit)' : ''
+      }`,
       `Line endings: ${result.lineEnding}`,
       `Compression: ${result.compression}`,
       `First record columns: ${String(result.firstRecordColumns ?? 'unknown')}`,
-    ].join('\n'));
+    ];
+    if (result.zipEntry !== null) {
+      lines.push(`ZIP entry: ${JSON.stringify(result.zipEntry)}`);
+    }
+    if (result.delimiterReason !== null) {
+      lines.push(`Delimiter detail: ${result.delimiterReason}`);
+    }
+    output.log(lines.join('\n'));
     return 0;
   } catch (error) {
     output.error(`csv: ${error instanceof Error ? error.message : String(error)}`);

@@ -202,6 +202,7 @@ Inspect a file, count its records, or emit the first records as newline-delimite
 
 ```sh
 bunx @konstit/csv probe data.csv
+bunx @konstit/csv probe tables.zip --zip-entry parts.tsv --json
 
 bunx @konstit/csv count data.csv
 # 3
@@ -211,7 +212,9 @@ bunx @konstit/csv lines data.csv --json --skip-rows 1 --limit 2
 # ["2","Grace","RJ"]
 ```
 
-The CLI detects input encoding and delimiter by default. Without `--json`, `lines` writes normalized UTF-8 CSV.
+The CLI detects input encoding and delimiter by default. `probe --json` reports the file size in bytes,
+how much of the decompressed payload it inspected, and whether it reached the end. Use `--delimiter` or
+`--encoding` to inspect a known format. Without `--json`, `lines` writes normalized UTF-8 CSV.
 `count` and `lines` support column filters; `lines` also supports
 column selection. Use `bunx @konstit/csv lines --help` or read the
 [CLI guide](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/cli.md) for flags and output behavior.

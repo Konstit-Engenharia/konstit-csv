@@ -7,36 +7,54 @@ import {
   isZipSignature,
   readCsvFileChunks,
   scanCsvFileFormat,
+  scanDelimiterCounts,
   selectDelimiter,
 } from './file-stream.js';
-import type { CsvFileProbe } from './file-stream.js';
-import type { CsvCompression } from './types.js';
+import { resolveInputEncoding } from './normalize.js';
+import { NativeZipReader } from './zip-reader.js';
+
+interface InspectionOptions {
+  readonly zipEntry?: string;
+  readonly delimiter?: string;
+  readonly encoding?: string;
+}
 
 interface FileInspection {
-  size: number;
+  fileSizeBytes: number;
+  sampleBytes: number;
+  sampleReachedEof: boolean;
   compression: Bun.CompressionFormat | 'zip' | 'none';
-  encoding: ReturnType<CsvFileProbe>['encoding'];
-  delimiter: string | undefined;
+  zipEntry: string | null;
+  encoding: string;
+  encodingSource: 'explicit' | 'inferred';
+  delimiter: string | null;
+  delimiterSource: 'explicit' | 'inferred' | null;
+  delimiterReason: string | null;
   lineEnding: string;
-  firstRecordColumns: number | undefined;
+  firstRecordColumns: number | null;
 }
 
 /** Inspect a bounded sample of the CSV payload; size always refers to the file on disk. */
-export async function inspectCsvFile(path: string, zipEntry?: string): Promise<FileInspection> {
+export async function inspectCsvFile(path: string, options: InspectionOptions = {}): Promise<FileInspection> {
   const info = await stat(path);
   if (!info.isFile()) {
     throw new Error('probe requires a regular file');
   }
   const raw = await Bun.file(path).slice(0, FILE_PROBE_SIZE + 1).bytes();
   const zip = isZipSignature(raw);
-  if (zipEntry !== undefined && !zip) {
+  if (options.zipEntry !== undefined && !zip) {
     throw new Error('--zip-entry requires a ZIP archive');
   }
-  let compression = zip ? { format: 'zip', entry: zipEntry ?? '*' } as const : compressionFromPrefix(path, raw);
+  let compression: FileInspection['compression'] = zip ? 'zip' : compressionFromPrefix(path, raw) ?? 'none';
+  let zipEntry: string | null = null;
   let sample = raw;
-  if (compression !== undefined) {
+  if (compression === 'zip') {
+    using reader = new NativeZipReader(path, { format: 'zip', entry: options.zipEntry ?? '*' });
+    zipEntry = reader.entryName;
+    sample = await readCompressedSample(reader.chunks(FILE_PROBE_SIZE + 1));
+  } else if (compression !== 'none') {
     try {
-      sample = await readCompressedSample(path, compression);
+      sample = await readCompressedSample(readCsvFileChunks(path, { compression, chunkSize: FILE_PROBE_SIZE + 1 }));
     } catch (error) {
       // Two printable bytes (e.g. "H,") can satisfy the zlib header check.
       // Without a compression extension, accept plain text if inflation rejects it.
@@ -46,26 +64,26 @@ export async function inspectCsvFile(path: string, zipEntry?: string): Promise<F
       ) {
         throw error;
       }
-      compression = undefined;
+      compression = 'none';
     }
   }
   const eof = sample.length <= FILE_PROBE_SIZE;
-  const { bytes, counts, encoding } = scanCsvFileFormat(sample.subarray(0, FILE_PROBE_SIZE), eof, true);
-  const choice = selectDelimiter(zip ? zipEntry ?? '*' : path, counts);
-  const delimiter = 'delimiter' in choice ? choice.delimiter : undefined;
+  const prefix = sample.subarray(0, FILE_PROBE_SIZE);
+  const format = inspectFormat(zipEntry ?? path, prefix, eof, options.encoding ?? 'auto', options.delimiter ?? 'auto');
   return {
-    size: info.size,
-    compression: typeof compression === 'object' ? 'zip' : compression ?? 'none',
-    encoding,
-    delimiter,
-    ...inspectRecords(bytes, eof, delimiter),
+    fileSizeBytes: info.size,
+    sampleBytes: prefix.byteLength,
+    sampleReachedEof: eof,
+    compression,
+    zipEntry,
+    ...format,
   };
 }
 
-async function readCompressedSample(path: string, compression: CsvCompression): Promise<Uint8Array<ArrayBuffer>> {
+async function readCompressedSample(chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<Uint8Array<ArrayBuffer>> {
   const sample = new Uint8Array(FILE_PROBE_SIZE + 1);
   let length = 0;
-  for await (const chunk of readCsvFileChunks(path, { compression, chunkSize: sample.length })) {
+  for await (const chunk of chunks) {
     const take = Math.min(chunk.length, sample.length - length);
     sample.set(chunk.subarray(0, take), length);
     length += take;
@@ -76,9 +94,63 @@ async function readCompressedSample(path: string, compression: CsvCompression): 
   return sample.subarray(0, length);
 }
 
+function inspectFormat(path: string, prefix: Uint8Array, eof: boolean, encoding: string, delimiter: string) {
+  let bytes = prefix;
+  let counts: readonly Uint32Array[] | undefined;
+  const encodingSource = encoding === 'auto' ? 'inferred' : 'explicit';
+  if (encoding === 'auto') {
+    const sample = scanCsvFileFormat(prefix, eof, true);
+    bytes = sample.bytes;
+    counts = sample.counts;
+    encoding = sample.encoding;
+  } else {
+    const decoder = resolveInputEncoding(encoding, delimiter);
+    if (typeof decoder === 'string') {
+      encoding = decoder;
+    } else {
+      bytes = new TextEncoder().encode(decoder.decode(prefix, { stream: !eof }));
+      encoding = decoder.encoding;
+    }
+  }
+  const choice = delimiter === 'auto'
+    ? inspectDelimiter(path, bytes, eof, counts, prefix.length)
+    : { delimiter, delimiterSource: 'explicit', delimiterReason: null } as const;
+  return { encoding, encodingSource, ...choice, ...inspectRecords(bytes, eof, choice.delimiter) } as const;
+}
+
+function inspectDelimiter(path: string, bytes: Uint8Array, eof: boolean, counts: readonly Uint32Array[] | undefined, sampleBytes: number) {
+  // The native probe summarizes stable counts. Per-record counts distinguish an absent separator from an inconsistent one.
+  const rows = counts ?? scanDelimiterCounts(bytes, eof);
+  const choice = selectDelimiter(path, rows);
+  if ('delimiter' in choice) {
+    return { delimiter: choice.delimiter, delimiterSource: 'inferred', delimiterReason: null } as const;
+  }
+  let reason: string;
+  switch (choice.reason) {
+    case 'no-records':
+      reason = sampleBytes === 0
+        ? 'Empty payload'
+        : eof
+        ? 'No complete non-empty record in the payload'
+        : 'No complete non-empty record in the 64 KiB sample';
+      break;
+    case 'no-stable-separator': {
+      const perRecord = counts === undefined ? rows : scanDelimiterCounts(bytes, eof);
+      reason = perRecord.some((row) => row.some((count) => count > 0))
+        ? 'Separator counts vary across sampled records'
+        : 'No supported separator found in sampled records';
+      break;
+    }
+    case 'ambiguous':
+      reason = `Ambiguous between ${choice.candidates.map((c) => JSON.stringify(c)).join(' and ')}`;
+      break;
+  }
+  return { delimiter: null, delimiterSource: null, delimiterReason: reason } as const;
+}
+
 // A newline inside a quoted field is data. Two escaped quotes toggle the state
 // twice without exposing any intervening bytes as structural characters.
-function inspectRecords(bytes: Uint8Array, eof: boolean, delimiter: string | undefined) {
+function inspectRecords(bytes: Uint8Array, eof: boolean, delimiter: string | null) {
   const separator = delimiter?.charCodeAt(0);
   const endings = new Set<string>();
   let quoted = false;
@@ -112,7 +184,7 @@ function inspectRecords(bytes: Uint8Array, eof: boolean, delimiter: string | und
   }
   const firstComplete = !firstRecord || (eof && !quoted);
   return {
-    firstRecordColumns: firstComplete && !unknownWidth ? (bytes.length === 0 ? 0 : columns) : undefined,
+    firstRecordColumns: firstComplete && !unknownWidth ? (bytes.length === 0 ? 0 : columns) : null,
     lineEnding: endings.size > 1 ? 'mixed' : endings.values().next().value ?? (eof ? 'none' : 'unknown'),
   };
 }

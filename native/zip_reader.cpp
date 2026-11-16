@@ -232,6 +232,8 @@ public:
 
   zip_reader_status status() const { return ahead_ ? ahead_->delivered_status : status_; }
 
+  std::string_view entry_name() const { return entry_name_; }
+
   const char* last_error() const { return status() == zip_reader_status::error ? error_.c_str() : ""; }
 
 private:
@@ -742,6 +744,15 @@ CSV_EXPORT void* csv_zip_reader_create(const char* path, const uint8_t* entry_na
 }
 
 CSV_EXPORT void csv_zip_reader_destroy(void* reader) { delete static_cast<csv_native::zip_reader*>(reader); }
+
+CSV_EXPORT const char* csv_zip_reader_entry_name(void* reader, uint32_t* length) {
+  if (reader == nullptr || length == nullptr) {
+    return nullptr;
+  }
+  const auto name = static_cast<csv_native::zip_reader*>(reader)->entry_name();
+  *length = static_cast<uint32_t>(name.size());
+  return name.data();
+}
 
 CSV_EXPORT void csv_zip_reader_enable_read_ahead(void* reader, uint32_t chunk_size) {
   if (reader != nullptr) {

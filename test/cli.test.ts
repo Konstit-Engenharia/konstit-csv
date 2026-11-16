@@ -259,7 +259,8 @@ describe('csv CLI', () => {
 
   test('probe reports the compressed size and the format of quoted UTF-16 records', async () => {
     const path = join(temporaryDirectory, 'compressed-without-extension');
-    const compressed = Bun.gzipSync(Buffer.from('\ufeff"first\nfield"\t"say ""hi""\there"\t\r\n1\t2\t3\r\n', 'utf16le'));
+    const payload = Buffer.from('\ufeff"first\nfield"\t"say ""hi""\there"\t\r\n1\t2\t3\r\n', 'utf16le');
+    const compressed = Bun.gzipSync(payload);
     await Bun.write(path, compressed);
     const result = await runCli('probe', path);
     expect(result.exitCode).toBe(0);
@@ -269,6 +270,23 @@ describe('csv CLI', () => {
         String(compressed.length)
       } B\nEncoding: utf-16le\nDelimiter: "\\t"\nLine endings: CRLF\nCompression: gzip\nFirst record columns: 3\n`,
     );
+    const json = await runCli('probe', path, '--json');
+    expect(json.exitCode).toBe(0);
+    expect(json.stderr.toString()).toBe('');
+    expect(JSON.parse(json.stdout.toString())).toEqual({
+      fileSizeBytes: compressed.length,
+      sampleBytes: payload.length,
+      sampleReachedEof: true,
+      encoding: 'utf-16le',
+      encodingSource: 'inferred',
+      delimiter: '\t',
+      delimiterSource: 'inferred',
+      delimiterReason: null,
+      lineEnding: 'CRLF',
+      compression: 'gzip',
+      zipEntry: null,
+      firstRecordColumns: 3,
+    });
   });
 
   test('probe reports mixed record endings and plain CSV with a zlib-like prefix', async () => {
@@ -305,27 +323,32 @@ describe('csv CLI', () => {
       path,
       createZip([
         { data: Buffer.from('metadata'), method: 0, name: '__MACOSX/._example.csv' },
-        { data: Buffer.from('id;name\n1;Ada\n'), method: 8, name: 'example.csv' },
+        { data: Buffer.from('id\tname,unit\n1\tbolt,mm\n'), method: 8, name: 'tables/peças.tsv' },
         { data: Buffer.from('metadata'), method: 0, name: '.DS_Store' },
         { data: Buffer.from('metadata'), method: 0, name: 'Thumbs.db' },
       ]),
     );
-    for (const arguments_ of [[], ['--zip-entry', '*']]) {
+    for (const arguments_ of [[], ['--zip-entry', '*'], ['--zip-entry', 'tables/peças.tsv']]) {
       const result = await runCli('probe', path, ...arguments_);
       expect(result.exitCode).toBe(0);
       expect(result.stderr.toString()).toBe('');
-      expect(result.stdout.toString()).toContain('Delimiter: ";"\nLine endings: LF\nCompression: zip\nFirst record columns: 2');
+      expect(result.stdout.toString()).toContain('Delimiter: "\\t"\nLine endings: LF\nCompression: zip\nFirst record columns: 2');
+      expect(result.stdout.toString()).toContain('ZIP entry: "tables/peças.tsv"');
+      const json = await runCli('probe', path, ...arguments_, '--json');
+      expect(JSON.parse(json.stdout.toString())).toMatchObject({ zipEntry: 'tables/peças.tsv', delimiter: '\t', sampleBytes: 23 });
     }
   });
 
   test('probe distinguishes missing, incomplete, single-column, and ambiguous first records', async () => {
     const path = join(temporaryDirectory, 'unknown.data');
     for (
-      const [input, ending, width,] of [
-        ['', 'none', '0'],
-        ['one field', 'none', '1'],
-        ['a,b;c\n1,2;3', 'LF', 'unknown'],
-        [`${'a'.repeat(65536)},b\n`, 'unknown', 'unknown'],
+      const [input, ending, width, reason,] of [
+        ['', 'none', '0', 'Empty payload'],
+        ['"unfinished,record\n', 'none', 'unknown', 'No complete non-empty record in the payload'],
+        ['"one,field"', 'none', '1', 'No supported separator found in sampled records'],
+        ['a,b;c\n1,2;3', 'LF', 'unknown', 'Ambiguous between "," and ";"'],
+        ['one\ntwo,three', 'LF', '1', 'Separator counts vary across sampled records'],
+        [`${'a'.repeat(65536)},b\n`, 'unknown', 'unknown', 'No complete non-empty record in the 64 KiB sample'],
       ] as const
     ) {
       await Bun.write(path, input);
@@ -334,9 +357,65 @@ describe('csv CLI', () => {
       expect(result.stdout.toString()).toContain(
         `Delimiter: undetermined\nLine endings: ${ending}\nCompression: none\nFirst record columns: ${width}`,
       );
+      expect(result.stdout.toString()).toContain(reason);
+      const json = await runCli('probe', path, '--json');
+      expect(JSON.parse(json.stdout.toString())).toMatchObject({
+        delimiter: null,
+        delimiterSource: null,
+        delimiterReason: reason,
+        firstRecordColumns: width === 'unknown' ? null : Number(width),
+        sampleBytes: Math.min(input.length, 65536),
+        sampleReachedEof: input.length <= 65536,
+      });
       if (input.length > 65536) {
         expect(result.stdout.toString()).toStartWith('File size: 64 KiB\n');
       }
+    }
+  });
+
+  test('probe applies each override independently and labels explicit choices', async () => {
+    const path = join(temporaryDirectory, 'bomless.data');
+    const data = Buffer.from('"a|b"|c\r\n1|2\r\n', 'utf16le');
+    await Bun.write(path, data);
+    expectCommandError(await runCli('probe', path, '--json'), 'NUL');
+    const encoded = await runCli('probe', path, '--encoding', 'utf-16le', '--delimiter', 'auto', '--json');
+    expect(JSON.parse(encoded.stdout.toString())).toMatchObject({
+      encoding: 'utf-16le',
+      encodingSource: 'explicit',
+      delimiter: '|',
+      delimiterSource: 'inferred',
+      sampleBytes: data.length,
+      firstRecordColumns: 2,
+      lineEnding: 'CRLF',
+    });
+    await Bun.write(path, 'a,b;c;d\n1,2;3;4');
+    const delimited = await runCli('probe', path, '--delimiter', ',', '--encoding', 'auto', '--json');
+    expect(JSON.parse(delimited.stdout.toString())).toMatchObject({
+      encoding: 'utf8',
+      encodingSource: 'inferred',
+      delimiter: ',',
+      delimiterSource: 'explicit',
+      delimiterReason: null,
+      firstRecordColumns: 2,
+    });
+    const both = await runCli('probe', path, '--encoding', 'cp1252', '--delimiter', ';');
+    expect(both.stdout.toString()).toContain('Encoding: windows-1252 (explicit)\nDelimiter: ";" (explicit)');
+    expect(both.stdout.toString()).toContain('First record columns: 3');
+    expectUsageError(await runCli('probe', path, '--delimiter', ';;'), 'invalid value', 'probe');
+    expectUsageError(await runCli('probe', path, '--encoding', 'invalid'), 'invalid value', 'probe');
+  });
+
+  test('probe distinguishes an exact 64 KiB payload from a truncated sample', async () => {
+    const path = join(temporaryDirectory, 'boundary.csv.gz');
+    for (const suffix of ['', '\n']) {
+      const text = `${'x'.repeat(65534)},y${suffix}`;
+      await Bun.write(path, Bun.gzipSync(Buffer.from(text)));
+      const result = await runCli('probe', path, '--json');
+      expect(JSON.parse(result.stdout.toString())).toMatchObject({
+        sampleBytes: 65536,
+        sampleReachedEof: suffix === '',
+        firstRecordColumns: suffix === '' ? 2 : null,
+      });
     }
   });
 

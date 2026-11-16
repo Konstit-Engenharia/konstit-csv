@@ -1,6 +1,8 @@
 import {
   native,
   type Pointer,
+  requirePtr,
+  toArrayBuffer,
   u64ToSafeNumber,
 } from './native.js';
 import type { CsvZipCompression } from './types.js';
@@ -62,6 +64,12 @@ export class NativeZipReader {
     return native.symbols.csv_zip_reader_status(this.#requireHandle());
   }
 
+  get entryName(): string {
+    const length = new Uint32Array(1);
+    const name = native.symbols.csv_zip_reader_entry_name(this.#requireHandle(), length);
+    return Buffer.from(toArrayBuffer(requirePtr(name), 0, length[0])).toString('utf8');
+  }
+
   enableReadAhead(chunkSize: number): void {
     native.symbols.csv_zip_reader_enable_read_ahead(this.#requireHandle(), chunkSize);
   }
@@ -75,6 +83,37 @@ export class NativeZipReader {
 
   lastError(): string {
     return native.symbols.csv_zip_reader_last_error(this.#requireHandle())?.toString() ?? 'ZIP reader error unavailable';
+  }
+
+  *chunks(outputSize: number, readAhead = false): Generator<Uint8Array, void> {
+    // File parsers consume the chunk before advancing. Raw byte iterators can retain it.
+    const reusableBuffer = readAhead ? new Uint8Array(outputSize) : undefined;
+    let startProducer = readAhead;
+    while (true) {
+      const output = reusableBuffer ?? new Uint8Array(outputSize);
+      const written = this.read(output);
+      const status = this.status;
+      if (status === ZIP_READER_ERROR) {
+        throw new Error(`native ZIP reader failed: ${this.lastError()}`);
+      }
+      if (written > output.byteLength) {
+        throw new Error('native ZIP reader returned an invalid output length');
+      }
+      if (written !== 0) {
+        yield output.subarray(0, written);
+      }
+      if (status === ZIP_READER_DONE) {
+        return;
+      }
+      if (written === 0) {
+        throw new Error('native ZIP reader made no progress');
+      }
+      // A sample or a limited CLI read can finish after the first chunk.
+      if (startProducer) {
+        this.enableReadAhead(outputSize);
+        startProducer = false;
+      }
+    }
   }
 
   close(): void {
@@ -107,35 +146,7 @@ export async function* readZipEntryChunks(
 ): AsyncGenerator<Uint8Array, void> {
   const outputSize = positiveUint32(chunkSize, 'ZIP output chunk size');
   using reader = new NativeZipReader(path, options);
-  // File parsers consume the chunk before advancing. Raw byte iterators can retain it.
-  const reusableBuffer = readAhead ? new Uint8Array(outputSize) : undefined;
-  let startProducer = readAhead;
-
-  while (true) {
-    const output = reusableBuffer ?? new Uint8Array(outputSize);
-    const written = reader.read(output);
-    const status = reader.status;
-    if (status === ZIP_READER_ERROR) {
-      throw new Error(`native ZIP reader failed: ${reader.lastError()}`);
-    }
-    if (written > output.byteLength) {
-      throw new Error('native ZIP reader returned an invalid output length');
-    }
-    if (written !== 0) {
-      yield output.subarray(0, written);
-    }
-    if (status === ZIP_READER_DONE) {
-      return;
-    }
-    if (written === 0) {
-      throw new Error('native ZIP reader made no progress');
-    }
-    // A sample or a limited CLI read can finish after the first chunk.
-    if (startProducer) {
-      reader.enableReadAhead(outputSize);
-      startProducer = false;
-    }
-  }
+  yield* reader.chunks(outputSize, readAhead);
 }
 
 function positiveSafeInteger(value: number, label: string): number {

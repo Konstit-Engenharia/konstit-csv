@@ -154,7 +154,7 @@ test('file inspection distinguishes false deflate signatures from corrupt binary
   const path = join(directory, 'unmarked');
   await Bun.write(path, 'H,name\n1,Ada\n');
   expect((await inspectCsvFile(path)).compression).toBe('none');
-  await assert.rejects(inspectCsvFile(path, 'data.csv'), /requires a ZIP archive/);
+  await assert.rejects(inspectCsvFile(path, { zipEntry: 'data.csv' }), /requires a ZIP archive/);
   await assert.rejects(inspectCsvFile(directory), /requires a regular file/);
   await Bun.write(path, Buffer.from([0x48, 0x2c, 0xff, 0x01]));
   await assert.rejects(inspectCsvFile(path), TypeError);

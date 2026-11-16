@@ -91,13 +91,17 @@ const zipEntry = option('zip-entry', parsers.refine(parsers.string, (value) => v
   describe: 'Select an entry inside a ZIP archive',
 });
 
-const fileArgs = [
-  path,
+const formatArgs = [
   option('delimiter', inputDelimiter, { valueName: 'CHAR|auto', describe: 'One safe ASCII character or auto (default: auto)' }),
   option('encoding', encodingParser, {
     valueName: 'ENCODING',
     describe: 'Input encoding or decoder alias (default: auto)',
   }),
+] as const;
+
+const fileArgs = [
+  path,
+  ...formatArgs,
   option('compression', parsers.enum(compressionFormats), {
     valueName: 'FORMAT',
     describe: `Input compression (default: auto). Choices: ${compressionFormats.join(', ')}`,
@@ -212,6 +216,13 @@ Examples:
 export type CountArguments = Infer<typeof count>;
 export type LinesArguments = Infer<typeof lines>;
 
+const probe = command('probe', {
+  about: 'Inspect file size, compression, encoding, delimiter, line endings, and first record width',
+  args: [path, ...formatArgs, zipEntry, flag('json', { describe: 'Emit the inspection as one JSON object' })],
+  afterHelp: 'Samples up to 64 KiB of decompressed CSV. For a ZIP archive with multiple data files, select one with --zip-entry.',
+});
+export type ProbeArguments = Infer<typeof probe>;
+
 export const csvCommand = command('csv', {
   about: 'Inspect, count, and stream CSV records',
   version: packageInfo.version,
@@ -220,11 +231,7 @@ export const csvCommand = command('csv', {
   subcommands: [
     count,
     lines,
-    command('probe', {
-      about: 'Inspect file size, compression, encoding, delimiter, line endings, and first record width',
-      args: [path, zipEntry],
-      afterHelp: 'Samples up to 64 KiB of CSV. For a ZIP archive with multiple data files, select one with --zip-entry.',
-    }),
+    probe,
     command('completion', {
       about: 'Print a shell completion script for csv',
       args: [positional('shell', parsers.enum(completionShells), { required: true, describe: completionShells.join(', ') })],

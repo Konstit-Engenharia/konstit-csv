@@ -213,6 +213,12 @@ const CSV_SYMBOLS = {
     returns: 'void',
   },
   // C signature:
+  // const char* csv_zip_reader_entry_name(void* reader, uint32_t* length);
+  csv_zip_reader_entry_name: {
+    args: ['ptr', 'buffer'],
+    returns: 'ptr',
+  },
+  // C signature:
   // void csv_zip_reader_enable_read_ahead(void* reader, uint32_t chunk_size);
   csv_zip_reader_enable_read_ahead: {
     args: ['ptr', 'u32'],

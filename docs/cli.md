@@ -31,12 +31,12 @@ bunx @konstit/csv probe --help
 bunx @konstit/csv help count
 ```
 
-| Command              | Description                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------- |
-| `count <path>`       | Print the number of CSV records, including the header row.                                        |
-| `lines <path>`       | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).               |
-| `probe <path>`       | Print file size, encoding, delimiter, record endings, compression, and first record column count. |
-| `completion <shell>` | Print a completion script for Bash, Zsh, Fish, or PowerShell.                                     |
+| Command              | Description                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| `count <path>`       | Print the number of CSV records, including the header row.                                  |
+| `lines <path>`       | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).         |
+| `probe <path>`       | Inspect the file format and first record width. Use `--json` for a machine-readable report. |
+| `completion <shell>` | Print a completion script for Bash, Zsh, Fish, or PowerShell.                               |
 
 `count`, `lines`, and `probe` each take one input path. Use `csv help <command>`
 or `csv <command> --help` for command options. Parsing stops when it reaches
@@ -76,10 +76,58 @@ Size is the size of the regular file on disk. The other CSV details come from a 
 after decompression. The probe recognizes the same stream compression signatures and filename hints as
 `--compression auto`, plus plain files and ZIP archives. It reads the only file in a ZIP automatically after
 ignoring directories and OS metadata. For archives containing multiple data files, pass `--zip-entry path/to/table.csv`.
+The report displays the selected member name as UTF-8. Its extension supplies the same delimiter hint whether the
+member was selected automatically or by name. For example, `parts.tsv` favors a tab when tabs and commas
+both occur consistently.
 
 Record endings can be LF, CRLF, CR, mixed, or absent. Newlines and separators inside quotes belong to their field.
 A complete first record with no candidate separators has one column; an empty file has zero.
-An inconclusive sample reports `undetermined` for the delimiter and `unknown` for details it cannot establish.
+An inconclusive sample reports `undetermined` for the delimiter and includes the reason. The probe
+distinguishes an empty payload, a sample with no complete non-empty record, records with no supported
+separator, inconsistent separator counts, and tied candidates. Ties list the candidate characters.
+Delimiter detection uses up to the first 128 complete non-empty records in the sample.
+
+Pass `--delimiter` or `--encoding` independently. Both accept the same values and aliases as `count`
+and `lines`, and both default to `auto`. The report marks each override as `(explicit)`. Passing `auto`
+requests inference.
+In this example, the probe decodes the sample as UTF-16LE and counts semicolons outside quotes to
+measure the first record's width.
+
+```sh
+bunx @konstit/csv probe parts.txt --encoding utf-16le --delimiter ';'
+```
+
+`--json` prints one JSON object followed by a newline. For example, probing a file containing
+`id;qty\n1;4\n` produces the following fields (shown indented).
+
+```sh
+bunx @konstit/csv probe parts.txt --delimiter ';' --json
+```
+
+```json
+{
+  "fileSizeBytes": 11,
+  "sampleBytes": 11,
+  "sampleReachedEof": true,
+  "compression": "none",
+  "zipEntry": null,
+  "encoding": "utf8",
+  "encodingSource": "inferred",
+  "delimiter": ";",
+  "delimiterSource": "explicit",
+  "delimiterReason": null,
+  "firstRecordColumns": 2,
+  "lineEnding": "LF"
+}
+```
+
+`fileSizeBytes` counts bytes on disk, including the entire archive for ZIP input. `sampleBytes` counts
+up to 65,536 decompressed payload bytes before text decoding, including any byte-order mark.
+`sampleReachedEof` is true when that sample covers the entire payload or selected ZIP member.
+When detection is inconclusive, `delimiter` and `delimiterSource` are null and `delimiterReason`
+contains the explanation. `firstRecordColumns` is null when the width is unknown. `zipEntry` is null
+for non-ZIP input. An inconclusive delimiter still produces a successful report. Invalid options exit
+with code 2, and input errors exit with code 1 and a diagnostic on stderr.
 
 ## Count records
 
@@ -225,9 +273,10 @@ bunx @konstit/csv lines japanese-export.csv --encoding shift_jis
 `latin1`, `iso88591`, and `iso-8859-1` retain the parser's Latin-1 byte mapping. Use `windows-1252` when the source
 uses the Windows mapping for bytes such as `0x80`.
 
-Input delimiters must be one ASCII character. With a fallback encoding, decoding happens before parsing, and
-`--delimiter auto` with an explicit encoding probes up to 64 KiB of the transcoded UTF-8 bytes. Bun's decoder replaces malformed byte sequences
-and removes an initial UTF-16 byte-order mark using its default streaming behavior.
+Input delimiters must be one ASCII character. With a fallback encoding, decoding happens before parsing.
+When given `--delimiter auto` and an explicit encoding, `count` and `lines` probe up to 64 KiB of the transcoded
+UTF-8 bytes. Bun's decoder replaces malformed byte sequences and removes an initial UTF-16 byte-order mark
+using its default streaming behavior.
 
 ## Projection
 
