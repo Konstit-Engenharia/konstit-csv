@@ -229,9 +229,12 @@ The decoder replaces malformed sequences with U+FFFD and consumes an initial UTF
 selected byte order. In-memory parsing uses the same option:
 
 ```ts
-const rows = await csv.parse(Buffer.from([0x6e, 0x61, 0x6d, 0x65, 0x0a, 0x80, 0x0a]), {
-  encoding: 'windows-1252',
-});
+const rows = await csv.parse(
+  Buffer.from([0x6e, 0x61, 0x6d, 0x65, 0x0a, 0x80, 0x0a]),
+  {
+    encoding: 'windows-1252',
+  },
+);
 // [['name'], ['€']]
 ```
 
@@ -367,7 +370,12 @@ and batch methods such as `scanColumns()` use positions in the resulting batch. 
 before reading fields. `rowsInto(target, columns)` captures them before filling the target.
 
 ```ts
-for await (using batch of csv.batches('data.csv', { columns: [2, 0], where: csv.column(2).equals('SP') })) {
+for await (
+  using batch of csv.batches('data.csv', {
+    columns: [2, 0],
+    where: csv.column(2).equals('SP'),
+  })
+) {
   batch.forEachRow((row) => {
     console.log(row.get(0), row.get(1)); // state (source 2), id (source 0)
   });
@@ -410,7 +418,10 @@ fields in the requested order. Use `equalsFilter` for a single equality check, `
 AND, or `filterProgram` for a postfix Boolean expression. Supply one filter form per parser.
 
 ```ts
-using parser = new NativeCsvParser({ columns: [1], equalsFilter: { column: 2, value: 'SP' } });
+using parser = new NativeCsvParser({
+  columns: [1],
+  equalsFilter: { column: 2, value: 'SP' },
+});
 parser.write(Buffer.from('1,Ada,SP\n2,Bob,RJ\n'), true); // [['Ada']]
 parser.reset();
 parser.writeCount(Buffer.from('1,Ada,SP\n2,Bob,RJ\n'), true); // 1

@@ -35,7 +35,6 @@
     "**/cache",
     "**/data",
     "**/db",
-    "**/docs",
     "**/sample",
     "**/node_modules",
     "**/config",

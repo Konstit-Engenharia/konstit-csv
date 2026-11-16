@@ -61,11 +61,11 @@ The table shows mean wall time over three full scans per workload on an Apple M4
 Bun 1.4.4. The ZIP reader overlaps decompression with row and batch parsing. It uses system zlib on macOS
 arm64 and zlib-ng on Linux x64 and macOS x64.
 
-| Workload | Mean wall time | Output check |
-| -------- | -------------: | ------------ |
-| CLI `count` | 5.805 s | 29,093,533 records |
-| Filtered `csv.rows()` | 8.061 s | 11,516,955 rows, 345,508,650 cells and 1,808,786,228 characters |
-| Filtered CLI `lines` | 6.417 s | Same SHA-256 digest on all three runs |
+| Workload              | Mean wall time | Output check                                                    |
+| --------------------- | -------------: | --------------------------------------------------------------- |
+| CLI `count`           |        5.805 s | 29,093,533 records                                              |
+| Filtered `csv.rows()` |        8.061 s | 11,516,955 rows, 345,508,650 cells and 1,808,786,228 characters |
+| Filtered CLI `lines`  |        6.417 s | Same SHA-256 digest on all three runs                           |
 
 The row benchmark uses the Latin-1 filters and materialization loop described below, reading the `example.csv`
 entry in 1 MiB chunks. The CLI output benchmark includes the cost of hashing the projected records:
@@ -91,10 +91,10 @@ On an Apple M4 with 16 GiB of RAM, macOS arm64 and Bun 1.4.4, each input ran onc
 12 times with 1 MiB chunks. The inputs ran serially, plain CSV first, with the filesystem cache left warm.
 Throughput uses the 6,780,467,695-byte uncompressed size for both inputs.
 
-| Input | Mean wall time | Min–max | Throughput |
-| ----- | -------------: | ------: | ---------: |
-| `example.csv` | 16.70 s | 15.99–17.29 s | 387 MiB/s |
-| `example.csv.zip` | 16.64 s | 16.13–17.12 s | 389 MiB/s |
+| Input             | Mean wall time |       Min–max | Throughput |
+| ----------------- | -------------: | ------------: | ---------: |
+| `example.csv`     |        16.70 s | 15.99–17.29 s |  387 MiB/s |
+| `example.csv.zip` |        16.64 s | 16.13–17.12 s |  389 MiB/s |
 
 The ZIP mean was 0.4% lower, within the observed run-to-run variation. The native ZIP reader inflates
 and CRC-checks the next chunk while the current chunk is parsed and materialized. In a separate
@@ -116,10 +116,10 @@ bun run bench:csv-parser:example
 each target ran twice in a fresh process. All four runs produced 11,516,955 rows, 345,508,650 cells, and
 1,808,786,228 characters from the 6,780,467,695-byte corpus.
 
-| Implementation                      |  Mean wall time ± σ |  Throughput |    Mean peak RSS ± σ | Throughput vs. csv-parser |
-| ----------------------------------- | ------------------: | ----------: | -------------------: | ------------------------: |
-| `@konstit/csv` with `csv.rows()`    |     7.303 ± 0.048 s | 885.5 MiB/s |       92.6 ± 0.4 MiB |                    13.81× |
-| `iconv-lite` + `csv-parser`         |   100.847 ± 1.263 s |  64.1 MiB/s |      144.8 ± 2.7 MiB |                     1.00× |
+| Implementation                   | Mean wall time ± σ |  Throughput | Mean peak RSS ± σ | Throughput vs. csv-parser |
+| -------------------------------- | -----------------: | ----------: | ----------------: | ------------------------: |
+| `@konstit/csv` with `csv.rows()` |    7.303 ± 0.048 s | 885.5 MiB/s |    92.6 ± 0.4 MiB |                    13.81× |
+| `iconv-lite` + `csv-parser`      |  100.847 ± 1.263 s |  64.1 MiB/s |   144.8 ± 2.7 MiB |                     1.00× |
 
 Throughput is the original corpus size divided by mean wall time. σ is the sample standard deviation across runs.
 
@@ -145,15 +145,15 @@ The following run used Bun 1.4.4 on an Apple M4 running macOS. Each time is the 
 after one warmup per parser and file. The multiplier in parentheses is elapsed time divided by the fastest time for
 that fixture.
 
-| Parser                | 1k rows (ms) | 1k MiB/s |  10k rows (ms) | 10k MiB/s |  100k rows (ms) | 100k MiB/s |
-| --------------------- | -----------: | -------: | -------------: | --------: | --------------: | ---------: |
+| Parser                 | 1k rows (ms) | 1k MiB/s |  10k rows (ms) | 10k MiB/s |  100k rows (ms) | 100k MiB/s |
+| ---------------------- | -----------: | -------: | -------------: | --------: | --------------: | ---------: |
 | `@konstit/csv batches` | 0.49 (1.24×) |    193.8 |   2.21 (1.12×) |     440.2 |   15.86 (1.00×) |      627.0 |
 | `@konstit/csv rows`    | 0.55 (1.39×) |    173.7 |   1.97 (1.00×) |     494.3 |   16.00 (1.01×) |      621.4 |
-| TurboCSV              | 0.61 (1.53×) |    157.5 |   5.40 (2.75×) |     179.9 |   45.37 (2.86×) |      219.1 |
-| TurboCSV fast         | 0.40 (1.00×) |    240.9 |   3.27 (1.66×) |     297.4 |   27.81 (1.75×) |      357.5 |
-| PapaParse             | 0.61 (1.54×) |    156.6 |   5.20 (2.64×) |     187.1 |   51.95 (3.28×) |      191.4 |
-| csv-parse (sync)      | 2.95 (7.45×) |     32.4 | 19.72 (10.02×) |      49.3 | 203.28 (12.82×) |       48.9 |
-| fast-csv              | 2.91 (7.35×) |     32.8 | 22.22 (11.29×) |      43.8 | 225.44 (14.22×) |       44.1 |
+| TurboCSV               | 0.61 (1.53×) |    157.5 |   5.40 (2.75×) |     179.9 |   45.37 (2.86×) |      219.1 |
+| TurboCSV fast          | 0.40 (1.00×) |    240.9 |   3.27 (1.66×) |     297.4 |   27.81 (1.75×) |      357.5 |
+| PapaParse              | 0.61 (1.54×) |    156.6 |   5.20 (2.64×) |     187.1 |   51.95 (3.28×) |      191.4 |
+| csv-parse (sync)       | 2.95 (7.45×) |     32.4 | 19.72 (10.02×) |      49.3 | 203.28 (12.82×) |       48.9 |
+| fast-csv               | 2.91 (7.35×) |     32.8 | 22.22 (11.29×) |      43.8 | 225.44 (14.22×) |       44.1 |
 
 For mitata sampling of the same workloads, run `bun run bench -- comparison/libs-comparison.bench.ts`.
 

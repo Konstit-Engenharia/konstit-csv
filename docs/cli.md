@@ -33,10 +33,10 @@ bunx @konstit/csv help count
 
 | Command              | Description                                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------------------- |
-| `count <path>`        | Print the number of CSV records, including the header row.                                        |
-| `lines <path>`        | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).               |
-| `probe <path>`        | Print file size, encoding, delimiter, record endings, compression, and first record column count. |
-| `completion <shell>`  | Print a completion script for Bash, Zsh, Fish, or PowerShell.                                     |
+| `count <path>`       | Print the number of CSV records, including the header row.                                        |
+| `lines <path>`       | Stream matching records as normalized UTF-8 CSV or newline-delimited JSON (NDJSON).               |
+| `probe <path>`       | Print file size, encoding, delimiter, record endings, compression, and first record column count. |
+| `completion <shell>` | Print a completion script for Bash, Zsh, Fish, or PowerShell.                                     |
 
 `count`, `lines`, and `probe` each take one input path. Use `csv help <command>`
 or `csv <command> --help` for command options. Parsing stops when it reaches
@@ -53,11 +53,11 @@ exits with code 2. In scripts that append overrides, pass only the intended valu
 With the `csv` executable on your path, load the script for your shell to complete commands,
 options, file paths, and values such as encodings and compression formats.
 
-| Shell      | Load into the current session                   |
-| ---------- | ----------------------------------------------- |
-| Bash       | `source <(csv completion bash)`                  |
-| Zsh        | `source <(csv completion zsh)` after `compinit`  |
-| Fish       | `csv completion fish \| source`                  |
+| Shell      | Load into the current session                                  |
+| ---------- | -------------------------------------------------------------- |
+| Bash       | `source <(csv completion bash)`                                |
+| Zsh        | `source <(csv completion zsh)` after `compinit`                |
+| Fish       | `csv completion fish \| source`                                |
 | PowerShell | `csv completion powershell \| Out-String \| Invoke-Expression` |
 
 ## Inspect a file
@@ -154,7 +154,7 @@ only NDJSON records to stdout and cannot be combined with
 | `--delimiter <value>`              | One safe ASCII character, or `auto` (the default) to infer the input delimiter.                                             |
 | `--encoding <value>`               | A `Bun.Encoding` label, or `auto` (the default) to infer the input encoding.                                                |
 | `--chunk-size <bytes>`             | Input chunk size from 1 through 67,108,864 bytes. Defaults to 1 MiB.                                                        |
-| `--skip-rows <N>`                  | Skip the first N input records, including any header, before filtering. Defaults to 0.                                       |
+| `--skip-rows <N>`                  | Skip the first N input records, including any header, before filtering. Defaults to 0.                                      |
 | `--compression <format>`           | `auto` (default), `none`, `gzip`, `deflate`, `deflate-raw`, `brotli`, `zstd`, or `zip`.                                     |
 | `--zip-entry <path>`               | ZIP entry to read; required with `--compression zip`. `*` selects the only file after ignoring directories and OS metadata. |
 | `--max-compression-ratio <ratio>`  | Maximum ZIP expansion ratio, from 1 through 4,294,967,295. Defaults to 1,000.                                               |
