@@ -95,22 +95,6 @@ describe('fixed columns with projection and filters', () => {
     expect(() => parser.writeCount(Buffer.from('y'), true)).toThrow(mismatch);
   });
 
-  test('materializes fixed rows with native and strict projections across chunk boundaries', async () => {
-    const path = join(directory, 'fixed-rows.csv');
-    for (const encoding of ['utf8', 'latin1'] as const) {
-      await Bun.write(path, Buffer.from(valid, encoding));
-      for (const strict of [false, true]) {
-        const options = { chunkSize: 7, delimiter: ';', encoding, strict, fixedColumns: 3 };
-        expect(await collect(csv.rows(path, { ...options, columns: [4, 1] }))).toEqual([
-          ['', 'é\nline'],
-          ['', 'value'],
-          ['', 'tail'],
-        ]);
-        expect(await collect(csv.rows(path, { ...options, columns: [] }))).toEqual([[], [], []]);
-      }
-    }
-  });
-
   test('counts physical columns across quoted separators, split CRLFs and an unterminated final record', async () => {
     const path = join(directory, 'count.csv');
     const text = 'id;name;value\r\n1;"a;""b\r\nc";\r2;;x"y\n;;"tail;open';

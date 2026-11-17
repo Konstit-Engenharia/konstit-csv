@@ -111,25 +111,6 @@ At 1 MiB, plain CSV and ZIP had the same mean to the nearest 0.01 s. At 256 KiB 
 0.21 s lower, within the observed run-to-run variation. The native ZIP reader inflates and CRC-checks
 the next chunk while the current chunk is parsed and materialized.
 
-## Fixed column counts in materialized UTF-8 rows
-
-`bun run bench -- fixed-columns-rows.bench.ts` reads the checked-in five-column UTF-8 fixture through `csv.rows()`.
-Set `CSV_BENCH_FILE`, `CSV_BENCH_FIXED_COLUMNS`, and `CSV_BENCH_DELIMITER` to use another input.
-The benchmark consumes every returned field and checks row, field and character totals.
-
-The table compares the row offset lookup in `3e46ffc` with indexing by the validated width on an Apple M4
-with Bun 1.4.4 and 1 MiB chunks. Times are medians of three process means per revision, with serial runs
-in both orders. The narrow input contained 250,000 semicolon-delimited UTF-8 rows of the form
-`0;João0;SP`. The wide input used the first 100,000 rows of `example.csv`, transcoded from Latin-1 to UTF-8.
-The projection returns the last column followed by the first.
-
-| Input and output      | Allocate, offsets | Allocate, stride | Reuse, offsets | Reuse, stride |
-| --------------------- | ----------------: | ---------------: | -------------: | ------------: |
-| Narrow, all 3 columns |          25.61 ms |         25.14 ms |       24.23 ms |      23.88 ms |
-| Narrow, projected     |          20.25 ms |         19.03 ms |       18.25 ms |      18.00 ms |
-| Wide, all 30 columns  |          52.10 ms |         49.40 ms |       48.37 ms |      46.61 ms |
-| Wide, projected       |          29.14 ms |         28.72 ms |       27.39 ms |      27.66 ms |
-
 ## Full-file filtered materialization
 
 Each command reads the complete ISO-8859-1 file at `corpus/large/example.csv` and materializes every field in rows

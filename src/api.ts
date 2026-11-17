@@ -1,7 +1,4 @@
-import {
-  materializeBatchRows,
-  type NativeCsvBatch,
-} from './batches.js';
+import type { NativeCsvBatch } from './batches.js';
 import {
   prepareCsvFileInput,
   rejectAutoDelimiterSharding,
@@ -143,10 +140,8 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
     return;
   }
   using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters, options.transform);
-  // Strict projection selects fields in JS, so its native batch still has the physical width.
-  const outputWidth = options.fixedColumns !== undefined && projected && columns !== undefined ? columns.length : options.fixedColumns;
   for await (using batch of parseFileChunks(input, parser, options.limit)) {
-    yield materializeRows<TColumns>(batch, columns, projected, reusableRows, outputWidth);
+    yield materializeRows<TColumns>(batch, columns, projected, reusableRows);
   }
 }
 
@@ -386,9 +381,8 @@ function materializeRows<TColumns extends CsvColumns | undefined>(
   columns: CsvColumns | undefined,
   projected: boolean,
   target: CsvRow[] = [],
-  outputWidth?: number,
 ): CsvProjectedRow<TColumns>[] {
-  return batch[materializeBatchRows](target, projected ? undefined : columns, outputWidth) as CsvProjectedRow<TColumns>[];
+  return batch.rowsInto(target, projected ? undefined : columns) as CsvProjectedRow<TColumns>[];
 }
 
 function rejectFilteredStrictSchema(options: CsvApiFileOptions): void {
