@@ -145,16 +145,20 @@ and supported regex syntax.
 
 ### Transform accepted rows
 
-`transform` applies native operations to physical input columns after `where` accepts a row.
+Define a field transform once with `csv.transform()`. Call `.on(...columns)` to apply it to physical input columns after a row passes `where`.
 
 ```ts
-const rows = await csv.parse(Buffer.from('São João;active\nRecife;inactive'), {
-  delimiter: ';',
-  where: csv.column(1).equals('active'),
-  columns: [0] as const,
-  transform: [csv.column(0).trim().removeDiacritics().upper()],
-});
-// [['SAO JOAO']]
+const cleanName = csv.transform().trim().removeDiacritics().upper();
+const rows = await csv.parse(
+  Buffer.from('São João;active;José\nRecife;inactive;Bia'),
+  {
+    delimiter: ';',
+    where: csv.column(1).equals('active'),
+    columns: [0, 2] as const,
+    transform: [cleanName.on(0, 2)],
+  },
+);
+// [['SAO JOAO', 'JOSE']]
 ```
 
 See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, and lookup.

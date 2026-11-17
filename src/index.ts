@@ -41,6 +41,7 @@ export type {
   CsvShardingOptions,
   CsvStartsWithFilter,
   CsvTransform,
+  CsvTransformChain,
   CsvTransformMethods,
   CsvTransformOptions,
   CsvZipCompression,

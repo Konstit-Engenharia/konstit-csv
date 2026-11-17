@@ -2,10 +2,14 @@ import {
   native,
   type NativePointer,
 } from './native.js';
-import { MAX_COLUMN_INDEX } from './normalize.js';
+import {
+  MAX_COLUMN_INDEX,
+  normalizeColumnIndex,
+} from './normalize.js';
 import type {
   CsvColumns,
   CsvTransform,
+  CsvTransformChain,
   CsvTransformMethods,
 } from './types.js';
 
@@ -24,20 +28,57 @@ type Step =
   | { kind: Op.Lookup; values: ReadonlyMap<string, string>; };
 
 interface Chain {
-  column: number;
   step: Step;
   previous: Chain | undefined;
 }
 
-const chains = new WeakMap<CsvTransform, Chain>();
+interface Binding {
+  chain: Chain;
+  columns: readonly number[];
+}
 
-export function transformMethods(column: number, previous?: Chain): CsvTransformMethods {
-  const append = (step: Step): CsvTransform => {
-    const chain = { column, step, previous };
-    const token = Object.freeze(transformMethods(column, chain)) as CsvTransform;
-    chains.set(token, chain);
-    return token;
-  };
+const bindings = new WeakMap<CsvTransformChain, Binding>();
+
+/** Start a reusable chain. Choose physical columns after defining its steps. */
+export function transform(): CsvTransformMethods<CsvTransformChain> {
+  return Object.freeze(methods((step) => createChain({ step, previous: undefined })));
+}
+
+export function transformMethods(column: number): CsvTransformMethods {
+  return methods((step) => createChain({ step, previous: undefined }, [column]));
+}
+
+// A token is a bound CsvTransform precisely when it is registered in bindings.
+function createChain(chain: Chain, columns: readonly number[]): CsvTransform;
+function createChain(chain: Chain, columns?: readonly number[]): CsvTransformChain;
+function createChain(chain: Chain, columns?: readonly number[]): CsvTransformChain {
+  const token = Object.freeze({
+    ...methods((step) => createChain({ step, previous: chain }, columns)),
+    on: (...targets: [number, ...number[]]) => {
+      if (!targets.length) {
+        throw new RangeError('on() requires at least one transform column');
+      }
+      if (targets.length > MAX_COLUMN_INDEX + 1) {
+        throw new RangeError('too many transform columns');
+      }
+      const seen = new Set<number>();
+      for (const column of targets) {
+        normalizeColumnIndex(column, 'transform column');
+        if (seen.has(column)) {
+          throw new RangeError(`transform column repeated: ${column}`);
+        }
+        seen.add(column);
+      }
+      return createChain(chain, targets);
+    },
+  });
+  if (columns !== undefined) {
+    bindings.set(token, { chain, columns });
+  }
+  return token;
+}
+
+function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
   return {
     trim: () => append({ kind: Op.Trim }),
     upper: () => append({ kind: Op.Upper }),
@@ -85,14 +126,16 @@ export function snapshotTransforms(transforms: readonly CsvTransform[] | undefin
   const captured: CsvTransform[] = [...transforms];
   const seen = new Set<number>();
   for (const token of captured) {
-    const chain = chains.get(token);
-    if (!chain) {
-      throw new TypeError('transform requires a chain created by csv.column()');
+    const binding = bindings.get(token);
+    if (!binding) {
+      throw new TypeError('transform requires a bound chain; call chain.on(column) or start with csv.column(column)');
     }
-    if (seen.has(chain.column)) {
-      throw new RangeError(`transform column repeated: ${chain.column}`);
+    for (const column of binding.columns) {
+      if (seen.has(column)) {
+        throw new RangeError(`transform column repeated: ${column}`);
+      }
+      seen.add(column);
     }
-    seen.add(chain.column);
   }
   return Object.freeze(captured);
 }
@@ -100,10 +143,18 @@ export function snapshotTransforms(transforms: readonly CsvTransform[] | undefin
 /** Strict row projection happens after full-width validation and transformation. */
 export function selectTransforms(tokens: readonly CsvTransform[], columns: CsvColumns): readonly CsvTransform[] {
   const selected = new Set(columns);
-  return tokens.filter((token) => {
-    const chain = chains.get(token);
-    return chain !== undefined && selected.has(chain.column);
-  });
+  const result: CsvTransform[] = [];
+  for (const token of tokens) {
+    const binding = bindings.get(token);
+    if (!binding) {
+      throw new TypeError('expected a bound transform chain');
+    }
+    const targets = binding.columns.filter((column) => selected.has(column));
+    if (targets.length) {
+      result.push(targets.length === binding.columns.length ? token : createChain(binding.chain, targets));
+    }
+  }
+  return result;
 }
 
 /** Copy each selected chain into its parser. Native writes never reference caller-owned data. */
@@ -111,27 +162,31 @@ export function prepareTransforms(handle: NativePointer, tokens: readonly CsvTra
   const columns = selected === undefined ? undefined : new Set(selected);
   let active = false;
   for (const token of tokens) {
-    const chain = chains.get(token);
-    if (!chain) {
-      throw new TypeError('transform requires a chain created by csv.column()');
+    const binding = bindings.get(token);
+    if (!binding) {
+      throw new TypeError('expected a bound transform chain');
     }
-    if (columns && !columns.has(chain.column)) {
+    const targets = columns ? binding.columns.filter((column) => columns.has(column)) : binding.columns;
+    if (!targets.length) {
       continue;
     }
     const steps: Step[] = [];
-    for (let node: Chain | undefined = chain; node; node = node.previous) {
+    for (let node: Chain | undefined = binding.chain; node; node = node.previous) {
       steps.push(node.step);
     }
-    for (const step of steps.reverse()) {
-      if (!native.symbols.csv_parser_add_transform(handle, chain.column, step.kind)) {
-        throw new Error('native parser rejected transform step');
-      }
-      if (step.kind === Op.ReplaceAll) {
-        addPair(handle, chain.column, step.search, step.replacement);
-      }
-      if (step.kind === Op.Lookup) {
-        for (const [key, value,] of step.values) {
-          addPair(handle, chain.column, key, value);
+    steps.reverse();
+    for (const column of targets) {
+      for (const step of steps) {
+        if (!native.symbols.csv_parser_add_transform(handle, column, step.kind)) {
+          throw new Error('native parser rejected transform step');
+        }
+        if (step.kind === Op.ReplaceAll) {
+          addPair(handle, column, step.search, step.replacement);
+        }
+        if (step.kind === Op.Lookup) {
+          for (const [key, value,] of step.values) {
+            addPair(handle, column, key, value);
+          }
         }
       }
     }

@@ -127,3 +127,36 @@ test('chains are reusable and validate their operands and targets', async () => 
   // @ts-expect-error Filters are not transforms.
   expect(() => csv.rows('unused', { transform: [column.equals('x')] })).toThrow('chain');
 });
+
+test('reusable chains bind to multiple physical columns and can be extended or rebound independently', async () => {
+  const entries = new Map([['SAO', 'São Paulo']]);
+  const clean = csv.transform().trim().removeDiacritics().upper();
+  const city = clean.lookup(entries);
+  entries.clear();
+  const both = city.on(0, 2);
+  const source = Buffer.from(' São , Bia , sao \nrecife,Ana,Recife');
+  expect(
+    await csv.parse(source, {
+      where: csv.column(0).equals(' São '),
+      columns: [2, 1, 0] as const,
+      transform: [both, clean.on(1)],
+    }),
+  ).toEqual([['São Paulo', 'BIA', 'São Paulo']]);
+  using parser = new NativeCsvParser({ transform: [both.on(1).lower()] });
+  expect(parser.write(Buffer.from(' São , sao , são '), true)).toEqual([[' São ', 'são paulo', ' são ']]);
+  expect(await csv.parse(source, { strict: true, columns: [2, 1], transform: [both] }))
+    .toEqual([['São Paulo', ' Bia '], ['RECIFE', 'Ana']]);
+  expect(await csv.parse(Buffer.from(' São ,são'), { transform: [csv.column(0).upper().on(1)] }))
+    .toEqual([[' São ', 'SÃO']]);
+});
+
+test('bindings require valid, distinct columns, including across chains', () => {
+  const clean = csv.transform().trim();
+  // @ts-expect-error Bind a reusable chain before passing it to a reader.
+  expect(() => csv.rows('unused', { transform: [clean] })).toThrow('chain.on(column)');
+  // @ts-expect-error At least one physical column is required.
+  expect(() => clean.on()).toThrow('at least one');
+  expect(() => clean.on(2025)).toThrow('out of range');
+  expect(() => clean.on(0, 0)).toThrow('repeated: 0');
+  expect(() => new NativeCsvParser({ transform: [clean.on(2, 3), csv.column(3).upper()] })).toThrow('repeated: 3');
+});

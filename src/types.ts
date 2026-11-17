@@ -102,24 +102,32 @@ declare const csvFilterBrand: unique symbol;
 declare const csvTransformBrand: unique symbol;
 
 /** Field operations use Unicode 15.1 data and run in declaration order. */
-export interface CsvTransformMethods {
+export interface CsvTransformMethods<TResult = CsvTransform> {
   /** Remove Unicode White_Space from both ends. */
-  readonly trim: () => CsvTransform;
+  readonly trim: () => TResult;
   /** Apply full, locale-independent Unicode uppercase mapping. */
-  readonly upper: () => CsvTransform;
+  readonly upper: () => TResult;
   /** Apply full, locale-independent Unicode lowercase mapping. */
-  readonly lower: () => CsvTransform;
+  readonly lower: () => TResult;
   /** Canonically decompose, remove marks with the Diacritic property, and recompose. */
-  readonly removeDiacritics: () => CsvTransform;
+  readonly removeDiacritics: () => TResult;
   /** Replace non-overlapping literal occurrences of a nonempty string. */
-  readonly replaceAll: (search: string, replacement: string) => CsvTransform;
+  readonly replaceAll: (search: string, replacement: string) => TResult;
   /** Replace an exact field value once, leaving unknown keys untouched. */
-  readonly lookup: (values: ReadonlyMap<string, string>) => CsvTransform;
+  readonly lookup: (values: ReadonlyMap<string, string>) => TResult;
 }
 
-/** Immutable chain of native post-filter operations for a single physical input column. */
+/** A reusable sequence of field operations built with csv.transform(). */
+export interface CsvTransformChain extends CsvTransformMethods<CsvTransformChain> {
+  /** Apply these steps to the given zero-based physical input columns. */
+  readonly on: (first: number, ...rest: readonly number[]) => CsvTransform;
+}
+
+/** An immutable chain bound to the columns that receive its output. */
 export interface CsvTransform extends CsvTransformMethods {
   readonly [csvTransformBrand]: true;
+  /** Reuse these steps on a new set of physical columns. */
+  readonly on: CsvTransformChain['on'];
 }
 
 /** A physical input column can start a filter or a transform. */

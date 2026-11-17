@@ -153,7 +153,8 @@ full-field match. Patterns are limited to 4096 UTF-8 bytes, and one operation ca
 ## Field transforms
 
 Use `transform` with `csv.parse()`, `csv.rows()`, `csv.batches()`, or the `NativeCsvParser` constructor.
-Each chain addresses one physical input column. Filters, fixed widths and strict headers use the original record.
+Build a reusable chain with `csv.transform()` and bind it to one or more zero-based physical input columns with `.on(...columns)`.
+Filters, fixed widths and strict headers use the original record.
 Accepted rows emit transformed values in the requested column order, including through native batch byte views.
 
 ```ts
@@ -181,6 +182,9 @@ const rows = await csv.parse(Buffer.from('Ana;12,50; sp \nBia;9,00;SP'), {
 
 The Unicode data version is 15.1. Replacement and lookup operands must be well-formed strings and match exactly.
 Steps run left to right. A chain can be reused or extended without mutating it. Supply at most one chain per column.
+For example, `const clean = csv.transform().trim().upper()` can be used as `transform: [clean.on(0, 2)]`
+for one file and `transform: [clean.on(3)]` for another. Calling `.on()` on an already bound chain selects a new set
+of target columns. For a single column, `csv.column(2).trim()` is shorthand for `csv.transform().trim().on(2)`.
 Lookup captures its entries when built. Readers capture the list of chains at invocation.
 A present empty field can be transformed by a lookup on `''`. A missing projected field emits `''` padding.
 An unselected field receives no transform. Manual parser resets retain transforms, and count writes bypass them.

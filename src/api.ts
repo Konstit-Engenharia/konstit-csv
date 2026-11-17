@@ -32,6 +32,7 @@ import {
   validateRowSelection,
 } from './parser.js';
 import { rejectStrictSchemaUnsupported } from './strict-schema.js';
+import { transform } from './transforms.js';
 import type {
   CsvApiFileOptions,
   CsvBatchesOptions,
@@ -252,6 +253,8 @@ function shardingDelimiter(options: CsvShardingOptions, operation: string): stri
  * record-safe sharding helpers in one discoverable object.
  */
 export const csv = {
+  /** Build a reusable field transform, then bind it to physical input columns with on(). */
+  transform,
   /**
    * Combine one or more filters with logical AND semantics.
    * @param first - First filter in the group.
