@@ -37,6 +37,9 @@ const sourceInputGlobs = [
   'toolchains/**/*',
 ] as const;
 const requiredNativeSymbols = [
+  'csv_parser_add_transform',
+  'csv_parser_transform_pair',
+  'csv_parser_transform_validated_batch',
   'csv_zip_reader_entry_name',
   'csv_zip_reader_enable_read_ahead',
   'csv_runtime_supports_avx2',

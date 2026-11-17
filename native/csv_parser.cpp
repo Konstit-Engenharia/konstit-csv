@@ -1,3 +1,4 @@
+#include "field_transforms.hpp"
 #include <ankerl/unordered_dense.h>
 #include <hwy/highway.h>
 #include <re2/re2.h>
@@ -588,6 +589,34 @@ public:
   csv_batch* take_skipped_header() { return skipped_header_.release(); }
   uint64_t skipped_rows() const { return initial_skip_ - rows_to_skip_; }
 
+  bool add_transform(uint32_t column, uint32_t kind) {
+    return !configuration_initialized_ && column <= max_column_index && transforms_.add(column, kind);
+  }
+  bool add_transform_pair(uint32_t column, std::string_view key, std::string_view value) {
+    return !configuration_initialized_ && transforms_.add_pair(column, key, value);
+  }
+
+  // Strict schema validation reads the original batch before the caller requests its transformed copy.
+  csv_batch* transform_validated_batch(const csv_batch& source) {
+    auto result = std::make_unique<csv_batch>();
+    result->row_offsets = source.row_offsets;
+    result->field_offsets.reserve(source.field_offsets.size());
+    result->data.reserve(source.data.size());
+    const std::string_view data(source.data);
+    for (size_t row = 1; row < source.row_offsets.size(); ++row) {
+      const auto start = source.row_offsets[row - 1];
+      for (size_t i = start; i < source.row_offsets[row]; ++i) {
+        const auto field = data.substr(source.field_offsets[i], source.field_offsets[i + 1] - source.field_offsets[i]);
+        if (!transforms_.append(result->data, i - start, field)) {
+          set_error("invalid field transform");
+          return nullptr;
+        }
+        result->field_offsets.push_back(result->data.size());
+      }
+    }
+    return result.release();
+  }
+
   bool prepare_configuration(const uint32_t* selected_columns, size_t selected_columns_len,
                              std::vector<row_filter> filters, const uint8_t* values_data, size_t values_data_len,
                              const uint32_t* value_offsets, size_t total_value_count) {
@@ -622,14 +651,16 @@ public:
     }
 
     mode_ = output_mode::batch;
-    allow_direct_projection_ = true;
+    transform_matched_rows_ = !transforms_.empty();
+    deferred_batch_row_ = transform_matched_rows_;
+    allow_direct_projection_ = !transform_matched_rows_;
     if (!configure(selected_columns == nullptr ? nullptr : owned_selected_columns_.data(), selected_columns_len,
                    filters.data(), filters.size())) {
       return false;
     }
     prepared_configuration_ = true;
     prepared_direct_projection_ = direct_projection_;
-    prepared_quoted_records_ = supports_quoted_records();
+    prepared_quoted_records_ = !transform_matched_rows_ && supports_quoted_records();
     return true;
   }
 
@@ -854,6 +885,8 @@ public:
   }
 
   void reset() {
+    transforms_ = {};
+    transform_matched_rows_ = false;
     reset_stream();
     configuration_initialized_ = false;
     prepared_configuration_ = false;
@@ -2430,7 +2463,18 @@ private:
       return;
     }
 
-    if (projection_enabled_) {
+    if (transform_matched_rows_) {
+      const auto& fields = projection_enabled_ ? projected_fields_ : row_fields_;
+      for (size_t i = 0; i < fields.size(); ++i) {
+        const size_t column = projection_enabled_ ? selected_columns_[i] : i;
+        if (column < current_column_ && !transforms_.append(batch_->data, column, fields[i])) {
+          fail_parse("invalid field transform");
+          return;
+        }
+        batch_->field_offsets.push_back(batch_->data.size());
+      }
+      finish_batch_row();
+    } else if (projection_enabled_) {
       commit_fields(projected_fields_);
     } else {
       commit_fields(row_fields_);
@@ -2457,7 +2501,7 @@ private:
     for (auto& field : projected_fields_) {
       field.clear();
     }
-    deferred_batch_row_ = false;
+    deferred_batch_row_ = transform_matched_rows_;
     if (!direct_projection_carry_offsets_.empty()) {
       direct_projection_carry_data_.clear();
       direct_projection_carry_offsets_.clear();
@@ -2579,6 +2623,8 @@ private:
   csv_batch* batch_ = nullptr;
   bool configuration_initialized_ = false;
   bool prepared_configuration_ = false;
+  field_transforms transforms_;
+  bool transform_matched_rows_ = false;
   bool prepared_direct_projection_ = false;
   bool prepared_quoted_records_ = false;
   size_t filtered_batch_input_len_ = 0;
@@ -2839,6 +2885,26 @@ bool build_row_filters(csv_parser& parser, const uint32_t* descriptors, uint64_t
 }
 
 } // namespace csv_native
+
+CSV_EXPORT bool csv_parser_add_transform(void* parser, uint32_t column, uint32_t kind) {
+  return parser && csv_native::checked_parser(parser)->add_transform(column, kind);
+}
+
+CSV_EXPORT bool csv_parser_transform_pair(void* parser, uint32_t column, const uint8_t* key, uint64_t key_len,
+                                          const uint8_t* value, uint64_t value_len) {
+  if (!parser || (!key && key_len) || (!value && value_len))
+    return false;
+  return csv_native::checked_parser(parser)->add_transform_pair(
+      column, {key ? reinterpret_cast<const char*>(key) : "", key_len},
+      {value ? reinterpret_cast<const char*>(value) : "", value_len});
+}
+
+CSV_EXPORT void* csv_parser_transform_validated_batch(void* parser, const void* batch) {
+  if (!parser || !batch)
+    return nullptr;
+  return csv_native::checked_parser(parser)->transform_validated_batch(
+      *static_cast<const csv_native::csv_batch*>(batch));
+}
 
 CSV_EXPORT const char* csv_regex_validate(const uint8_t* pattern, uint64_t pattern_len) {
   static thread_local std::string error;

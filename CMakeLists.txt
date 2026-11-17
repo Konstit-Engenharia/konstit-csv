@@ -136,13 +136,27 @@ fetchcontent_declare(
   GIT_SHALLOW FALSE
   EXCLUDE_FROM_ALL
   SYSTEM)
-fetchcontent_makeavailable(abseil highway re2 unordered_dense)
+fetchcontent_declare(
+  uni_algo
+  GIT_REPOSITORY https://github.com/uni-algo/uni-algo.git
+  GIT_TAG 00cfcbfcbe9720760f8156ee086fc8f45ae59ae4 # v1.2.0, Unicode 15.1
+  EXCLUDE_FROM_ALL
+  SYSTEM)
+fetchcontent_makeavailable(abseil highway re2 unordered_dense uni_algo)
+set_target_properties(
+  uni-algo
+  PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_SCAN_FOR_MODULES OFF)
+target_compile_definitions(
+  uni-algo
+  PUBLIC
+    UNI_ALGO_DISABLE_SEGMENT_GRAPHEME UNI_ALGO_DISABLE_SEGMENT_WORD
+    UNI_ALGO_DISABLE_COLLATE UNI_ALGO_DISABLE_SCRIPT)
 
 add_library(
   csv_native
   SHARED
-    native/csv_parser.cpp native/file_probe.cpp native/runtime.cpp
-    native/zip_reader.cpp)
+    native/csv_parser.cpp native/field_transforms.cpp native/file_probe.cpp
+    native/runtime.cpp native/zip_reader.cpp)
 
 target_compile_features(csv_native PRIVATE cxx_std_20)
 
@@ -183,7 +197,9 @@ target_link_options(csv_native PRIVATE -fno-exceptions -fno-rtti)
 find_package(Threads REQUIRED)
 target_link_libraries(
   csv_native
-  PRIVATE hwy re2::re2 unordered_dense::unordered_dense Threads::Threads)
+  PRIVATE
+    hwy re2::re2 unordered_dense::unordered_dense uni-algo::uni-algo
+    Threads::Threads)
 if(APPLE AND CSV_NATIVE_ARCH STREQUAL "arm64")
   target_compile_definitions(csv_native PRIVATE CSV_USE_APPLE_ZLIB)
   target_link_libraries(csv_native PRIVATE z)

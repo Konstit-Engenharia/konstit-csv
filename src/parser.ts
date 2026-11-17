@@ -20,11 +20,17 @@ import {
   type CsvStrictSchemaValidator,
   strictSchemaValidator,
 } from './strict-schema.js';
+import {
+  prepareTransforms,
+  selectTransforms,
+  snapshotTransforms,
+} from './transforms.js';
 import type {
   CsvColumns,
   CsvNativeFilterProgramEntry,
   CsvParserOptions,
   CsvRow,
+  CsvTransform,
   NativeCsvParserOptions,
 } from './types.js';
 
@@ -92,6 +98,7 @@ export function createPreparedParser(
   options: CsvParserOptions,
   columns?: CsvColumns,
   program?: readonly CsvNativeFilterProgramEntry[],
+  transform?: readonly CsvTransform[],
 ): NativeCsvParser {
   // Some callers validate or project the full batch during materialization.
   if (options.columns !== columns) {
@@ -109,6 +116,7 @@ export function createPreparedParser(
     minDataRows: options.minDataRows,
     columns,
     filterProgram: program,
+    transform: options.strict && options.columns && transform ? selectTransforms(transform, options.columns) : transform,
   });
 }
 
@@ -240,6 +248,7 @@ export class NativeCsvParser {
   readonly #strict: boolean;
   readonly #fixedColumns: number | undefined;
   readonly #writer: PreparedNativeWriter | undefined;
+  readonly #transformStrictBatch: boolean;
   #validator: CsvStrictSchemaValidator | undefined;
   #captureSkippedHeader = false;
 
@@ -276,9 +285,12 @@ export class NativeCsvParser {
     if (this.#strict && (columns !== undefined || program !== undefined)) {
       throw new Error('strict CSV validation is not supported for projected batches or filters');
     }
-    const prepared = columns !== undefined || program !== undefined;
+    const transforms = snapshotTransforms(options.transform);
+    const prepared = columns !== undefined || program !== undefined || (!this.#strict && Boolean(transforms?.length));
     const handle = createNativeCsvParser(options, prepared);
     try {
+      const active = transforms?.length ? prepareTransforms(handle, transforms, columns) : false;
+      this.#transformStrictBatch = this.#strict && active;
       this.#writer = prepared ? prepareNativeParser(handle, columns, program) : undefined;
     } catch (error) {
       destroyNativeCsvParser(handle);
@@ -347,6 +359,14 @@ export class NativeCsvParser {
       : native.symbols.csv_parser_write_batch(handle, input, input, final);
     if (batch === null) {
       throw new Error(`native CSV parser failed: ${this.#lastError()}`);
+    }
+    if (this.#transformStrictBatch) {
+      using _original = this.#validatedBatch(batch, final);
+      const result = native.symbols.csv_parser_transform_validated_batch(handle, batch);
+      if (!result) {
+        throw new Error(`native CSV parser failed: ${this.#lastError()}`);
+      }
+      return new NativeCsvBatch(result);
     }
     return this.#validatedBatch(batch, final);
   }

@@ -99,6 +99,36 @@ export type CsvFieldValue = string | Buffer | Uint8Array;
 
 declare const csvRegexBrand: unique symbol;
 declare const csvFilterBrand: unique symbol;
+declare const csvTransformBrand: unique symbol;
+
+/** Field operations use Unicode 15.1 data and run in declaration order. */
+export interface CsvTransformMethods {
+  /** Remove Unicode White_Space from both ends. */
+  readonly trim: () => CsvTransform;
+  /** Apply full, locale-independent Unicode uppercase mapping. */
+  readonly upper: () => CsvTransform;
+  /** Apply full, locale-independent Unicode lowercase mapping. */
+  readonly lower: () => CsvTransform;
+  /** Canonically decompose, remove marks with the Diacritic property, and recompose. */
+  readonly removeDiacritics: () => CsvTransform;
+  /** Replace non-overlapping literal occurrences of a nonempty string. */
+  readonly replaceAll: (search: string, replacement: string) => CsvTransform;
+  /** Replace an exact field value once, leaving unknown keys untouched. */
+  readonly lookup: (values: ReadonlyMap<string, string>) => CsvTransform;
+}
+
+/** Immutable chain of native post-filter operations for a single physical input column. */
+export interface CsvTransform extends CsvTransformMethods {
+  readonly [csvTransformBrand]: true;
+}
+
+/** A physical input column can start a filter or a transform. */
+export interface CsvColumn extends CsvFilterColumn, CsvTransformMethods {}
+
+export interface CsvTransformOptions {
+  /** Apply one chain per physical column to present, selected fields after filtering. */
+  readonly transform?: readonly CsvTransform[] | undefined;
+}
 
 /**
  * Validated regular-expression metadata created by `csv.re()`.
@@ -389,7 +419,7 @@ export interface CsvNativeFilterOperator {
 export type CsvNativeFilterProgramEntry = CsvNativeFilter | CsvNativeFilterOperator;
 
 /** Projection and filter settings captured when a manual parser is constructed. */
-export interface NativeCsvParserOptions extends CsvParserOptions, CsvNativeProjectionOptions {
+export interface NativeCsvParserOptions extends CsvParserOptions, CsvNativeProjectionOptions, CsvTransformOptions {
   /** Postfix Boolean program. Supply only one of `filterProgram`, `filters`, or `equalsFilter`. */
   readonly filterProgram?: readonly CsvNativeFilterProgramEntry[];
 }
@@ -452,6 +482,7 @@ type CsvValidationOptions = CsvFilteredOperationOptions | CsvStrictOperationOpti
 /** Options for parsing an in-memory buffer into materialized rows. */
 export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined> =
   & CsvOperationOptions<TColumns>
+  & CsvTransformOptions
   & CsvValidationOptions
   & {
     /** Input field encoding used when decoding bytes into JavaScript strings. Defaults to `'utf8'`. */
@@ -461,6 +492,7 @@ export type CsvParseOptions<TColumns extends CsvColumns | undefined = undefined>
 /** Options for streaming materialized rows in file order. */
 export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> =
   & CsvFileOperationOptions<TColumns>
+  & CsvTransformOptions
   & CsvValidationOptions
   & {
     /** Refill the batch and its row arrays across iterations. Copy any row you want to keep. Defaults to false. */
@@ -469,8 +501,11 @@ export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> 
 
 /** Strict native batches require unfiltered, unprojected input. */
 export type CsvBatchesOptions =
-  | (CsvFileOperationOptions<CsvColumns | undefined> & CsvFilteredOperationOptions)
-  | (CsvFileOperationOptions<undefined> & CsvStrictOperationOptions);
+  & CsvTransformOptions
+  & (
+    | (CsvFileOperationOptions<CsvColumns | undefined> & CsvFilteredOperationOptions)
+    | (CsvFileOperationOptions<undefined> & CsvStrictOperationOptions)
+  );
 
 /** Options accepted by `csv.count()`. */
 export type CsvCountOptions = CsvFileOperationOptions<CsvColumns | undefined> & CsvValidationOptions;

@@ -3,10 +3,11 @@ import {
   normalizeNativeFilterProgram,
   validateRegex,
 } from './normalize.js';
+import { transformMethods } from './transforms.js';
 import type {
+  CsvColumn,
   CsvFieldValue,
   CsvFilter,
-  CsvFilterColumn,
   CsvNativeFilter,
   CsvNativeFilterOperator,
   CsvNativeFilterProgramEntry,
@@ -33,9 +34,10 @@ const nativeProgramByFilter = new WeakMap<object, readonly CsvNativeFilterProgra
  * const filter = state.isOneOf(['SP', 'RJ']);
  * ```
  */
-export function column(columnIndex: number): CsvFilterColumn {
+export function column(columnIndex: number): CsvColumn {
   const selectedColumn = normalizeFilterColumn(columnIndex);
   return Object.freeze({
+    ...transformMethods(selectedColumn),
     equals: (value: CsvFieldValue) =>
       createFilterFromPredicate(
         Object.freeze({ column: selectedColumn, value: copyFieldValue(value, 'equals value') }),

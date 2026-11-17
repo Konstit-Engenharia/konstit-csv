@@ -143,6 +143,22 @@ The filter also applies to the header, which does not match `'SP'` here. Combine
 See [Filters](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#filters) for matching rules
 and supported regex syntax.
 
+### Transform accepted rows
+
+`transform` applies native operations to physical input columns after `where` accepts a row.
+
+```ts
+const rows = await csv.parse(Buffer.from('São João;active\nRecife;inactive'), {
+  delimiter: ';',
+  where: csv.column(1).equals('active'),
+  columns: [0] as const,
+  transform: [csv.column(0).trim().removeDiacritics().upper()],
+});
+// [['SAO JOAO']]
+```
+
+See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, and lookup.
+
 ### Read compressed files
 
 Create a gzip copy of the sample file:

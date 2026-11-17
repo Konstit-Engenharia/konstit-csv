@@ -79,7 +79,12 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
   const columns = options.columns;
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   const input = prepareCsvBufferInput(buffer, options.encoding, options.delimiter);
-  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding), projected ? columns : undefined, filters);
+  using parser = createPreparedParser(
+    toParserOptions(options, input.parserEncoding),
+    projected ? columns : undefined,
+    filters,
+    options.transform,
+  );
   const batch = parser.writeBatch(input.bytes, true);
   try {
     return materializeRows<TColumns>(batch, columns, projected);
@@ -122,7 +127,7 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
   await using input = await prepareCsvFileInput(path, options, 'read-ahead', probeFormat);
   const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
-  if (options.strict !== true && input.parserEncoding === 'latin1') {
+  if (options.strict !== true && input.parserEncoding === 'latin1' && !options.transform?.length) {
     validateRowSelection(options);
     const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
     const createParser = latin1RowsParser(fixedColumns);
@@ -133,7 +138,7 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
     >;
     return;
   }
-  using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters);
+  using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters, options.transform);
   for await (using batch of parseFileChunks(input, parser, options.limit)) {
     yield materializeRows<TColumns>(batch, columns, projected, reusableRows);
   }
@@ -166,7 +171,7 @@ async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncG
     throw new Error('strict CSV validation is not supported for projected batches; use csv.rows() for strict projection');
   }
   await using input = await prepareCsvFileInput(path, options);
-  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters);
+  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), columns, filters, options.transform);
   yield* parseFileChunks(input, parser, options.limit);
 }
 

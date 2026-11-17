@@ -5,6 +5,7 @@ requireBunRuntime();
 export type {
   CsvApiFileOptions,
   CsvBatchesOptions,
+  CsvColumn,
   CsvColumnBytesCallback,
   CsvColumnRangeCallback,
   CsvColumns,
@@ -39,6 +40,9 @@ export type {
   CsvShard,
   CsvShardingOptions,
   CsvStartsWithFilter,
+  CsvTransform,
+  CsvTransformMethods,
+  CsvTransformOptions,
   CsvZipCompression,
   NativeCsvParserOptions,
   NativeCsvRowCallback,

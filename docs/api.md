@@ -150,6 +150,41 @@ backreferences. Unicode matching is enabled by default; `u` documents the JavaSc
 converts JavaScript Unicode escapes and escaped `/` characters before validating the expression. Use `^` and `$` for a
 full-field match. Patterns are limited to 4096 UTF-8 bytes, and one operation can contain at most 32 regex predicates.
 
+## Field transforms
+
+Use `transform` with `csv.parse()`, `csv.rows()`, `csv.batches()`, or the `NativeCsvParser` constructor.
+Each chain addresses one physical input column. Filters, fixed widths and strict headers use the original record.
+Accepted rows emit transformed values in the requested column order, including through native batch byte views.
+
+```ts
+const state = csv.column(2);
+const names = new Map([['SP', 'São Paulo']]);
+const rows = await csv.parse(Buffer.from('Ana;12,50; sp \nBia;9,00;SP'), {
+  delimiter: ';',
+  where: state.equals(' sp '),
+  columns: [2, 0, 1] as const,
+  transform: [
+    state.trim().upper().lookup(names),
+    csv.column(1).replaceAll(',', '.'),
+  ],
+});
+// [['São Paulo', 'Ana', '12.50']]
+```
+
+| Operation                         | Behavior                                                                                                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trim()`                          | Remove leading and trailing Unicode White_Space.                                                                                                                                                    |
+| `upper()`, `lower()`              | Apply full Unicode default casing. For example, `Straße` uppercases to `STRASSE` and `ΟΣ` lowercases to `ος`.                                                                                       |
+| `removeDiacritics()`              | Canonically decompose, remove Unicode marks with the Diacritic property, then recompose to NFC. Both `ã` and `a\u0303` become `a`. Letters such as `ø` and emoji variation selectors are preserved. |
+| `replaceAll(search, replacement)` | Replace non-overlapping literal matches. The search string must be nonempty.                                                                                                                        |
+| `lookup(map)`                     | Look up the whole field once in a `ReadonlyMap<string, string>`. Unknown keys pass through.                                                                                                         |
+
+The Unicode data version is 15.1. Replacement and lookup operands must be well-formed strings and match exactly.
+Steps run left to right. A chain can be reused or extended without mutating it. Supply at most one chain per column.
+Lookup captures its entries when built. Readers capture the list of chains at invocation.
+A present empty field can be transformed by a lookup on `''`. A missing projected field emits `''` padding.
+An unselected field receives no transform. Manual parser resets retain transforms, and count writes bypass them.
+
 ## Compression and delimiter detection
 
 File operations default to `compression: 'auto'`. They stream gzip, deflate, raw deflate, Brotli, and Zstandard input

@@ -24,6 +24,7 @@ void autoDelimiter;
 
 const tupleRows: AsyncGenerator<[string, string][], void> = csv.rows(path, {
   columns: [0, 2] as const,
+  transform: [csv.column(2).trim().removeDiacritics().upper()],
 });
 void tupleRows;
 

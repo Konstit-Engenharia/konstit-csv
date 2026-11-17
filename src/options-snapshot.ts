@@ -3,18 +3,22 @@ import {
   MAX_PROJECTION_LENGTH,
   rejectSelectedColumns,
 } from './normalize.js';
+import { snapshotTransforms } from './transforms.js';
 import type {
   CsvApiFileOptions,
   CsvColumns,
   CsvFieldValue,
   CsvNativeFilter,
   CsvNativeProjectionOptions,
+  CsvTransformOptions,
 } from './types.js';
 
 const snapshots = new WeakSet<object>();
 
 /** Own the mutable option values while retaining opaque immutable filter handles. */
-export function snapshotCsvOptions<TOptions extends CsvApiFileOptions & CsvNativeProjectionOptions>(options: TOptions): TOptions {
+export function snapshotCsvOptions<TOptions extends CsvApiFileOptions & CsvNativeProjectionOptions & CsvTransformOptions>(
+  options: TOptions,
+): TOptions {
   if (snapshots.has(options)) {
     return options;
   }
@@ -25,6 +29,7 @@ export function snapshotCsvOptions<TOptions extends CsvApiFileOptions & CsvNativ
   }
   const snapshot = Object.freeze({
     ...captured,
+    transform: snapshotTransforms(captured.transform),
     columns: snapshotColumns(captured.columns),
     expectedHeaders: captured.expectedHeaders === undefined ? undefined : Object.freeze([...captured.expectedHeaders]),
     compression: typeof captured.compression === 'object' && captured.compression !== null

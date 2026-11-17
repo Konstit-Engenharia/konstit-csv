@@ -36,6 +36,16 @@ export const DEFAULT_CHUNK_SIZE = 1024 * 1024;
 
 const CSV_SYMBOLS = {
   // C signature:
+  // bool csv_parser_add_transform(void* parser, uint32_t column, uint32_t kind);
+  csv_parser_add_transform: { args: ['ptr', 'u32', 'u32'], returns: 'bool' },
+  // C signature:
+  // bool csv_parser_transform_pair(void* parser, uint32_t column, const uint8_t* key, uint64_t key_len,
+  //                                const uint8_t* value, uint64_t value_len);
+  csv_parser_transform_pair: { args: ['ptr', 'u32', 'buffer', 'buffer_length', 'buffer', 'buffer_length'], returns: 'bool' },
+  // C signature:
+  // void* csv_parser_transform_validated_batch(void* parser, const void* batch);
+  csv_parser_transform_validated_batch: { args: ['ptr', 'ptr'], returns: 'ptr' },
+  // C signature:
   // uint32_t csv_probe_format(const uint8_t* bytes, uint32_t size, bool eof, bool infer_encoding, uint32_t* output);
   csv_probe_format: {
     args: [
