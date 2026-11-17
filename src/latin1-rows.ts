@@ -24,6 +24,10 @@ import type {
   CsvRow,
 } from './types.js';
 
+// Bound the backing string retained by a single sliced field.
+const WINDOW_BYTES = 1024;
+const MAX_WINDOW_FIELD_BYTES = 64;
+
 // These opaque batches contain Latin1 bytes and are never wrapped in NativeCsvBatch.
 export async function* latin1Rows(
   chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
@@ -107,6 +111,9 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
     rows.length = rowCount;
     let fieldStart = checkedOffset(rowOffsets, 0, totalFields);
     let start = checkedOffset(fieldOffsets, fieldStart, dataLength);
+    let windowStart = 0;
+    let windowEnd = 0;
+    let text = '';
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldEnd = checkedOffset(rowOffsets, rowIndex + 1, totalFields);
       // A raw span starts with a quote and ends with a quote and delimiter or LF.
@@ -120,7 +127,6 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
         const payload = start + leading;
         const payloadEnd = end - trailing;
         const length = payloadEnd - payload;
-        // Short fields use strings keyed by their bytes, so they can outlive the batch.
         switch (length) {
           case 0:
             row[column] = '';
@@ -131,17 +137,21 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
           case 2:
             row[column] = latin1Pair(view.getUint16(payload, true));
             break;
-          case 3:
-            row[column] = latin1Pair(view.getUint16(payload, true)) + String.fromCharCode(view.getUint8(payload + 2));
-            break;
-          case 4:
-            row[column] = latin1Pair(view.getUint16(payload, true)) + latin1Pair(view.getUint16(payload + 2, true));
-            break;
           default:
             if (length < 0) {
               throw new RangeError('CSV field span exceeds its backing range');
             }
-            row[column] = copyLatin1Range(bytes, payload, payloadEnd);
+            if (length > MAX_WINDOW_FIELD_BYTES) {
+              row[column] = copyLatin1Range(bytes, payload, payloadEnd);
+              break;
+            }
+            // Latin-1 has one string code unit per byte, including bytes above 0x7f.
+            if (payloadEnd > windowEnd) {
+              windowStart = payload;
+              windowEnd = Math.min(payload + WINDOW_BYTES, dataLength);
+              text = copyLatin1Range(bytes, windowStart, windowEnd);
+            }
+            row[column] = text.slice(payload - windowStart, payloadEnd - windowStart);
         }
         start = end;
       }

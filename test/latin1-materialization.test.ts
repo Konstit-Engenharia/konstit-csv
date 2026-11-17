@@ -207,6 +207,26 @@ describe('private Latin1 row materialization compatibility', () => {
     }
   });
 
+  test('retains Latin-1 fields across decoding windows, large fields, and reused batches', async () => {
+    const path = join(directory, 'latin1-windows.csv');
+    const expected = Array.from({ length: 80 }, (_, i) => [
+      `é${i}ÿ`,
+      'ü'.repeat(64),
+      i % 3 === 0 ? 'ñ'.repeat(1100) : 'a"b',
+      'à'.repeat(65),
+      'x\0\x80',
+    ]);
+    const input = expected.map((row) => row.map((field) => `"${field.replaceAll('"', '""')}"`).join(';')).join('\n');
+    await Bun.write(path, Buffer.from(input, 'latin1'));
+    const retained: string[][] = [];
+    for await (const batch of csv.rows(path, { encoding: 'latin1', delimiter: ';', chunkSize: 4096, reuseArrays: true })) {
+      for (const row of batch) {
+        retained.push(row.slice());
+      }
+    }
+    expect(retained).toEqual(expected);
+  });
+
   test('keeps mixed quoted-span rows correct through rejection, reuse and iterator completion', async () => {
     const binary = '\0\x80\x9fÿ';
     const path = join(directory, 'quoted-span-mixed.csv');
