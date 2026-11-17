@@ -133,8 +133,12 @@ describe('coverage input boundaries', () => {
     expect(() => normalizeRegex({ source: '\\uD834x', flags: 'u' })).toThrow();
     expect(() => normalizeRegex({ source: '\\uD834\\u0041', flags: 'u' })).toThrow();
     expect(() => normalizeRegex({ source: '\\uDD1E', flags: 'u' })).toThrow();
-    const hugeValue = { byteLength: 0x1_0000_0000 } as never;
-    expect(() => normalizeNativeFilters([{ column: 0, value: hugeValue }])).toThrow();
+    const invalidValue = { byteLength: 1 } as never;
+    expect(() => normalizeNativeFilters([{ column: 0, value: invalidValue }])).toThrow(
+      'filter value must be a string, Buffer, or Uint8Array',
+    );
+    const values = Array<Uint8Array>(4096).fill(new Uint8Array(1024 * 1024));
+    expect(() => normalizeNativeFilters([{ column: 0, values }])).toThrow('filter values exceed native offset range');
     const hugeValues = { length: 0x1_0000_0000, [Symbol.iterator]: function*() {} } as never;
     expect(() => normalizeNativeFilters([{ column: 0, values: hugeValues }])).toThrow();
     expect(scanDelimiterCounts(Buffer.from('a,b'), true)).toEqual([[1, 0, 0, 0, 0, 0, 0]]);
@@ -209,6 +213,8 @@ describe('coverage input boundaries', () => {
         projectedSerial.push(...batch);
       }
       expect(projectedSerial).toEqual([['a'], ['1']]);
+      const strictProjection = parseCsvFileProjected(noNewline, { columns: [0], strict: true });
+      expect((await rejectedError(strictProjection.next())).message).toBe('strict CSV validation is not supported for projected batches');
       const input = await prepareCsvFileInput(path, { chunkSize: 2, delimiter: ',' });
       for await (const _ of input.chunks()) {
       }

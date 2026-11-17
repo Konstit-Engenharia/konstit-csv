@@ -160,6 +160,16 @@ test('file inspection distinguishes false deflate signatures from corrupt binary
   await assert.rejects(inspectCsvFile(path), TypeError);
 });
 
+test('probe reports an explicit Latin-1 encoding even when the sample is ASCII', async () => {
+  const path = join(directory, 'ascii.csv');
+  await Bun.write(path, 'id,name\n1,Ada\n');
+  expect(await inspectCsvFile(path, { encoding: 'iso-8859-1' })).toMatchObject({
+    encoding: 'latin1',
+    encodingSource: 'explicit',
+    firstRecordColumns: 2,
+  });
+});
+
 test('compressed probe stops at its sample limit without counting a partial CRLF', async () => {
   const path = join(directory, 'long.csv.gz');
   const text = `${'a'.repeat(FILE_PROBE_SIZE - 1)}\r\nb\n`;

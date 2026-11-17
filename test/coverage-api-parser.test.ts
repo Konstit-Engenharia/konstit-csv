@@ -82,6 +82,11 @@ describe('API and native coverage contracts', () => {
     expect(parser.endCount()).toBe(0);
   });
 
+  test('rejects native count writes in strict mode', () => {
+    using parser = new NativeCsvParser({ strict: true });
+    expect(() => parser.writeCount(Buffer.from('id,name\n'))).toThrow('strict CSV validation is not supported for count');
+  });
+
   test('runs membership and prefix count filters after reset', () => {
     const input = Buffer.from('1,Ana\n2,Bob\n');
     using parser = new NativeCsvParser({ filters: [{ column: 0, values: ['1'] }, { column: 1, prefix: 'A' }] });
