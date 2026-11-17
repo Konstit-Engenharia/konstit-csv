@@ -21,10 +21,13 @@ enum Op {
   Unaccent,
   ReplaceAll,
   Map,
+  DateYmd,
+  DateDmy,
 }
 type Step =
   | { kind: Op.Trim | Op.Upper | Op.Lower | Op.Unaccent; }
   | { kind: Op.ReplaceAll; search: string; replacement: string; }
+  | { kind: Op.DateYmd | Op.DateDmy; defaultValue: string | undefined; }
   | { kind: Op.Map; values: ReadonlyMap<string, string>; defaultValue: string | undefined; };
 
 interface Chain {
@@ -103,6 +106,15 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
         captured.set(key, value);
       }
       return append({ kind: Op.Map, values: captured, defaultValue });
+    },
+    date: (format, defaultValue) => {
+      if (format !== 'YYYY-MM-DD' && format !== 'DD-MM-YYYY') {
+        throw new TypeError('date() format must be YYYY-MM-DD or DD-MM-YYYY');
+      }
+      if (defaultValue !== undefined) {
+        requireText(defaultValue);
+      }
+      return append({ kind: format === 'YYYY-MM-DD' ? Op.DateYmd : Op.DateDmy, defaultValue });
     },
   };
 }
@@ -190,9 +202,9 @@ export function prepareTransforms(handle: NativePointer, tokens: readonly CsvTra
     steps.reverse();
     for (const column of targets) {
       for (const step of steps) {
-        const fallback = step.kind === Op.Map && step.defaultValue !== undefined ? Buffer.from(step.defaultValue) : undefined;
+        const fallback = 'defaultValue' in step && step.defaultValue !== undefined ? Buffer.from(step.defaultValue) : undefined;
         const added = fallback !== undefined
-          ? native.symbols.csv_parser_add_map_with_default(handle, column, fallback, fallback)
+          ? native.symbols.csv_parser_add_transform_with_default(handle, column, step.kind, fallback, fallback)
           : native.symbols.csv_parser_add_transform(handle, column, step.kind);
         if (!added) {
           throw new Error('native parser rejected transform step');

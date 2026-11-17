@@ -589,8 +589,8 @@ public:
   csv_batch* take_skipped_header() { return skipped_header_.release(); }
   uint64_t skipped_rows() const { return initial_skip_ - rows_to_skip_; }
 
-  bool add_transform(uint32_t column, uint32_t kind, std::optional<std::string_view> map_default = std::nullopt) {
-    return !configuration_initialized_ && column <= max_column_index && transforms_.add(column, kind, map_default);
+  bool add_transform(uint32_t column, uint32_t kind, std::optional<std::string_view> default_value = std::nullopt) {
+    return !configuration_initialized_ && column <= max_column_index && transforms_.add(column, kind, default_value);
   }
   bool add_transform_pair(uint32_t column, std::string_view key, std::string_view value) {
     return !configuration_initialized_ && transforms_.add_pair(column, key, value);
@@ -2890,13 +2890,23 @@ CSV_EXPORT bool csv_parser_add_transform(void* parser, uint32_t column, uint32_t
   return parser && csv_native::checked_parser(parser)->add_transform(column, kind);
 }
 
-CSV_EXPORT bool csv_parser_add_map_with_default(void* parser, uint32_t column, const uint8_t* value,
-                                                uint64_t value_len) {
+CSV_EXPORT bool csv_parser_add_transform_with_default(void* parser, uint32_t column, uint32_t kind,
+                                                      const uint8_t* value, uint64_t value_len) {
   if (!parser || (!value && value_len))
     return false;
+  using csv_native::transform_kind;
+  if (kind != static_cast<uint32_t>(transform_kind::lookup) &&
+      kind != static_cast<uint32_t>(transform_kind::date_ymd) &&
+      kind != static_cast<uint32_t>(transform_kind::date_dmy))
+    return false;
   const std::string_view fallback(value ? reinterpret_cast<const char*>(value) : "", value_len);
-  return csv_native::checked_parser(parser)->add_transform(
-      column, static_cast<uint32_t>(csv_native::transform_kind::lookup), fallback);
+  return csv_native::checked_parser(parser)->add_transform(column, kind, fallback);
+}
+
+CSV_EXPORT bool csv_parser_add_map_with_default(void* parser, uint32_t column, const uint8_t* value,
+                                                uint64_t value_len) {
+  return csv_parser_add_transform_with_default(
+      parser, column, static_cast<uint32_t>(csv_native::transform_kind::lookup), value, value_len);
 }
 
 CSV_EXPORT bool csv_parser_transform_pair(void* parser, uint32_t column, const uint8_t* key, uint64_t key_len,

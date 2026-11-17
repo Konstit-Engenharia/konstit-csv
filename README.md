@@ -161,7 +161,7 @@ const rows = await csv.parse(
 // [['SAO JOAO', 'JOSE']]
 ```
 
-See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, and value mapping.
+See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, value mapping, and date formatting.
 
 ### Read compressed files
 

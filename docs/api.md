@@ -178,6 +178,11 @@ const rows = await csv.parse(Buffer.from('Ana;12,50; sp \nBia;9,00;SP'), {
 | `unaccent()`                      | Canonically decompose, remove Unicode marks with the Diacritic property, then recompose to NFC. Both `ã` and `a\u0303` become `a`. Letters such as `ø` and emoji variation selectors are preserved. |
 | `replaceAll(search, replacement)` | Replace non-overlapping literal matches. The search string must be nonempty.                                                                                                                        |
 | `map(values, defaultValue?)`      | Look up the whole field once in a map or plain object. An unmatched field emits `defaultValue` when supplied (including `''`), or its current value when omitted.                                   |
+| `date(format, defaultValue?)`     | Emit a valid date in the requested `YYYY-MM-DD` or `DD-MM-YYYY` order. Invalid fields emit the fallback string, which defaults to `''`.                                                             |
+
+`date()` accepts `YYYYMMDD`, `YYYY-MM-DD`, and `DD-MM-YYYY` input with ASCII digits and years 0001 through 9999.
+It checks Gregorian month lengths and leap years. For example, `.date('DD-MM-YYYY', 'Unknown')` converts
+`20240229` to `29-02-2024` and `20230229` to `Unknown`. Chain `.trim()` first to accept surrounding whitespace.
 
 The Unicode data version is 15.1. Replacement and mapping operands must be well-formed strings and match exactly.
 Steps run left to right. A chain can be reused or extended without mutating it. Supply at most one chain per column.

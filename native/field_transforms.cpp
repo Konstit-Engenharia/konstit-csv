@@ -1,5 +1,7 @@
 #include "field_transforms.hpp"
 #include <algorithm>
+#include <charconv>
+#include <chrono>
 #include <iterator>
 #include <limits>
 #include <uni_algo/case.h>
@@ -89,14 +91,50 @@ std::string_view trim(std::string_view field) {
   }
   return {first.begin(), last.begin()};
 }
+
+unsigned date_number(std::string_view digits) {
+  unsigned value = 0;
+  const char* end = digits.data() + digits.size();
+  const auto parsed = std::from_chars(digits.data(), end, value);
+  return parsed.ec == std::errc{} && parsed.ptr == end ? value : 0;
+}
+
+std::string format_date(std::string_view field, const field_transform& step) {
+  std::string_view year, month, day;
+  if (field.size() == 8) {
+    year = field.substr(0, 4);
+    month = field.substr(4, 2);
+    day = field.substr(6, 2);
+  } else if (field.size() == 10 && field[4] == '-' && field[7] == '-') {
+    year = field.substr(0, 4);
+    month = field.substr(5, 2);
+    day = field.substr(8, 2);
+  } else if (field.size() == 10 && field[2] == '-' && field[5] == '-') {
+    day = field.substr(0, 2);
+    month = field.substr(3, 2);
+    year = field.substr(6, 4);
+  } else {
+    return step.default_value.value_or("");
+  }
+
+  const auto y = date_number(year);
+  const std::chrono::year_month_day date{std::chrono::year{static_cast<int>(y)}, std::chrono::month{date_number(month)},
+                                         std::chrono::day{date_number(day)}};
+  if (y == 0 || !date.ok())
+    return step.default_value.value_or("");
+  if (step.kind == transform_kind::date_dmy)
+    std::swap(year, day);
+  return std::string(year).append("-").append(month).append("-").append(day);
+}
 } // namespace
 
-bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::string_view> map_default) {
-  if (kind > static_cast<uint32_t>(transform_kind::lookup))
+bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::string_view> default_value) {
+  if (kind > static_cast<uint32_t>(transform_kind::date_dmy))
     return false;
   if (column >= columns_.size())
     columns_.resize(static_cast<size_t>(column) + 1);
-  columns_[column].push_back({static_cast<transform_kind>(kind), {}, {}, {}, std::optional<std::string>{map_default}});
+  columns_[column].push_back(
+      {static_cast<transform_kind>(kind), {}, {}, {}, std::optional<std::string>{default_value}});
   return true;
 }
 
@@ -139,8 +177,12 @@ bool field_transforms::append(std::string& destination, size_t column, std::stri
     case transform_kind::lookup:
       if (auto it = step.values.find(value); it != step.values.end())
         value = it->second;
-      else if (step.map_default.has_value())
-        value = *step.map_default;
+      else if (step.default_value.has_value())
+        value = *step.default_value;
+      break;
+    case transform_kind::date_ymd:
+    case transform_kind::date_dmy:
+      value = format_date(value, step);
       break;
     case transform_kind::replace_all: {
       if (step.search.empty())

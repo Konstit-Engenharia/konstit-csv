@@ -41,3 +41,21 @@ for (const [label, encoding, name,] of cases) {
     }
   });
 }
+
+// Measure the cost of calendar validation and formatting over the same projected rows.
+const dates = ['20000229', '30-04-2026', '00000000', '2026-04-31', '2026-12-01'];
+const formatted = ['2000-02-29', '2026-04-30', '', '', '2026-12-01'];
+const dateInput = Buffer.from(Array.from({ length: 4096 }, (_, i) => `${i},${dates[i % dates.length]}\n`).join(''));
+const projection = { columns: [1] as const };
+const dateOptions = { ...projection, transform: [csv.column(1).date('YYYY-MM-DD')] };
+summary(() => {
+  for (const [label, options, expected,] of [['plain', projection, dates], ['native', dateOptions, formatted]] as const) {
+    bench(`dates / ${label}`, async () => {
+      const rows = await csv.parse(dateInput, options);
+      if (rows.length !== 4096 || !rows.every(([value,], i) => value === expected[i % expected.length])) {
+        throw new Error('unexpected date benchmark output');
+      }
+      return rows.length;
+    });
+  }
+});

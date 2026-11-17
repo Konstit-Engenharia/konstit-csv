@@ -128,6 +128,76 @@ test('chains are reusable and validate their operands and targets', async () => 
   expect(() => csv.rows('unused', { transform: [column.equals('x')] })).toThrow('chain');
 });
 
+test('date formats all supported layouts and validates Gregorian dates', async () => {
+  const cases = [
+    ['20000229', '2000-02-29', '29-02-2000'],
+    ['2024-02-29', '2024-02-29', '29-02-2024'],
+    ['31-12-9999', '9999-12-31', '31-12-9999'],
+    ['01-02-0001', '0001-02-01', '01-02-0001'],
+    ['20260430', '2026-04-30', '30-04-2026'],
+  ] as const;
+  const invalid = [
+    '',
+    '0',
+    '00000000',
+    '0000-01-01',
+    '19000229',
+    '2026-02-29',
+    '31-04-2026',
+    '20260001',
+    '20261301',
+    '2026-01-00',
+    '32-01-2026',
+    '2026111',
+    '202611170',
+    ' 20261117 ',
+    '2026/11/17',
+    '17-1-2026',
+    '202A-11-17',
+    '2026-1x-17',
+    '2026-11-1x',
+    '２０２６１１１７',
+  ];
+  const values = [...cases.map(([input,]) => input), ...invalid];
+  const input = Buffer.from(values.map((value) => `${value},${value}`).join('\n'));
+  expect(
+    await csv.parse(input, {
+      transform: [csv.column(0).date('YYYY-MM-DD'), csv.column(1).date('DD-MM-YYYY', 'inválida')],
+    }),
+  ).toEqual([...cases.map(([, iso, local,]) => [iso, local]), ...invalid.map(() => ['', 'inválida'])]);
+});
+
+test('date chains work in streamed rows, batch bytes and the strict parser', async () => {
+  const input = Buffer.from(' 20261117 ;bad\n29-02-2024;\n2026-04-01');
+  const path = join(directory, 'dates.csv');
+  await Bun.write(path, input);
+  const transform = [csv.transform().trim().date('DD-MM-YYYY', 'indéfini').upper().on(0, 1)];
+  const options = { delimiter: ';' as const, columns: [1, 0] as const, transform };
+  const expected: [string, string][] = [['INDÉFINI', '17-11-2026'], ['INDÉFINI', '29-02-2024'], ['', '01-04-2026']];
+  const streamed = [];
+  for await (const rows of csv.rows(path, { ...options, chunkSize: 2 })) {
+    streamed.push(...rows);
+  }
+  expect(streamed).toEqual(expected);
+  const fromBytes = [];
+  for await (using batch of csv.batches(path, { ...options, chunkSize: 2 })) {
+    for (let i = 0; i < batch.rowCount; ++i) {
+      fromBytes.push([0, 1].map((column) => batch.fieldBuffer(i, column)?.toString('utf8')));
+    }
+  }
+  expect(fromBytes).toEqual(expected);
+  using parser = new NativeCsvParser({ strict: true, delimiter: ';', transform });
+  expect(parser.write(Buffer.from(' bad ;2024-02-29'), true)).toEqual([['INDÉFINI', '29-02-2024']]);
+});
+
+test('date validates the output format and fallback at chain construction', () => {
+  // @ts-expect-error Only the two supported output layouts are valid.
+  expect(() => csv.transform().date('YYYYMMDD')).toThrow('YYYY-MM-DD or DD-MM-YYYY');
+  expect(() => csv.transform().date('DD-MM-YYYY', '\ud800')).toThrow('well-formed');
+  // @ts-expect-error A date fallback must be a string.
+  expect(() => csv.column(0).date('YYYY-MM-DD', null)).toThrow('well-formed');
+});
+
 test('map uses the default only for present fields missing from the map', async () => {
   const values = new Map([['A', ''], ['', 'blank']]);
   const mapped = csv.transform().map(values, 'indéfini').upper();
