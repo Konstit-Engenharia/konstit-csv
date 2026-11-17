@@ -2,7 +2,10 @@
 
 #include <ankerl/unordered_dense.h>
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <optional>
+#include <re2/re2.h>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,11 +16,12 @@ enum class transform_kind : uint32_t {
   upper,
   lower,
   remove_diacritics,
-  replace_all,
+  replace_literal,
   lookup,
   date_ymd,
   date_dmy,
-  date_dmy_slash
+  date_dmy_slash,
+  replace_regex
 };
 
 struct field_transform {
@@ -26,6 +30,7 @@ struct field_transform {
   std::string replacement;
   ankerl::unordered_dense::map<std::string, std::string> values;
   std::optional<std::string> default_value;
+  const re2::RE2* regex = nullptr;
 };
 
 class field_transforms {
@@ -37,7 +42,7 @@ public:
 
   bool empty() const { return columns_.empty(); }
   bool add(uint32_t column, uint32_t kind, std::optional<std::string_view> default_value);
-  bool add_pair(uint32_t column, std::string_view key, std::string_view value);
+  bool add_pair(uint32_t column, std::string_view key, std::string_view value, std::string& error);
   void prepare_ascii_cleanup();
   const ascii_cleanup* uniform_ascii_cleanup(size_t field_count) const {
     return field_count <= uniform_ascii_columns_ ? &uniform_ascii_cleanup_ : nullptr;
@@ -56,6 +61,8 @@ private:
     std::optional<transform_kind> ascii_case;
   };
   std::vector<column_chain> columns_;
+  // Steps borrow these compiled patterns across columns, batches and stream resets.
+  std::map<std::string, std::unique_ptr<re2::RE2>, std::less<>> regexes_;
   bool only_ascii_cleanup_ = true;
   ascii_cleanup uniform_ascii_cleanup_;
   size_t uniform_ascii_columns_ = 0;

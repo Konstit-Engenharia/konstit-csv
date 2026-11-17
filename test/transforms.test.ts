@@ -29,7 +29,7 @@ test.each(['utf8', 'latin1'] as const)('post-filter chains agree across all read
   await Bun.write(path, input);
   const entries = new Map([['', '❤️']]);
   const transform = [
-    csv.column(0).trim().unaccent().upper().replaceAll(' ', '-'),
+    csv.column(0).trim().unaccent().upper().replace(/\s+/, '-'),
     csv.column(1).trim().lower(),
     csv.column(2).map(entries),
   ];
@@ -223,7 +223,7 @@ test('strict validation reads the original header before projection and transfor
     expectedHeaders: ['cité', 'val'],
     columns: [0] as const,
     limit: 2,
-    transform: [csv.column(0).unaccent().lower(), csv.column(1).replaceAll('1', 'one')],
+    transform: [csv.column(0).unaccent().lower(), csv.column(1).replace('1', 'one')],
   };
   expect(await csv.parse(input, options)).toEqual([['cite'], ['a']]);
   expect(await csv.parse(input, { ...options, skipRows: 1 })).toEqual([['a'], ['b']]);
@@ -240,15 +240,49 @@ test('counts and limits operate on original input and fixed widths apply to reje
 
 test('chains are reusable and validate their operands and targets', async () => {
   const column = csv.column(0);
-  const prefix = column.replaceAll('aa', 'a');
+  const prefix = column.replace('aa', 'a');
   const source = Buffer.from('aaa\nÉ\ne\u0301');
   expect(await csv.parse(source, { transform: [prefix.map(new Map([['É', 'hit'], ['e\u0301', 'separate']]))] }))
     .toEqual([['aa'], ['hit'], ['separate']]);
-  expect(await csv.parse(Buffer.from('aaa'), { transform: [prefix.replaceAll('a', '')] })).toEqual([['']]);
-  expect(() => column.replaceAll('', 'x')).toThrow('empty');
+  expect(await csv.parse(Buffer.from('aaa'), { transform: [prefix.replace('a', '')] })).toEqual([['']]);
+  expect(() => column.replace('', 'x')).toThrow('empty');
   expect(() => csv.rows('unused', { transform: [prefix, column.upper()] })).toThrow('repeated');
   // @ts-expect-error Filters are not transforms.
   expect(() => csv.rows('unused', { transform: [column.equals('x')] })).toThrow('chain');
+});
+
+test('replace treats string operands literally and expands RE2 rewrites for regex searches', async () => {
+  const pattern = /(\u00E9)\/(\d+)/giu;
+  pattern.lastIndex = 10;
+  const reorder = csv.transform().replace(pattern, '\\2-\\1').on(1, 2);
+  const input = Buffer.from('a.*b.*c,é/12 É/34,no match\nx,É/0,é/9');
+  const options = {
+    strict: true as const,
+    columns: [2, 0, 1] as const,
+    transform: [csv.column(0).replace('.*', '\\1$&'), reorder],
+  };
+  expect(await csv.parse(input, options)).toEqual([
+    ['no match', 'a\\1$&b\\1$&c', '12-é 34-É'],
+    ['9-é', 'x', '0-É'],
+  ]);
+  expect(pattern.lastIndex).toBe(10);
+});
+
+test('zero-width replacement visits Unicode boundaries and present empty fields', async () => {
+  const transform = [csv.transform().replace(/(?:)/, '-').on(0, 1)];
+  expect(await csv.parse(Buffer.from('🙂,\né'), { columns: [0, 1], transform })).toEqual([
+    ['-🙂-', '-'],
+    ['-é-', ''],
+  ]);
+});
+
+test('replace rejects unsupported flags, RE2 patterns and invalid rewrites before reading rows', () => {
+  const column = csv.column(0);
+  expect(() => column.replace(/x/y, '')).toThrow('unsupported regular expression flags');
+  expect(() => column.replace(new RegExp('a'.repeat(4097)), '')).toThrow('4096');
+  for (const [pattern, replacement,] of [[/x(?=y)/, 'z'], [/(x)\1/, 'z'], [/(x)/, '\\2'], [/x/, '\\']] as const) {
+    expect(() => new NativeCsvParser({ transform: [column.replace(pattern, replacement)] })).toThrow(SyntaxError);
+  }
 });
 
 test('date formats all supported layouts and validates Gregorian dates', async () => {

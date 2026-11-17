@@ -59,3 +59,21 @@ summary(() => {
     });
   }
 });
+
+// Compare the same global edit with literal search and RE2. Small inputs include
+// a larger share of parser setup; larger inputs reuse the regex over more fields.
+for (const size of [16, 4096]) {
+  const input = Buffer.from('id,BR/São/Paulo\nid,Brasília\n'.repeat(size / 2));
+  summary(() => {
+    for (const [label, search,] of [['literal', '/'], ['RE2', /\//u]] as const) {
+      const options = { ...projection, transform: [csv.column(1).replace(search, '-')] };
+      bench(`replace / ${size} rows / ${label}`, async () => {
+        const rows = await csv.parse(input, options);
+        if (rows.length !== size || !rows.every(([value,], i) => value === (i % 2 === 0 ? 'BR-São-Paulo' : 'Brasília'))) {
+          throw new Error('unexpected replacement benchmark output');
+        }
+        return rows.length;
+      });
+    }
+  });
+}

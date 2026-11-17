@@ -5,6 +5,7 @@ import {
 import {
   MAX_COLUMN_INDEX,
   normalizeColumnIndex,
+  normalizeRegex,
 } from './normalize.js';
 import type {
   CsvColumns,
@@ -19,15 +20,17 @@ enum Op {
   Upper,
   Lower,
   Unaccent,
-  ReplaceAll,
+  ReplaceLiteral,
   Map,
   DateYmd,
   DateDmy,
   DateDmySlash,
+  ReplaceRegex,
 }
 type Step =
   | { kind: Op.Trim | Op.Upper | Op.Lower | Op.Unaccent; }
-  | { kind: Op.ReplaceAll; search: string; replacement: string; }
+  | { kind: Op.ReplaceLiteral; search: string; replacement: string; }
+  | { kind: Op.ReplaceRegex; search: Uint8Array; replacement: string; }
   | { kind: Op.DateYmd | Op.DateDmy | Op.DateDmySlash; defaultValue: string | undefined; }
   | { kind: Op.Map; values: ReadonlyMap<string, string>; defaultValue: string | undefined; };
 
@@ -88,13 +91,17 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
     upper: () => append({ kind: Op.Upper }),
     lower: () => append({ kind: Op.Lower }),
     unaccent: () => append({ kind: Op.Unaccent }),
-    replaceAll: (search, replacement) => {
-      requireText(search);
+    replace: (search, replacement) => {
       requireText(replacement);
-      if (search.length === 0) {
-        throw new RangeError('replaceAll search must not be empty');
+      if (search instanceof RegExp) {
+        const pattern = normalizeRegex({ source: search.source, flags: search.flags.replace('g', '') });
+        return append({ kind: Op.ReplaceRegex, search: pattern, replacement });
       }
-      return append({ kind: Op.ReplaceAll, search, replacement });
+      requireText(search);
+      if (search.length === 0) {
+        throw new RangeError('replace search string must not be empty');
+      }
+      return append({ kind: Op.ReplaceLiteral, search, replacement });
     },
     map: (values, defaultValue) => {
       if (defaultValue !== undefined) {
@@ -216,7 +223,7 @@ export function prepareTransforms(handle: NativePointer, tokens: readonly CsvTra
         if (!added) {
           throw new Error('native parser rejected transform step');
         }
-        if (step.kind === Op.ReplaceAll) {
+        if (step.kind === Op.ReplaceLiteral || step.kind === Op.ReplaceRegex) {
           addPair(handle, column, step.search, step.replacement);
         }
         if (step.kind === Op.Map) {
@@ -231,10 +238,14 @@ export function prepareTransforms(handle: NativePointer, tokens: readonly CsvTra
   return active;
 }
 
-function addPair(handle: NativePointer, column: number, key: string, value: string): void {
-  const first = Buffer.from(key);
+function addPair(handle: NativePointer, column: number, key: string | Uint8Array, value: string): void {
+  const first = typeof key === 'string' ? Buffer.from(key) : key;
   const second = Buffer.from(value);
   if (!native.symbols.csv_parser_transform_pair(handle, column, first, first, second, second)) {
+    const error = native.symbols.csv_parser_last_error(handle);
+    if (error) {
+      throw new SyntaxError(error);
+    }
     throw new Error('native parser rejected transform operands');
   }
 }

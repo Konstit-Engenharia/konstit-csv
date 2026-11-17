@@ -1,4 +1,5 @@
 #include "field_transforms.hpp"
+#include "regex.hpp"
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -131,7 +132,7 @@ std::string format_date(std::string_view field, const field_transform& step) {
 } // namespace
 
 bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::string_view> default_value) {
-  if (kind > static_cast<uint32_t>(transform_kind::date_dmy_slash))
+  if (kind > static_cast<uint32_t>(transform_kind::replace_regex))
     return false;
   if (column >= columns_.size())
     columns_.resize(static_cast<size_t>(column) + 1);
@@ -155,7 +156,7 @@ bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::st
   return true;
 }
 
-bool field_transforms::add_pair(uint32_t column, std::string_view key, std::string_view value) {
+bool field_transforms::add_pair(uint32_t column, std::string_view key, std::string_view value, std::string& error) {
   if (column >= columns_.size() || columns_[column].steps.empty())
     return false;
   auto& step = columns_[column].steps.back();
@@ -163,7 +164,23 @@ bool field_transforms::add_pair(uint32_t column, std::string_view key, std::stri
     step.values.emplace(key, value);
     return true;
   }
-  if (step.kind != transform_kind::replace_all || key.empty() || !step.search.empty())
+  if (step.kind == transform_kind::replace_regex) {
+    if (step.regex)
+      return false;
+    auto pattern = regexes_.find(key);
+    if (pattern == regexes_.end()) {
+      auto compiled = compile_regex(key, true, error);
+      if (!compiled)
+        return false;
+      pattern = regexes_.emplace(key, std::move(compiled)).first;
+    }
+    if (!pattern->second->CheckRewriteString(value, &error))
+      return false;
+    step.replacement = value;
+    step.regex = pattern->second.get();
+    return true;
+  }
+  if (step.kind != transform_kind::replace_literal || key.empty() || !step.search.empty())
     return false;
   step.search = key;
   step.replacement = value;
@@ -254,7 +271,12 @@ bool field_transforms::append(std::string& destination, size_t column, std::stri
     case transform_kind::date_dmy_slash:
       value = format_date(value, step);
       break;
-    case transform_kind::replace_all: {
+    case transform_kind::replace_regex:
+      if (!step.regex)
+        return false;
+      re2::RE2::GlobalReplace(&value, *step.regex, step.replacement);
+      break;
+    case transform_kind::replace_literal: {
       if (step.search.empty())
         return false;
       size_t match = value.find(step.search);

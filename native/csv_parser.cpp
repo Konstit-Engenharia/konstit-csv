@@ -1,7 +1,7 @@
 #include "field_transforms.hpp"
+#include "regex.hpp"
 #include <ankerl/unordered_dense.h>
 #include <hwy/highway.h>
-#include <re2/re2.h>
 
 #include <algorithm>
 #include <array>
@@ -114,22 +114,6 @@ static_assert(max_projection_length <= no_selected_output);
 constexpr uint64_t max_filter_count = 2024;
 constexpr uint64_t max_filter_program_length = 4096;
 constexpr uint64_t max_regex_filter_count = 32;
-constexpr size_t max_regex_pattern_size = 4096;
-constexpr int64_t max_regex_memory = 1 << 20;
-
-bool compile_regex(const std::string& source, std::unique_ptr<re2::RE2>& expression, std::string& error) {
-  re2::RE2::Options options;
-  options.set_log_errors(false);
-  options.set_max_mem(max_regex_memory);
-  options.set_never_capture(true);
-  auto compiled = std::make_unique<re2::RE2>(source, options);
-  if (!compiled->ok()) {
-    error = "invalid regular expression: " + compiled->error();
-    return false;
-  }
-  expression = std::move(compiled);
-  return true;
-}
 
 struct csv_structural_state {
   bool in_quotes = false;
@@ -621,7 +605,7 @@ public:
     return !configuration_initialized_ && column <= max_column_index && transforms_.add(column, kind, default_value);
   }
   bool add_transform_pair(uint32_t column, std::string_view key, std::string_view value) {
-    return !configuration_initialized_ && transforms_.add_pair(column, key, value);
+    return !configuration_initialized_ && transforms_.add_pair(column, key, value, error_);
   }
 
   void enable_transformed_quoted_spans() {
@@ -1252,9 +1236,9 @@ private:
         continue;
       }
 
-      std::unique_ptr<re2::RE2> expression;
       std::string message;
-      if (!compile_regex(source, expression, message)) {
+      auto expression = compile_regex(source, false, message);
+      if (!expression) {
         set_error(message.c_str());
         return false;
       }
@@ -3080,8 +3064,7 @@ CSV_EXPORT const char* csv_regex_validate(const uint8_t* pattern, uint64_t patte
   if (pattern_len != 0) {
     source.assign(reinterpret_cast<const char*>(pattern), static_cast<size_t>(pattern_len));
   }
-  std::unique_ptr<re2::RE2> expression;
-  csv_native::compile_regex(source, expression, error);
+  csv_native::compile_regex(source, false, error);
   return error.c_str();
 }
 

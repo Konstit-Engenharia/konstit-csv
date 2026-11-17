@@ -11,6 +11,7 @@
       "native/field_transforms.cpp",
       "native/field_transforms.hpp",
       "native/file_probe.cpp",
+      "native/regex.hpp",
       "native/runtime.cpp",
       "native/zip_reader.cpp",
       "scripts/build-linux-native.ts",
@@ -23,25 +24,25 @@
       "toolchains/darwin-x64-clang.cmake",
       "toolchains/linux-x64-clang.cmake"
     ],
-    "sha256": "8cf6e4cf7d04f39d17bb6707531a721b55ac1774f82a809dab59ef5834b9f5b2"
+    "sha256": "3ed2e1759c5ac4e839f942553d417e98ac68e76e1f3ec38d303b637786816614"
   },
   "targets": [
     {
       "file": "darwin-arm64/libcsv_native.dylib",
-      "sha256": "d74dcd858ace417620b3aea2718898d67304b9b8be23d109b64095b5a3535037",
-      "size": 929232,
+      "sha256": "ddbcfaa2e89fe9b13ffaaeedeba0e9677b0bbe1e0783a2f159d62e2bb036d2c7",
+      "size": 946928,
       "target": "darwin-arm64"
     },
     {
       "file": "darwin-x64/libcsv_native.dylib",
-      "sha256": "9afe75e79d322821488587aed22f42c5e87bea786c6ea14c4f619bb380ced560",
-      "size": 983104,
+      "sha256": "c83910413dfe513397e9f86b610c48ddf5eb6558744aeaf2a0af5e7de37689ec",
+      "size": 988376,
       "target": "darwin-x64"
     },
     {
       "file": "linux-x64/libcsv_native.so",
-      "sha256": "61f9d54a3b1806e5fb3522a2248219717448b930c90974d9c5de90d6b19925d5",
-      "size": 1557928,
+      "sha256": "62b1145eed60e801fbe0a86ee5ebb8c0e2590402082d70ca3737e0d8d5c5dd30",
+      "size": 1562280,
       "target": "linux-x64"
     }
   ]

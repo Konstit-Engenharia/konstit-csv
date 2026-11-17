@@ -111,8 +111,8 @@ export interface CsvTransformMethods<TResult = CsvTransform> {
   readonly lower: () => TResult;
   /** Canonically decompose, remove marks with the Diacritic property, and recompose. */
   readonly unaccent: () => TResult;
-  /** Replace non-overlapping literal occurrences of a nonempty string. */
-  readonly replaceAll: (search: string, replacement: string) => TResult;
+  /** Replace every non-overlapping match. Strings are literal. RegExp searches use RE2 rewrite syntax. */
+  readonly replace: (search: string | RegExp, replacement: string) => TResult;
   /** Replace an exact field value once. Unknown keys emit defaultValue when supplied, or the input value otherwise. */
   readonly map: (values: ReadonlyMap<string, string> | Readonly<Record<string, string>>, defaultValue?: string) => TResult;
   /** Format a calendar date. Invalid input emits defaultValue, which defaults to an empty string. */
