@@ -145,6 +145,29 @@ test('map uses the default only for present fields missing from the map', async 
   expect(() => csv.transform().map(values, '\ud800')).toThrow('well-formed');
 });
 
+test('map snapshots own enumerable entries from plain objects', async () => {
+  const states = { SP: 'São Paulo', ['__proto__']: 'literal key', get: 'read', entries: '' };
+  Object.defineProperty(states, 'hidden', { value: 'hidden entry' });
+  const chain = csv.transform().map(states, 'Unknown');
+  states.SP = 'changed';
+  const input = Buffer.from('SP,__proto__,get,entries,constructor,hidden');
+  expect(await csv.parse(input, { transform: [chain.on(0, 1, 2, 3, 4, 5)] }))
+    .toEqual([['São Paulo', 'literal key', 'read', '', 'Unknown', 'Unknown']]);
+
+  const codes: Record<string, string> = Object.create(null);
+  codes['toString'] = 'explicit key';
+  expect(await csv.parse(Buffer.from('toString\nmissing'), { transform: [csv.column(0).map(codes)] }))
+    .toEqual([['explicit key'], ['missing']]);
+});
+
+test('map validates plain object entries at chain construction', () => {
+  expect(() => csv.transform().map({ ['\ud800']: 'bad key' })).toThrow('well-formed');
+  // @ts-expect-error Mapping values must be strings.
+  expect(() => csv.transform().map({ SP: 1 })).toThrow('well-formed');
+  // @ts-expect-error Arrays are not mapping objects.
+  expect(() => csv.transform().map(['SP'])).toThrow('map or plain object');
+});
+
 test('reusable chains bind to multiple physical columns and can be extended or rebound independently', async () => {
   const entries = new Map([['SAO', 'São Paulo']]);
   const clean = csv.transform().trim().unaccent().upper();

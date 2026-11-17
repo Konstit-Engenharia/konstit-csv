@@ -93,14 +93,11 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
       return append({ kind: Op.ReplaceAll, search, replacement });
     },
     map: (values, defaultValue) => {
-      if (values == null || typeof values.get !== 'function' || typeof values.entries !== 'function') {
-        throw new TypeError('map() requires a map of strings');
-      }
       if (defaultValue !== undefined) {
         requireText(defaultValue);
       }
       const captured = new Map<string, string>();
-      for (const [key, value,] of values.entries()) {
+      for (const [key, value,] of mappingEntries(values)) {
         requireText(key);
         requireText(value);
         captured.set(key, value);
@@ -108,6 +105,19 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
       return append({ kind: Op.Map, values: captured, defaultValue });
     },
   };
+}
+
+function mappingEntries(values: ReadonlyMap<string, string> | Readonly<Record<string, string>>): Iterable<readonly [string, string]> {
+  if (values !== null && typeof values === 'object') {
+    if (typeof values.get === 'function' && typeof values.entries === 'function') {
+      return values.entries();
+    }
+    const prototype = Object.getPrototypeOf(values);
+    if (prototype === null || Object.getPrototypeOf(prototype) === null) {
+      return Object.entries(values);
+    }
+  }
+  throw new TypeError('map() requires a map or plain object of strings');
 }
 
 function requireText(value: unknown): asserts value is string {

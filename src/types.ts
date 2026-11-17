@@ -114,7 +114,7 @@ export interface CsvTransformMethods<TResult = CsvTransform> {
   /** Replace non-overlapping literal occurrences of a nonempty string. */
   readonly replaceAll: (search: string, replacement: string) => TResult;
   /** Replace an exact field value once. Unknown keys emit defaultValue when supplied, or the input value otherwise. */
-  readonly map: (values: ReadonlyMap<string, string>, defaultValue?: string) => TResult;
+  readonly map: (values: ReadonlyMap<string, string> | Readonly<Record<string, string>>, defaultValue?: string) => TResult;
 }
 
 /** A reusable sequence of field operations built with csv.transform(). */
