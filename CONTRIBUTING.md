@@ -29,7 +29,7 @@ Fetched sources are reused from `.cache/fetchcontent/`.
 bun install
 ```
 
-The examples use `corpus/large/example.csv` by default. Follow the corpus setup
+Most examples use `corpus/large/example.csv` by default. Follow the corpus setup
 instructions in [`docs/benchmarks.md`](docs/benchmarks.md) before running an
 example that uses that file.
 
@@ -46,6 +46,8 @@ bun run example:api:typed-options
 bun run example:api:strict-options
 bun run example:api:shards
 ```
+
+Run `bun run examples/api-rows-transforms.ts` to try streaming field transforms with the included [sample orders](examples/orders.csv).
 
 ### Example environment variables
 

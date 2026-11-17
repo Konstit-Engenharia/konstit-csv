@@ -181,11 +181,13 @@ const rows = await csv.parse(Buffer.from('Ana;12,50; sp \nBia;9,00;SP'), {
 | `date(format, defaultValue?)`  | Emit a valid date as `YYYY-MM-DD`, `DD-MM-YYYY`, or `DD/MM/YYYY`. Invalid fields emit the fallback string, which defaults to `''`.                                                                  |
 
 With a string search, both arguments are literal. For example, `.replace('.', '$1')` changes `a.b.c` to `a$1b$1c`.
-With a regex search, the parser compiles each distinct active pattern once at setup and reuses it across columns and stream resets.
+With a regex search, the parser compiles each active pattern and parses its replacement templates once during setup. Columns, batches and stream resets reuse them.
 Patterns follow the same syntax, flags and 4096-byte limit as `hasMatch()`, with `g` also accepted. Every match is replaced with or without `g`.
-Regex replacements use RE2 rewrite syntax: `\0` inserts the whole match, `\1` through `\9` insert capture groups, and `\\` inserts a backslash.
-For example, `.replace(/([A-Z]+)-(\d+)/, '\\2/\\1')` changes `AB-12 CD-34` to `12/AB 34/CD`.
-Invalid RE2 patterns and rewrites raise a `SyntaxError` during parser setup.
+Regex replacements accept JavaScript capture syntax. For example, `.replace(/(?<code>[A-Z]+)-(\d+)/, '$2/$<code>')` changes `AB-12 CD-34` to `12/AB 34/CD`.
+Use `$1` through `$99` for numbered captures, `$<name>` for a named capture, `$&` for the whole match, and `$$` for a dollar sign.
+With only one group, `$10` inserts group 1 followed by a literal `0`, and `$2` stays literal. An unmatched optional group inserts an empty string.
+An unknown name inserts an empty string if the pattern has named groups. Otherwise `$<name>` stays literal.
+All other text, including backslashes and JavaScript’s prefix and suffix references, is literal. Invalid RE2 patterns raise a `SyntaxError` during parser setup.
 
 `date()` accepts `YYYYMMDD`, `YYYY-MM-DD`, `DD-MM-YYYY`, and `DD/MM/YYYY` input with ASCII digits and years 0001 through 9999.
 It checks Gregorian month lengths and leap years. For example, `.date('DD/MM/YYYY', 'Unknown')` converts

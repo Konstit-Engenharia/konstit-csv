@@ -1,5 +1,6 @@
 #pragma once
 
+#include "regex_replacement.hpp"
 #include <ankerl/unordered_dense.h>
 #include <cstdint>
 #include <map>
@@ -30,7 +31,7 @@ struct field_transform {
   std::string replacement;
   ankerl::unordered_dense::map<std::string, std::string> values;
   std::optional<std::string> default_value;
-  const re2::RE2* regex = nullptr;
+  const regex_replacement* regex = nullptr;
 };
 
 class field_transforms {
@@ -61,8 +62,12 @@ private:
     std::optional<transform_kind> ascii_case;
   };
   std::vector<column_chain> columns_;
-  // Steps borrow these compiled patterns across columns, batches and stream resets.
-  std::map<std::string, std::unique_ptr<re2::RE2>, std::less<>> regexes_;
+  struct compiled_pattern {
+    std::unique_ptr<re2::RE2> expression;
+    std::map<std::string, regex_replacement, std::less<>> replacements;
+  };
+  // Steps borrow prepared replacements across columns, batches and stream resets.
+  std::map<std::string, compiled_pattern, std::less<>> regexes_;
   bool only_ascii_cleanup_ = true;
   ascii_cleanup uniform_ascii_cleanup_;
   size_t uniform_ascii_columns_ = 0;

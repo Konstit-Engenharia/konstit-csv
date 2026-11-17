@@ -145,21 +145,28 @@ and supported regex syntax.
 
 ### Transform accepted rows
 
-Define a field transform once with `csv.transform()`. Call `.on(...columns)` to apply it to physical input columns after a row passes `where`.
+To print each person's name and state from `data.csv`, expand the state abbreviation in column 2. If you also supply `where`, it checks the original fields before the transforms run.
 
 ```ts
-const cleanName = csv.transform().trim().unaccent().upper();
-const rows = await csv.parse(
-  Buffer.from('São João;active;José\nRecife;inactive;Bia'),
-  {
-    delimiter: ';',
-    where: csv.column(1).equals('active'),
-    columns: [0, 2] as const,
-    transform: [cleanName.on(0, 2)],
-  },
-);
-// [['SAO JOAO', 'JOSE']]
+import { csv } from '@konstit/csv';
+
+const stateName = csv.column(2).map({ SP: 'São Paulo', RJ: 'Rio de Janeiro' });
+for await (
+  const batch of csv.rows('data.csv', {
+    skipRows: 1,
+    columns: [1, 2],
+    transform: [stateName],
+  })
+) {
+  for (const [name, state,] of batch) {
+    console.log(`${name}, ${state}`);
+  }
+}
+// Ada, São Paulo
+// Grace, Rio de Janeiro
 ```
+
+Run `bun run examples/api-rows-transforms.ts` from the repository to try two more [streaming examples](https://github.com/Konstit-Engenharia/csv-parser/blob/main/examples/api-rows-transforms.ts) with sample orders. The first cleans names, cities, and amounts. The second formats order IDs using numbered and named captures.
 
 See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, value mapping, and date formatting.
 

@@ -29,7 +29,7 @@ test.each(['utf8', 'latin1'] as const)('post-filter chains agree across all read
   await Bun.write(path, input);
   const entries = new Map([['', '❤️']]);
   const transform = [
-    csv.column(0).trim().unaccent().upper().replace(/\s+/, '-'),
+    csv.column(0).trim().unaccent().upper().replace(/(\S)\s+/, '$1-'),
     csv.column(1).trim().lower(),
     csv.column(2).map(entries),
   ];
@@ -251,21 +251,41 @@ test('chains are reusable and validate their operands and targets', async () => 
   expect(() => csv.rows('unused', { transform: [column.equals('x')] })).toThrow('chain');
 });
 
-test('replace treats string operands literally and expands RE2 rewrites for regex searches', async () => {
+test('replace treats string operands literally and expands JavaScript captures for regex searches', async () => {
   const pattern = /(\u00E9)\/(\d+)/giu;
   pattern.lastIndex = 10;
-  const reorder = csv.transform().replace(pattern, '\\2-\\1').on(1, 2);
+  const reorder = csv.transform().replace(pattern, '$2-$1').on(1, 2);
   const input = Buffer.from('a.*b.*c,é/12 É/34,no match\nx,É/0,é/9');
   const options = {
     strict: true as const,
     columns: [2, 0, 1] as const,
-    transform: [csv.column(0).replace('.*', '\\1$&'), reorder],
+    transform: [csv.column(0).replace('.*', '\\1$&$$$1$<x>'), reorder],
   };
   expect(await csv.parse(input, options)).toEqual([
-    ['no match', 'a\\1$&b\\1$&c', '12-é 34-É'],
+    ['no match', 'a\\1$&$$$1$<x>b\\1$&$$$1$<x>c', '12-é 34-É'],
     ['9-é', 'x', '0-É'],
   ]);
   expect(pattern.lastIndex).toBe(10);
+});
+
+test('regex capture templates agree with JavaScript for each match', () => {
+  const cases = [
+    [/(a)(b)?/g, 'ab a', '$&|$2|$1|$0|$01|$02|$00|$10|$20|$30|$99|$$|$$$1|\\1\\'],
+    [/(a)/g, 'a a', '$<missing> $<$1> $< $$ $'],
+    [/(?<letter>a)(?<digit>\d)?/g, 'a1 a', '$<digit>:$<letter>:$<missing>:$<>:$<unterminated-$1'],
+    [/(?<part>a)|(?<part>b)/g, 'ba', '$<part>/$1/$2'],
+    [new RegExp(`${'(a)'.repeat(99)}(?<last>z)`, 'g'), `${'a'.repeat(99)}z`, '$99/$100/$10/$09/$<last>'],
+    [/(🙂)/gu, 'a🙂🙂', '\0$$$1$&'],
+    [/x/g, 'xxx', ''],
+  ] as const;
+  for (const [pattern, field, template,] of cases) {
+    const expected = field.replace(pattern, template);
+    using parser = new NativeCsvParser({ transform: [csv.transform().replace(pattern, template).on(0, 1)] });
+    const input = Buffer.from(`${field},${field}`);
+    expect(parser.write(input, true)).toEqual([[expected, expected]]);
+    parser.reset();
+    expect(parser.write(input, true)).toEqual([[expected, expected]]);
+  }
 });
 
 test('zero-width replacement visits Unicode boundaries and present empty fields', async () => {
@@ -274,14 +294,15 @@ test('zero-width replacement visits Unicode boundaries and present empty fields'
     ['-🙂-', '-'],
     ['-é-', ''],
   ]);
+  expect(await csv.parse(Buffer.from('aaé'), { transform: [csv.column(0).replace(/(a*)/, '[$1]')] })).toEqual([['[aa]é[]']]);
 });
 
-test('replace rejects unsupported flags, RE2 patterns and invalid rewrites before reading rows', () => {
+test('replace rejects unsupported flags and RE2 patterns before reading rows', () => {
   const column = csv.column(0);
   expect(() => column.replace(/x/y, '')).toThrow('unsupported regular expression flags');
   expect(() => column.replace(new RegExp('a'.repeat(4097)), '')).toThrow('4096');
-  for (const [pattern, replacement,] of [[/x(?=y)/, 'z'], [/(x)\1/, 'z'], [/(x)/, '\\2'], [/x/, '\\']] as const) {
-    expect(() => new NativeCsvParser({ transform: [column.replace(pattern, replacement)] })).toThrow(SyntaxError);
+  for (const pattern of [/x(?=y)/, /(x)\1/]) {
+    expect(() => new NativeCsvParser({ transform: [column.replace(pattern, 'z')] })).toThrow(SyntaxError);
   }
 });
 

@@ -172,12 +172,13 @@ bool field_transforms::add_pair(uint32_t column, std::string_view key, std::stri
       auto compiled = compile_regex(key, true, error);
       if (!compiled)
         return false;
-      pattern = regexes_.emplace(key, std::move(compiled)).first;
+      pattern = regexes_.emplace(key, compiled_pattern{std::move(compiled), {}}).first;
     }
-    if (!pattern->second->CheckRewriteString(value, &error))
-      return false;
-    step.replacement = value;
-    step.regex = pattern->second.get();
+    auto& compiled = pattern->second;
+    auto replacement = compiled.replacements.find(value);
+    if (replacement == compiled.replacements.end())
+      replacement = compiled.replacements.try_emplace(std::string(value), *compiled.expression, value).first;
+    step.regex = &replacement->second;
     return true;
   }
   if (step.kind != transform_kind::replace_literal || key.empty() || !step.search.empty())
@@ -274,7 +275,7 @@ bool field_transforms::append(std::string& destination, size_t column, std::stri
     case transform_kind::replace_regex:
       if (!step.regex)
         return false;
-      re2::RE2::GlobalReplace(&value, *step.regex, step.replacement);
+      step.regex->apply(value);
       break;
     case transform_kind::replace_literal: {
       if (step.search.empty())

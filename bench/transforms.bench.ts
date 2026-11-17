@@ -65,8 +65,14 @@ summary(() => {
 for (const size of [16, 4096]) {
   const input = Buffer.from('id,BR/São/Paulo\nid,Brasília\n'.repeat(size / 2));
   summary(() => {
-    for (const [label, search,] of [['literal', '/'], ['RE2', /\//u]] as const) {
-      const options = { ...projection, transform: [csv.column(1).replace(search, '-')] };
+    for (
+      const [label, search, replacement,] of [
+        ['literal', '/', '-'],
+        ['RE2', /\//u, '-'],
+        ['RE2 capture', /(?<letter>.)\//u, '$<letter>-'],
+      ] as const
+    ) {
+      const options = { ...projection, transform: [csv.column(1).replace(search, replacement)] };
       bench(`replace / ${size} rows / ${label}`, async () => {
         const rows = await csv.parse(input, options);
         if (rows.length !== size || !rows.every(([value,], i) => value === (i % 2 === 0 ? 'BR-São-Paulo' : 'Brasília'))) {

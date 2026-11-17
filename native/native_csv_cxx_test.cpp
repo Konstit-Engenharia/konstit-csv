@@ -22,6 +22,8 @@ void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
 void csv_parser_reset_stream(void* parser);
 bool csv_parser_add_transform(void* parser, uint32_t column, uint32_t kind);
+bool csv_parser_transform_pair(void* parser, uint32_t column, const uint8_t* key, uint64_t key_len,
+                               const uint8_t* value, uint64_t value_len);
 void csv_parser_enable_transformed_quoted_spans(void* parser);
 bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
                         uint64_t selected_columns_len, const uint32_t* filter_descriptors, uint64_t filter_count,
@@ -1196,6 +1198,28 @@ TEST_CASE("materialized transformed spans mix raw ASCII and packed UTF-8 across 
       REQUIRE(flags == std::vector<uint8_t>{1, 0, 0, 1});
     }
   }
+}
+
+TEST_CASE("empty regex matches preserve raw field bytes and use each column's template") {
+  void* parser = csv_parser_create(0, ',');
+  REQUIRE(parser != nullptr);
+  const std::string_view pattern = "(?:)";
+  const std::string_view replacements[] = {"-$&", "$$"};
+  for (uint32_t column = 0; column < 2; ++column) {
+    const auto replacement = replacements[column];
+    REQUIRE(csv_parser_add_transform(parser, column, 9)); // replace_regex
+    REQUIRE(csv_parser_transform_pair(parser, column, reinterpret_cast<const uint8_t*>(pattern.data()), pattern.size(),
+                                      reinterpret_cast<const uint8_t*>(replacement.data()), replacement.size()));
+  }
+  const uint32_t offsets[] = {0};
+  REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, offsets, 0));
+  const std::string input = "\xe2\x82,\xc3\xa9\n";
+  std::vector<std::vector<std::string>> rows;
+  append_batch_rows(
+      csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true),
+      rows);
+  csv_parser_destroy(parser);
+  REQUIRE(rows == std::vector<std::vector<std::string>>{{"-\xe2-\x82-", "$\xc3\xa9$"}});
 }
 
 TEST_CASE("fixed-width Latin-1 quote masks preserve every lane across full blocks and tails") {
