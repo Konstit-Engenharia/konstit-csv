@@ -90,18 +90,17 @@ function readTurbo(path: string, fastMode: boolean, visit: Visit): void {
 
 interface ParserCase {
   name: string;
-  emitsHeader?: boolean;
   read: (fixture: Fixture, visit: Visit) => void | Promise<void>;
 }
 
 async function readBatches(path: string, visit: Visit, columns?: readonly number[]): Promise<void> {
-  for await (using batch of csv.batches(path, { encoding: 'utf8', columns })) {
+  for await (using batch of csv.batches(path, { encoding: 'utf8', columns, skipRows: 1 })) {
     batch.forEachRow((row) => visit(row.get(0)));
   }
 }
 
 async function readRows(path: string, visit: Visit, columns?: readonly number[]): Promise<void> {
-  for await (const batch of csv.rows(path, { encoding: 'utf8', columns, reuseArrays: true })) {
+  for await (const batch of csv.rows(path, { encoding: 'utf8', columns, reuseArrays: true, skipRows: 1 })) {
     for (const row of batch) {
       visit(row[0]);
     }
@@ -111,10 +110,8 @@ async function readRows(path: string, visit: Visit, columns?: readonly number[])
 const parsers: readonly ParserCase[] = [
   { name: 'TurboCSV', read: ({ path }, visit) => readTurbo(path, false, visit) },
   { name: 'TurboCSV fast', read: ({ path }, visit) => readTurbo(path, true, visit) },
-  // { name: '@konstit/csv batches', emitsHeader: true, read: ({ path }, visit) => readBatches(path, visit) },
-  { name: '@konstit/csv batches', emitsHeader: true, read: ({ path }, visit) => readBatches(path, visit, [0]) },
-  // { name: '@konstit/csv rows', emitsHeader: true, read: ({ path }, visit) => readRows(path, visit) },
-  { name: '@konstit/csv rows', emitsHeader: true, read: ({ path }, visit) => readRows(path, visit, [0]) },
+  { name: '@konstit/csv batches', read: ({ path }, visit) => readBatches(path, visit, [0]) },
+  { name: '@konstit/csv rows', read: ({ path }, visit) => readRows(path, visit, [0]) },
   {
     name: 'PapaParse',
     read({ path, idColumn }, visit) {
@@ -162,7 +159,7 @@ export function comparisonCases(fixture: Fixture): { name: string; run: () => Pr
   return parsers.filter((parser) => !(fixture.hasQuotes && parser.name === 'TurboCSV fast')).map((parser) => ({
     name: parser.name,
     async run() {
-      let rows = parser.emitsHeader ? -1 : 0;
+      let rows = 0;
       let idSum = 0;
       await parser.read(fixture, (id) => {
         if (++rows === 0) {
