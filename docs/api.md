@@ -233,7 +233,7 @@ by default to 64 GiB and a declared compression ratio of 1000; use `maxDecompres
 to apply stricter limits or to permit a larger trusted entry.
 
 `delimiter: 'auto'` is supported for file operations. With an explicit encoding it probes at most 64 KiB after decompression and any transcoding,
-ignores separators inside quoted fields, and considers comma, tab, semicolon, pipe, colon, caret, and tilde. File
+ignores separators inside quoted fields, and considers comma, tab, semicolon, pipe, colon, caret, tilde, and the at sign (`@`). File
 extensions such as `.csv`, `.tsv`, `.tab`, and `.psv` are confirmed hints and can resolve an otherwise tied result,
 including before a compression suffix such as `.gz`. Empty, single-column, inconsistent, and ambiguous probes fail;
 specify a delimiter explicitly in those cases. Omitted `delimiter` remains comma. In-memory parsing and the byte-boundary

@@ -36,6 +36,7 @@ export const DELIMITER_CANDIDATES = [
   { byte: 0x3a, delimiter: ':' },
   { byte: 0x5e, delimiter: '^' },
   { byte: 0x7e, delimiter: '~' },
+  { byte: 0x40, delimiter: '@' },
 ] as const satisfies readonly { byte: number; delimiter: CsvDelimiter; }[];
 const COMPRESSION_EXTENSIONS = [
   '.deflate-raw',
@@ -391,8 +392,8 @@ export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scor
       bytes = new TextEncoder().encode(text);
     }
   }
-  const counts = scoreDelimiters ? new Uint32Array(8) : undefined;
-  const encodingCode = native.symbols.csv_probe_format(
+  const counts = scoreDelimiters ? new Uint32Array(DELIMITER_CANDIDATES.length + 1) : undefined;
+  const encodingCode = native.symbols.csv_probe_format_v2(
     bytes.length === 0 ? EMPTY_BUFFER : bytes,
     bytes.length,
     sourceEnded,
@@ -403,7 +404,7 @@ export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scor
   if (encoding === undefined) {
     throw new Error('NUL in encoding probe: specify the encoding explicitly');
   }
-  return { bytes, encoding, skipBytes, counts: counts === undefined || counts[7] === 0 ? [] : [counts] };
+  return { bytes, encoding, skipBytes, counts: counts === undefined || counts[DELIMITER_CANDIDATES.length] === 0 ? [] : [counts] };
 }
 
 function requireDelimiter(path: string, rows: readonly ArrayLike<number>[]): CsvDelimiter {

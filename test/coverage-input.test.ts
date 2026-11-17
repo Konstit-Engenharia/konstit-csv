@@ -141,7 +141,7 @@ describe('coverage input boundaries', () => {
     expect(() => normalizeNativeFilters([{ column: 0, values }])).toThrow('filter values exceed native offset range');
     const hugeValues = { length: 0x1_0000_0000, [Symbol.iterator]: function*() {} } as never;
     expect(() => normalizeNativeFilters([{ column: 0, values: hugeValues }])).toThrow();
-    expect(scanDelimiterCounts(Buffer.from('a,b'), true)).toEqual([[1, 0, 0, 0, 0, 0, 0]]);
+    expect(scanDelimiterCounts(Buffer.from('a,b@c'), true)).toEqual([[1, 0, 0, 0, 0, 0, 0, 1]]);
     const regex = { source: 'f', flags: '' } as never;
     const all = normalizeNativeFilters([
       { column: 0, value: 'a' },

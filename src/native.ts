@@ -59,14 +59,14 @@ const CSV_SYMBOLS = {
   // void* csv_parser_transform_validated_batch(void* parser, const void* batch);
   csv_parser_transform_validated_batch: { args: ['ptr', 'ptr'], returns: 'ptr' },
   // C signature:
-  // uint32_t csv_probe_format(const uint8_t* bytes, uint32_t size, bool eof, bool infer_encoding, uint32_t* output);
-  csv_probe_format: {
+  // uint32_t csv_probe_format_v2(const uint8_t* bytes, uint32_t size, bool eof, bool infer_encoding, uint32_t* output);
+  csv_probe_format_v2: {
     args: [
       'buffer', // const uint8_t* bytes
       'u32', // uint32_t size
       'bool', // bool eof
       'bool', // bool infer_encoding
-      'ptr', // uint32_t* output (eight elements, or null to skip delimiter detection)
+      'ptr', // uint32_t* output (eight separator counts followed by a row count, or null)
     ],
     returns: 'u32',
   },

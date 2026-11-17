@@ -26,7 +26,7 @@ const tabRows = [
   ['2', 'Bia\nSilva', 'us'],
 ];
 const semicolonSource = Buffer.from('id;name;state\n1;"Ana, Maria";br\n2;Bia;us\n');
-const detectedDelimiters = [',', '\t', ';', '|', ':', '^', '~'] as const;
+const detectedDelimiters = [',', '\t', ';', '|', ':', '^', '~', '@'] as const;
 
 let temporaryDirectory: string;
 let tabPath: string;
@@ -49,7 +49,7 @@ beforeAll(async () => {
       `id\tvalue\n${Array.from({ length: 10_000 }, (_, index) => `${String(index)}\tvalue-${String(index)}\n`).join('')}`,
     ),
     ...detectedDelimiters.map((delimiter, index) =>
-      Bun.write(join(temporaryDirectory, `delimiter-${String(index)}.txt`), `left${delimiter}right\n1${delimiter}2\n`)
+      Bun.write(join(temporaryDirectory, `delimiter-${String(index)}.txt`), `left${delimiter}right\n1${delimiter}"user@example.org"\n`)
     ),
   ]);
 });
@@ -69,7 +69,7 @@ describe('automatic delimiter detection', () => {
       }
       expect(rows).toEqual([
         ['left', 'right'],
-        ['1', '2'],
+        ['1', 'user@example.org'],
       ]);
     }
   });

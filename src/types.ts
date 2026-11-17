@@ -80,6 +80,7 @@ export type CsvDelimiter =
   | ':'
   | '^'
   | '~'
+  | '@'
   | (string & {});
 
 /** A materialized CSV row, with one decoded string per field. */

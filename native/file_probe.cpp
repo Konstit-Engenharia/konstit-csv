@@ -9,7 +9,7 @@
 namespace {
 namespace hn = hwy::HWY_NAMESPACE;
 constexpr size_t row_limit = 128;
-constexpr std::array<uint8_t, 7> candidates = {',', '\t', ';', '|', ':', '^', '~'};
+constexpr auto candidates = std::to_array<uint8_t>({',', '\t', ';', '|', ':', '^', '~', '@'});
 constexpr auto candidate_index = [] {
   std::array<uint8_t, 128> indices{};
   for (size_t i = 0; i < candidates.size(); ++i)
@@ -18,7 +18,7 @@ constexpr auto candidate_index = [] {
 }();
 
 struct RowCounts {
-  std::array<uint32_t, 7> current{};
+  std::array<uint32_t, candidates.size()> current{};
   uint32_t* stable;
   uint32_t rows = 0;
 
@@ -37,11 +37,11 @@ struct RowCounts {
 enum Encoding : uint32_t { utf8, latin1, windows1252, contains_nul };
 } // namespace
 
-// A non-null output requests seven stable separator counts and the number of complete nonempty rows.
-extern "C" __attribute__((visibility("default"))) HWY_ATTR uint32_t csv_probe_format(const uint8_t* bytes,
-                                                                                     uint32_t size, bool eof,
-                                                                                     bool infer_encoding,
-                                                                                     uint32_t* output) {
+// A non-null output receives one stable count per candidate followed by the number of complete nonempty rows.
+extern "C" __attribute__((visibility("default"))) HWY_ATTR uint32_t csv_probe_format_v2(const uint8_t* bytes,
+                                                                                        uint32_t size, bool eof,
+                                                                                        bool infer_encoding,
+                                                                                        uint32_t* output) {
   const hn::CappedTag<uint8_t, 32> d;
   const size_t width = hn::Lanes(d);
   RowCounts counts{{}, output};
@@ -119,7 +119,7 @@ extern "C" __attribute__((visibility("default"))) HWY_ATTR uint32_t csv_probe_fo
   if (output != nullptr) {
     if (eof && !quoted && row_start < size && counts.rows < row_limit)
       counts.finish();
-    output[7] = counts.rows;
+    output[candidates.size()] = counts.rows;
   }
   if (valid_utf8 && (!eof || carry == 0))
     return utf8;

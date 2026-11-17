@@ -72,8 +72,8 @@ function outcome(probe: CsvFileProbe, path: string, bytes: Buffer, eof: boolean)
 }
 
 test('combined delimiter scoring matches delimiter-only scoring across truncated records', () => {
-  for (const delimiter of [',', '\t', ';', '|', ':', '^', '~']) {
-    const bytes = Buffer.from(`a${delimiter}b\r\n\n123${delimiter}"quoted,;\r\n""text"""\n4${delimiter}5`);
+  for (const delimiter of [',', '\t', ';', '|', ':', '^', '~', '@']) {
+    const bytes = Buffer.from(`a${delimiter}b\r\n\n123${delimiter}"quoted,;@\r\n""text"""\n4${delimiter}5`);
     for (let end = 0; end <= bytes.length; ++end) {
       for (const eof of [false, true]) {
         const slice = bytes.subarray(0, end);
