@@ -2897,7 +2897,8 @@ CSV_EXPORT bool csv_parser_add_transform_with_default(void* parser, uint32_t col
   using csv_native::transform_kind;
   if (kind != static_cast<uint32_t>(transform_kind::lookup) &&
       kind != static_cast<uint32_t>(transform_kind::date_ymd) &&
-      kind != static_cast<uint32_t>(transform_kind::date_dmy))
+      kind != static_cast<uint32_t>(transform_kind::date_dmy) &&
+      kind != static_cast<uint32_t>(transform_kind::date_dmy_slash))
     return false;
   const std::string_view fallback(value ? reinterpret_cast<const char*>(value) : "", value_len);
   return csv_native::checked_parser(parser)->add_transform(column, kind, fallback);

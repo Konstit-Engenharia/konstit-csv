@@ -8,7 +8,17 @@
 #include <vector>
 
 namespace csv_native {
-enum class transform_kind : uint32_t { trim, upper, lower, remove_diacritics, replace_all, lookup, date_ymd, date_dmy };
+enum class transform_kind : uint32_t {
+  trim,
+  upper,
+  lower,
+  remove_diacritics,
+  replace_all,
+  lookup,
+  date_ymd,
+  date_dmy,
+  date_dmy_slash
+};
 
 struct field_transform {
   transform_kind kind;

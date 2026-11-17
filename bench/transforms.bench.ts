@@ -43,8 +43,8 @@ for (const [label, encoding, name,] of cases) {
 }
 
 // Measure the cost of calendar validation and formatting over the same projected rows.
-const dates = ['20000229', '30-04-2026', '00000000', '2026-04-31', '2026-12-01'];
-const formatted = ['2000-02-29', '2026-04-30', '', '', '2026-12-01'];
+const dates = ['20000229', '30-04-2026', '00000000', '2026-04-31', '2026-12-01', '17/11/2026'];
+const formatted = ['2000-02-29', '2026-04-30', '', '', '2026-12-01', '2026-11-17'];
 const dateInput = Buffer.from(Array.from({ length: 4096 }, (_, i) => `${i},${dates[i % dates.length]}\n`).join(''));
 const projection = { columns: [1] as const };
 const dateOptions = { ...projection, transform: [csv.column(1).date('YYYY-MM-DD')] };

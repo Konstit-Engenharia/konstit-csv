@@ -135,6 +135,9 @@ test('date formats all supported layouts and validates Gregorian dates', async (
     ['31-12-9999', '9999-12-31', '31-12-9999'],
     ['01-02-0001', '0001-02-01', '01-02-0001'],
     ['20260430', '2026-04-30', '30-04-2026'],
+    ['20261117', '2026-11-17', '17-11-2026'],
+    ['29/02/2024', '2024-02-29', '29-02-2024'],
+    ['01/02/0001', '0001-02-01', '01-02-0001'],
   ] as const;
   const invalid = [
     '',
@@ -152,6 +155,10 @@ test('date formats all supported layouts and validates Gregorian dates', async (
     '202611170',
     ' 20261117 ',
     '2026/11/17',
+    '31/04/2026',
+    '29/02/1900',
+    '17/11-2026',
+    '17-11/2026',
     '17-1-2026',
     '202A-11-17',
     '2026-1x-17',
@@ -159,21 +166,28 @@ test('date formats all supported layouts and validates Gregorian dates', async (
     '２０２６１１１７',
   ];
   const values = [...cases.map(([input,]) => input), ...invalid];
-  const input = Buffer.from(values.map((value) => `${value},${value}`).join('\n'));
+  const input = Buffer.from(values.map((value) => `${value},${value},${value}`).join('\n'));
   expect(
     await csv.parse(input, {
-      transform: [csv.column(0).date('YYYY-MM-DD'), csv.column(1).date('DD-MM-YYYY', 'inválida')],
+      transform: [
+        csv.column(0).date('YYYY-MM-DD'),
+        csv.column(1).date('DD-MM-YYYY', 'inválida'),
+        csv.column(2).date('DD/MM/YYYY'),
+      ],
     }),
-  ).toEqual([...cases.map(([, iso, local,]) => [iso, local]), ...invalid.map(() => ['', 'inválida'])]);
+  ).toEqual([
+    ...cases.map(([, iso, local,]) => [iso, local, local.replaceAll('-', '/')]),
+    ...invalid.map(() => ['', 'inválida', '']),
+  ]);
 });
 
 test('date chains work in streamed rows, batch bytes and the strict parser', async () => {
-  const input = Buffer.from(' 20261117 ;bad\n29-02-2024;\n2026-04-01');
+  const input = Buffer.from(' 20261117 ;bad\n29/02/2024;\n2026-04-01');
   const path = join(directory, 'dates.csv');
   await Bun.write(path, input);
-  const transform = [csv.transform().trim().date('DD-MM-YYYY', 'indéfini').upper().on(0, 1)];
+  const transform = [csv.transform().trim().date('DD/MM/YYYY', 'indéfini').upper().on(0, 1)];
   const options = { delimiter: ';' as const, columns: [1, 0] as const, transform };
-  const expected: [string, string][] = [['INDÉFINI', '17-11-2026'], ['INDÉFINI', '29-02-2024'], ['', '01-04-2026']];
+  const expected: [string, string][] = [['INDÉFINI', '17/11/2026'], ['INDÉFINI', '29/02/2024'], ['', '01/04/2026']];
   const streamed = [];
   for await (const rows of csv.rows(path, { ...options, chunkSize: 2 })) {
     streamed.push(...rows);
@@ -187,12 +201,12 @@ test('date chains work in streamed rows, batch bytes and the strict parser', asy
   }
   expect(fromBytes).toEqual(expected);
   using parser = new NativeCsvParser({ strict: true, delimiter: ';', transform });
-  expect(parser.write(Buffer.from(' bad ;2024-02-29'), true)).toEqual([['INDÉFINI', '29-02-2024']]);
+  expect(parser.write(Buffer.from(' bad ;2024-02-29'), true)).toEqual([['INDÉFINI', '29/02/2024']]);
 });
 
 test('date validates the output format and fallback at chain construction', () => {
-  // @ts-expect-error Only the two supported output layouts are valid.
-  expect(() => csv.transform().date('YYYYMMDD')).toThrow('YYYY-MM-DD or DD-MM-YYYY');
+  // @ts-expect-error Compact dates are an input-only format.
+  expect(() => csv.transform().date('YYYYMMDD')).toThrow('YYYY-MM-DD, DD-MM-YYYY or DD/MM/YYYY');
   expect(() => csv.transform().date('DD-MM-YYYY', '\ud800')).toThrow('well-formed');
   // @ts-expect-error A date fallback must be a string.
   expect(() => csv.column(0).date('YYYY-MM-DD', null)).toThrow('well-formed');

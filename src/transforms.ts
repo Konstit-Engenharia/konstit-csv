@@ -23,11 +23,12 @@ enum Op {
   Map,
   DateYmd,
   DateDmy,
+  DateDmySlash,
 }
 type Step =
   | { kind: Op.Trim | Op.Upper | Op.Lower | Op.Unaccent; }
   | { kind: Op.ReplaceAll; search: string; replacement: string; }
-  | { kind: Op.DateYmd | Op.DateDmy; defaultValue: string | undefined; }
+  | { kind: Op.DateYmd | Op.DateDmy | Op.DateDmySlash; defaultValue: string | undefined; }
   | { kind: Op.Map; values: ReadonlyMap<string, string>; defaultValue: string | undefined; };
 
 interface Chain {
@@ -108,13 +109,19 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
       return append({ kind: Op.Map, values: captured, defaultValue });
     },
     date: (format, defaultValue) => {
-      if (format !== 'YYYY-MM-DD' && format !== 'DD-MM-YYYY') {
-        throw new TypeError('date() format must be YYYY-MM-DD or DD-MM-YYYY');
-      }
       if (defaultValue !== undefined) {
         requireText(defaultValue);
       }
-      return append({ kind: format === 'YYYY-MM-DD' ? Op.DateYmd : Op.DateDmy, defaultValue });
+      switch (format) {
+        case 'YYYY-MM-DD':
+          return append({ kind: Op.DateYmd, defaultValue });
+        case 'DD-MM-YYYY':
+          return append({ kind: Op.DateDmy, defaultValue });
+        case 'DD/MM/YYYY':
+          return append({ kind: Op.DateDmySlash, defaultValue });
+        default:
+          throw new TypeError('date() format must be YYYY-MM-DD, DD-MM-YYYY or DD/MM/YYYY');
+      }
     },
   };
 }

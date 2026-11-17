@@ -116,7 +116,7 @@ export interface CsvTransformMethods<TResult = CsvTransform> {
   /** Replace an exact field value once. Unknown keys emit defaultValue when supplied, or the input value otherwise. */
   readonly map: (values: ReadonlyMap<string, string> | Readonly<Record<string, string>>, defaultValue?: string) => TResult;
   /** Format a calendar date. Invalid input emits defaultValue, which defaults to an empty string. */
-  readonly date: (format: 'YYYY-MM-DD' | 'DD-MM-YYYY', defaultValue?: string) => TResult;
+  readonly date: (format: 'YYYY-MM-DD' | 'DD-MM-YYYY' | 'DD/MM/YYYY', defaultValue?: string) => TResult;
 }
 
 /** A reusable sequence of field operations built with csv.transform(). */
