@@ -276,6 +276,21 @@ describe('NativeCsvParser batches and materialization', () => {
     }
   });
 
+  test('owns decoded strings and respects UTF-8 field boundaries across consecutive rows', () => {
+    const ascii = Array.from({ length: 100 }, (_, i) => `ascii field ${i}`);
+    const prefix = Buffer.from(`${ascii.join(',')}\n`);
+    // Removing the comma between these invalid fields would form a valid four-byte code point.
+    const invalid = Buffer.from([0x61, 0xf0, 0x9f, 0x2c, 0x98, 0x80, 0x62]);
+    const long = 'x'.repeat(257);
+    const suffix = Buffer.from(`,é中🙂,${long},tail\n`);
+    using parser = new NativeCsvParser();
+    using batch = parser.writeBatch(Buffer.concat([prefix, invalid, suffix]), true);
+    const rows = batch.rows();
+    batch.data().fill(0);
+    batch.close();
+    expect(rows).toEqual([ascii, ['a\uFFFD', '\uFFFD\uFFFDb', 'é中🙂', long, 'tail']]);
+  });
+
   test('short-field materialization observes byte and offset mutations with reused rows', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     using batch = parser.writeBatch(Buffer.from(';a;SP;long\n'), true);

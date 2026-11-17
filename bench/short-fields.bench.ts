@@ -4,13 +4,13 @@ import {
 } from 'mitata';
 import { NativeCsvParser } from '../src/index.ts';
 
-// Compare the same cases on the unchanged revision and the short-field variant.
-// Mixed rows approximate the measured empty/one-byte/two-byte field distribution;
-// long-only rows detect the cost of extra branches when none of them succeeds.
+// Short rows approximate the empty/one-byte/two-byte field distribution of example.csv.
+// ASCII-only and mixed UTF-8 rows measure the effect of decoding nearby fields together.
 // Parsing and fixture construction stay outside the timed materialization loop.
 for (const rowCount of [1, 1_024, 16_384]) {
   summary(() => {
-    for (const shortFields of [true, false]) {
+    for (const kind of ['ASCII short', 'mixed short', 'long-only'] as const) {
+      const shortFields = kind !== 'long-only';
       const rows: string[][] = [];
       let expectedCharacters = 0;
       for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
@@ -22,9 +22,9 @@ for (const rowCount of [1, 1_024, 16_384]) {
             return String(rowIndex % 10);
           }
           if (shortFields && column < 15) {
-            return column === 14 ? 'é' : String((rowIndex + column) % 100).padStart(2, '0');
+            return column === 14 && kind === 'mixed short' ? 'é' : String((rowIndex + column) % 100).padStart(2, '0');
           }
-          return column % 2 === 0 ? `field-${rowIndex}-${column}` : 'ação multibyte';
+          return kind === 'ASCII short' || column % 2 === 0 ? `field-${rowIndex}-${column}` : 'ação multibyte';
         });
         rows.push(row);
         for (const field of row) {
@@ -32,7 +32,7 @@ for (const rowCount of [1, 1_024, 16_384]) {
         }
       }
       const input = Buffer.from(`${rows.map((row) => row.join(';')).join('\n')}\n`);
-      const name = `${shortFields ? 'mixed short' : 'long-only'} fields, ${rowCount} rows`;
+      const name = `${kind} fields, ${rowCount} rows`;
       bench(name, function*() {
         using parser = new NativeCsvParser({ delimiter: ';' });
         using batch = parser.writeBatch(input, true);

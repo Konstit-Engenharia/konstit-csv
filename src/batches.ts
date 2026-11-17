@@ -1,5 +1,9 @@
 import { read } from 'bun:ffi';
-import { decodeMaterializedField } from './materialize-field.js';
+import { isAscii } from 'node:buffer';
+import {
+  copyLatin1Range,
+  decodeMaterializedField,
+} from './materialize-field.js';
 import {
   EMPTY_BUFFER,
   native,
@@ -23,6 +27,10 @@ import type {
 } from './types.js';
 
 const visitBatchRows = Symbol('visitBatchRows');
+// Bound the backing string a caller can retain by keeping one field.
+const ASCII_WINDOW_BYTES = 1024;
+// Long fields amortize a direct decoder call without a speculative copy of nearby bytes.
+const MAX_WINDOW_FIELD_BYTES = 64;
 
 /**
  * A reusable, low-allocation view over one row in a {@link NativeCsvBatch}.
@@ -350,6 +358,9 @@ export class NativeCsvBatch {
       return target;
     }
 
+    let windowStart = 0;
+    let windowEnd = 0;
+    let asciiWindow = '';
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
       const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
@@ -360,7 +371,21 @@ export class NativeCsvBatch {
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
         const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
         const column = fieldIndex - fieldStart;
-        row[column] = decodeMaterializedField(data, start, end, 'utf8');
+        const length = end - start;
+        let value: string | undefined;
+        // In an ASCII window byte offsets are also string offsets. Empty fields
+        // and one- or two-byte fields already have a cheap decoder.
+        if (length > 2 && length <= MAX_WINDOW_FIELD_BYTES) {
+          if (start < windowStart || end > windowEnd) {
+            windowStart = start;
+            windowEnd = Math.min(dataLength, start + ASCII_WINDOW_BYTES);
+            asciiWindow = isAscii(data.subarray(start, windowEnd)) ? copyLatin1Range(data, start, windowEnd) : '';
+          }
+          if (asciiWindow.length > 0) {
+            value = asciiWindow.slice(start - windowStart, end - windowStart);
+          }
+        }
+        row[column] = value ?? decodeMaterializedField(data, start, end, 'utf8');
         start = end;
       }
       target[rowIndex] = row;
