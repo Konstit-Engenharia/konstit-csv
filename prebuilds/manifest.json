@@ -23,25 +23,25 @@
       "toolchains/darwin-x64-clang.cmake",
       "toolchains/linux-x64-clang.cmake"
     ],
-    "sha256": "ed4015d59ccb5902dff9c175abb5fd7f5493938b978226b29e1825a478cd1933"
+    "sha256": "8cf6e4cf7d04f39d17bb6707531a721b55ac1774f82a809dab59ef5834b9f5b2"
   },
   "targets": [
     {
       "file": "darwin-arm64/libcsv_native.dylib",
-      "sha256": "199d98e401fb15e649ff2ae1939e385be9bf5dbce223011a08c2667d25866fb9",
-      "size": 929088,
+      "sha256": "d74dcd858ace417620b3aea2718898d67304b9b8be23d109b64095b5a3535037",
+      "size": 929232,
       "target": "darwin-arm64"
     },
     {
       "file": "darwin-x64/libcsv_native.dylib",
-      "sha256": "414b3944e555f2a7f31947dbeaede7c61b99983b3f8d314142048fed46968d07",
-      "size": 978856,
+      "sha256": "9afe75e79d322821488587aed22f42c5e87bea786c6ea14c4f619bb380ced560",
+      "size": 983104,
       "target": "darwin-x64"
     },
     {
       "file": "linux-x64/libcsv_native.so",
-      "sha256": "f96a710a84d14214ec158fe70989f2769b39cf21cad10599ed6c27c362abde2d",
-      "size": 1557728,
+      "sha256": "61f9d54a3b1806e5fb3522a2248219717448b930c90974d9c5de90d6b19925d5",
+      "size": 1557928,
       "target": "linux-x64"
     }
   ]

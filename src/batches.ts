@@ -360,15 +360,22 @@ export class NativeCsvBatch {
     let text = '';
     let byteIndexed = true;
     let utf16Offsets: Int16Array | undefined;
+    const flags = native.symbols.csv_batch_quoted_rows_ptr(this.#requireHandle());
+    const quotedRows = flags === null ? undefined : new Uint8Array(toArrayBuffer(flags, 0, rowCount));
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
       const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
       const existing = target[rowIndex];
       const row = existing === undefined ? [] : existing;
       row.length = fieldEnd - fieldStart;
+      // In a quoted span, the opening quote, closing quote and terminator surround the payload.
+      const leading = quotedRows?.[rowIndex] ?? 0;
+      const trailing = leading * 2;
       let start = fieldStart < fieldEnd ? offsetAt(fieldOffsetWords, fieldStart, 'field offset', dataLength) : 0;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
-        const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
+        const rawEnd = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
+        const end = rawEnd - trailing;
+        start += leading;
         const column = fieldIndex - fieldStart;
         const length = end - start;
         let value: string | undefined;
@@ -400,7 +407,7 @@ export class NativeCsvBatch {
           }
         }
         row[column] = value ?? decodeMaterializedField(data, start, end, 'utf8');
-        start = end;
+        start = rawEnd;
       }
       target[rowIndex] = row;
     }
@@ -853,14 +860,25 @@ function indexUtf16Boundaries(bytes: Buffer, offsets: Int16Array): boolean {
 }
 
 function offsetAt(offsets: Uint32Array, index: number, label: string | number, upperBound: number): number {
+  // Keep single-word reads small enough to inline in the field loop.
   const wordIndex = index * 2;
   const low = offsets[wordIndex];
   const high = offsets[wordIndex + 1];
   if (high === 0 && low !== undefined && low <= upperBound && Number.isInteger(index)) {
     return low;
   }
+  return checkedWideOffset(low, high, index, label, upperBound);
+}
+
+function checkedWideOffset(
+  low: number | undefined,
+  high: number | undefined,
+  index: number,
+  label: string | number,
+  upperBound: number,
+): number {
   const description = typeof label === 'number' ? `row ${label} offset` : label;
-  if (low === undefined || high === undefined || wordIndex % 2 !== 0) {
+  if (low === undefined || high === undefined || !Number.isInteger(index)) {
     throw new RangeError(`${description} index out of range: ${index}`);
   }
   if (high > MAX_SAFE_OFFSET_HIGH_WORD) {

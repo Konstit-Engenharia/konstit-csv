@@ -116,6 +116,80 @@ test('ordered mappings interrupt ASCII case folding, including on empty fields',
   expect(rows).toEqual([['sao', 'keep'], ['c', 'keep']]);
 });
 
+test.each(['utf8', 'latin1'] as const)('materialized cleanup rows mix quoted spans and UTF-8 fallback (%s)', async (encoding) => {
+  const path = join(directory, `cleanup-spans-${encoding}.csv`);
+  const clean = csv.transform().upper().trim().unaccent().lower().upper();
+  const transform = [clean.on(0, 1, 2)];
+  const text = '"abc";"xYz";""\n'
+    + '" \t\n\v\f\rabc \t\n\v\f\r";"\t\r";"kept"\n'
+    + '"\u001cabc\u001c";"\u0000";"tail"\n'
+    + '"\u0085Éß\u00a0";"ÉTÉ";"µcafé"\n'
+    + '" a""b ";" Ab\nCd ";"tail"\r\n'
+    + 'unquoted; Last ;end\n'
+    + '"ascii";"after-fallback";"row"\n'
+    + '"final";"mixed";"case"';
+  const input = Buffer.from(text, encoding);
+  await Bun.write(path, input);
+  const expected = [
+    ['ABC', 'XYZ', ''],
+    ['ABC', '', 'KEPT'],
+    ['\u001cABC\u001c', '\u0000', 'TAIL'],
+    ['ESS', 'ETE', 'ΜCAFE'],
+    ['A"B', 'AB\nCD', 'TAIL'],
+    ['UNQUOTED', 'LAST', 'END'],
+    ['ASCII', 'AFTER-FALLBACK', 'ROW'],
+    ['FINAL', 'MIXED', 'CASE'],
+  ];
+  const options = { encoding, delimiter: ';' as const, fixedColumns: 3, transform };
+  expect(await csv.parse(input, options)).toEqual(expected);
+  for (const chunkSize of [1, 67, 4096]) {
+    const rows = [];
+    for await (const batch of csv.rows(path, { ...options, chunkSize, reuseArrays: true })) {
+      rows.push(...batch.map((row) => [...row]));
+    }
+    expect(rows).toEqual(expected);
+  }
+  const selected = [];
+  for await (const batch of csv.rows(path, { ...options, skipRows: 1, limit: 3 })) {
+    selected.push(...batch);
+  }
+  expect(selected).toEqual(expected.slice(1, 4));
+  const packed = [];
+  for await (using batch of csv.batches(path, options)) {
+    const rows = expected.slice(packed.length, packed.length + batch.rowCount);
+    expect(batch.data()).toEqual(Buffer.from(rows.flat().join('')));
+    packed.push(...batch.rows());
+  }
+  expect(packed).toEqual(expected);
+});
+
+test('materialized quoted cleanup handles alphabetic delimiters and nonuniform chains', async () => {
+  const path = join(directory, 'cleanup-spans-delimiter.csv');
+  const input = Buffer.from('"bc"a"De"a"fg"\n"hi"a"jk"a"lm"\n');
+  await Bun.write(path, input);
+  const clean = csv.transform().trim().upper().unaccent();
+  const uniform = { delimiter: 'a' as const, transform: [clean.on(0, 1, 2)] };
+  const rows = [];
+  for await (const batch of csv.rows(path, uniform)) {
+    rows.push(...batch);
+  }
+  expect(rows).toEqual([['BC', 'DE', 'FG'], ['HI', 'JK', 'LM']]);
+  for (const chain of [csv.transform().lower(), csv.transform().unaccent()]) {
+    const options = { delimiter: 'a' as const, transform: [chain.on(0, 1, 2)] };
+    const result = [];
+    for await (const batch of csv.rows(path, options)) {
+      result.push(...batch);
+    }
+    expect(result).toEqual(await csv.parse(input, options));
+  }
+  const nonuniform = { delimiter: 'a' as const, transform: [clean.on(0), csv.column(1).lower(), csv.column(2).map({ fg: '🙂' })] };
+  const fallback = [];
+  for await (const batch of csv.rows(path, nonuniform)) {
+    fallback.push(...batch);
+  }
+  expect(fallback).toEqual(await csv.parse(input, nonuniform));
+});
+
 test('Unicode transformations distinguish diacritics, other marks and standalone symbols', async () => {
   const cases = [
     ['São João', 'Sao Joao'],

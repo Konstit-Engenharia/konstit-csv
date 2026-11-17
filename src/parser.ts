@@ -102,6 +102,7 @@ export function createPreparedParser(
   columns?: CsvColumns,
   program?: readonly CsvNativeFilterProgramEntry[],
   transform?: readonly CsvTransform[],
+  output: 'batches' | 'rows' = 'batches',
 ): NativeCsvParser {
   // Some callers validate or project the full batch during materialization.
   if (options.columns !== columns) {
@@ -120,7 +121,7 @@ export function createPreparedParser(
     columns,
     filterProgram: program,
     transform: options.strict && options.columns && transform ? selectTransforms(transform, options.columns) : transform,
-  });
+  }, output);
 }
 
 interface PreparedNativeWriter {
@@ -255,9 +256,12 @@ export class NativeCsvParser {
   #validator: CsvStrictSchemaValidator | undefined;
   #captureSkippedHeader = false;
 
-  static [createSchemaParser](options: NativeCsvParserOptions): NativeCsvParser {
+  static [createSchemaParser](options: NativeCsvParserOptions, output: 'batches' | 'rows'): NativeCsvParser {
     const validator = strictSchemaValidator(options);
     const parser = new NativeCsvParser(options);
+    if (output === 'rows' && !parser.#strict && options.transform?.length) {
+      native.symbols.csv_parser_enable_transformed_quoted_spans(parser.#requireHandle());
+    }
     parser.#validator = validator;
     if (validator !== undefined && (options.skipRows ?? 0) > 0) {
       parser.#captureSkippedHeader = true;

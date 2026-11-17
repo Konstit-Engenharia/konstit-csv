@@ -421,6 +421,16 @@ bool is_ascii(const uint8_t* data, size_t len) {
   return combined < 0x80;
 }
 
+bool quoted_record_may_need_trim(const uint8_t* data, size_t len) {
+  // A space or control byte beside a quote may require per-field trimming.
+  // The first opening quote and the final LF are syntax.
+  uint8_t edge_space = 0;
+  for (size_t i = 1; i + 1 < len; ++i) {
+    edge_space |= (data[i] <= ' ') & ((data[i - 1] == '"') | (data[i + 1] == '"'));
+  }
+  return edge_space != 0;
+}
+
 void append_latin1_scalar(std::string& out, const uint8_t* data, size_t len) {
   size_t ascii_start = 0;
   for (size_t i = 0; i < len; ++i) {
@@ -612,6 +622,12 @@ public:
   }
   bool add_transform_pair(uint32_t column, std::string_view key, std::string_view value) {
     return !configuration_initialized_ && transforms_.add_pair(column, key, value);
+  }
+
+  void enable_transformed_quoted_spans() {
+    if (prepared_quoted_records_ && transform_matched_rows_ && filters_.empty()) {
+      transforms_.prepare_ascii_cleanup();
+    }
   }
 
   // Strict schema validation reads the original batch before the caller requests its transformed copy.
@@ -1517,20 +1533,13 @@ private:
 
     size_t output = batch_->data.size();
     if (transform_matched_rows_) {
-      if (!append_transformed_quoted_record(data, cursor, field_count, field_at)) {
+      if (!append_transformed_quoted_record(data, cursor, field_count, ends, field_at)) {
         fail_parse("invalid field transform");
         return cursor;
       }
     } else if (layout_ == batch_layout::latin1_quoted_spans && prepared_configuration_) {
-      // Each span includes its opening quote, closing quote and one terminator.
       batch_->data.append(reinterpret_cast<const char*>(data), cursor);
-      const size_t first = batch_->field_offsets.size();
-      batch_->field_offsets.resize(first + field_count);
-      for (size_t column = 0; column < field_count; ++column) {
-        batch_->field_offsets[first + column] = output + ends[column] + 2;
-      }
-      batch_->quoted_rows.resize(batch_->row_offsets.size(), 0);
-      batch_->quoted_rows.back() = 1;
+      finish_quoted_spans(output, ends, field_count);
     } else if (encoding_ == csv_encoding::latin1 && !is_ascii(data, cursor)) {
       for (size_t column = 0; column < field_count; ++column) {
         const auto field = field_at(column);
@@ -1558,9 +1567,38 @@ private:
     return cursor;
   }
 
-  bool append_transformed_quoted_record(const uint8_t* data, size_t len, size_t field_count, const auto& field_at) {
-    // One ASCII check covers all payloads in this complete record.
+  void finish_quoted_spans(size_t output, const std::array<uint16_t, 64>& ends, size_t field_count) {
+    // Each span includes its opening quote, closing quote and one terminator.
+    const size_t first = batch_->field_offsets.size();
+    batch_->field_offsets.resize(first + field_count);
+    for (size_t column = 0; column < field_count; ++column) {
+      batch_->field_offsets[first + column] = output + ends[column] + 2;
+    }
+    batch_->quoted_rows.resize(batch_->row_offsets.size(), 0);
+    batch_->quoted_rows.back() = 1;
+  }
+
+  bool append_transformed_quoted_record(const uint8_t* data, size_t len, size_t field_count,
+                                        const std::array<uint16_t, 64>& ends, const auto& field_at) {
+    const auto* uniform = transforms_.uniform_ascii_cleanup(field_count);
     const bool ascii = is_ascii(data, len);
+    if (ascii && uniform != nullptr && (!uniform->trim || !quoted_record_may_need_trim(data, len))) {
+      const size_t output = batch_->data.size();
+      // The materializer skips syntax bytes, so alphabetic delimiters may be cased too.
+      if (uniform->casing.has_value()) {
+        const uint8_t first = *uniform->casing == transform_kind::upper ? 'a' : 'A';
+        const uint8_t last = first + ('z' - 'a');
+        batch_->data.resize(output + len);
+        char* copied = batch_->data.data() + output;
+        for (size_t i = 0; i < len; ++i) {
+          copied[i] = data[i] >= first && data[i] <= last ? data[i] ^ ('a' ^ 'A') : data[i];
+        }
+      } else {
+        batch_->data.append(reinterpret_cast<const char*>(data), len);
+      }
+      finish_quoted_spans(output, ends, field_count);
+      return true;
+    }
     if (ascii && transforms_.only_ascii_cleanup()) {
       // Each field has two quotes and a terminator. Trim and ASCII casing fit in the original payload.
       size_t output = batch_->data.size();
@@ -3078,6 +3116,13 @@ CSV_EXPORT void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_
 
 CSV_EXPORT void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter) {
   return csv_parser_create_latin1_quoted_rows(delimiter, 0);
+}
+
+// Internal materialization path. Ordinary batch callers need packed UTF-8 offsets.
+CSV_EXPORT void csv_parser_enable_transformed_quoted_spans(void* parser) {
+  if (parser != nullptr) {
+    csv_native::checked_parser(parser)->enable_transformed_quoted_spans();
+  }
 }
 
 CSV_EXPORT void csv_parser_destroy(void* parser) { delete csv_native::checked_parser(parser); }

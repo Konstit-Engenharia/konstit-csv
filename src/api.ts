@@ -139,7 +139,7 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
     >;
     return;
   }
-  using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters, options.transform);
+  using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters, options.transform, 'rows');
   for await (using batch of parseFileChunks(input, parser, options.limit)) {
     yield materializeRows<TColumns>(batch, columns, projected, reusableRows);
   }

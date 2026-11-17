@@ -170,6 +170,22 @@ bool field_transforms::add_pair(uint32_t column, std::string_view key, std::stri
   return true;
 }
 
+void field_transforms::prepare_ascii_cleanup() {
+  uniform_ascii_columns_ = 0;
+  if (!only_ascii_cleanup_ || columns_.empty())
+    return;
+  const auto& first = columns_.front();
+  uniform_ascii_cleanup_ = {first.trim_ascii, first.ascii_case};
+  for (const auto& chain : columns_) {
+    if (chain.trim_ascii != first.trim_ascii || chain.ascii_case != first.ascii_case)
+      break;
+    ++uniform_ascii_columns_;
+  }
+  // Unbound columns are identities, so a uniform identity prefix also covers them.
+  if (uniform_ascii_columns_ == columns_.size() && !first.trim_ascii && !first.ascii_case.has_value())
+    uniform_ascii_columns_ = std::numeric_limits<size_t>::max();
+}
+
 size_t field_transforms::write_ascii(char* out, size_t column, std::string_view field) const {
   if (field.empty())
     return 0;

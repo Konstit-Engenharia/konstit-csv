@@ -30,9 +30,18 @@ struct field_transform {
 
 class field_transforms {
 public:
+  struct ascii_cleanup {
+    bool trim = false;
+    std::optional<transform_kind> casing;
+  };
+
   bool empty() const { return columns_.empty(); }
   bool add(uint32_t column, uint32_t kind, std::optional<std::string_view> default_value);
   bool add_pair(uint32_t column, std::string_view key, std::string_view value);
+  void prepare_ascii_cleanup();
+  const ascii_cleanup* uniform_ascii_cleanup(size_t field_count) const {
+    return field_count <= uniform_ascii_columns_ ? &uniform_ascii_cleanup_ : nullptr;
+  }
   bool append(std::string& destination, size_t column, std::string_view field, bool known_ascii = false) const;
   bool only_ascii_cleanup() const { return only_ascii_cleanup_; }
   // ASCII cleanup never expands the field. The caller reserves room for its original width.
@@ -48,5 +57,7 @@ private:
   };
   std::vector<column_chain> columns_;
   bool only_ascii_cleanup_ = true;
+  ascii_cleanup uniform_ascii_cleanup_;
+  size_t uniform_ascii_columns_ = 0;
 };
 } // namespace csv_native

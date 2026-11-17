@@ -85,6 +85,10 @@ const CSV_SYMBOLS = {
   // C signature:
   // void* csv_parser_create_prepared(int encoding, uint8_t delimiter, uint32_t fixed_columns);
   csv_parser_create_prepared: { args: ['int', 'u8', 'u32'], returns: 'ptr' },
+
+  // C signature:
+  // void csv_parser_enable_transformed_quoted_spans(void* parser);
+  csv_parser_enable_transformed_quoted_spans: { args: ['ptr'], returns: 'void' },
   // C signature:
   // void csv_parser_set_row_selection(void* parser, uint64_t skip, uint64_t limit, bool capture_header);
   csv_parser_set_row_selection: { args: ['ptr', 'u64', 'u64', 'bool'], returns: 'void' },

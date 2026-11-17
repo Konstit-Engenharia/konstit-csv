@@ -21,6 +21,8 @@ void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32
 void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
 void csv_parser_reset_stream(void* parser);
+bool csv_parser_add_transform(void* parser, uint32_t column, uint32_t kind);
+void csv_parser_enable_transformed_quoted_spans(void* parser);
 bool csv_parser_prepare(void* parser, bool has_projection, const uint32_t* selected_columns,
                         uint64_t selected_columns_len, const uint32_t* filter_descriptors, uint64_t filter_count,
                         const uint8_t* values_data, uint64_t values_data_len, const uint32_t* value_offsets,
@@ -1164,6 +1166,34 @@ TEST_CASE("prepared Latin-1 rows match ASCII predicates across quoted records, f
         REQUIRE(flags[1] == 0);     // escaped quotes
         REQUIRE(flags.back() == 0); // EOF without a terminator
       }
+    }
+  }
+}
+
+TEST_CASE("materialized transformed spans mix raw ASCII and packed UTF-8 across chunk splits") {
+  const std::string input = "\"abc\";\"\"\n\" a \";\"b\"\n\"\xe9\";\"c\"\n\"x\";\"yz\"\n";
+  const std::vector<std::vector<std::string>> expected = {{"ABC", ""}, {"A", "B"}, {"E", "C"}, {"X", "YZ"}};
+  const uint32_t offsets[] = {0};
+  for (size_t split = 0; split <= input.size(); ++split) {
+    CAPTURE(split);
+    void* parser = csv_parser_create(1, ';');
+    REQUIRE(parser != nullptr);
+    for (uint32_t column = 0; column < 2; ++column) {
+      REQUIRE(csv_parser_add_transform(parser, column, 0)); // trim
+      REQUIRE(csv_parser_add_transform(parser, column, 1)); // upper
+      REQUIRE(csv_parser_add_transform(parser, column, 3)); // unaccent
+    }
+    REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, nullptr, 0, nullptr, 0, offsets, 0));
+    csv_parser_enable_transformed_quoted_spans(parser);
+    const auto* data = reinterpret_cast<const uint8_t*>(input.data());
+    std::vector<std::vector<std::string>> rows;
+    std::vector<uint8_t> flags;
+    append_batch_rows(csv_parser_write_prepared_batch(parser, data, split, false), rows, &flags);
+    append_batch_rows(csv_parser_write_prepared_batch(parser, data + split, input.size() - split, true), rows, &flags);
+    csv_parser_destroy(parser);
+    REQUIRE(rows == expected);
+    if (split == input.size()) {
+      REQUIRE(flags == std::vector<uint8_t>{1, 0, 0, 1});
     }
   }
 }
