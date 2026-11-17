@@ -105,6 +105,7 @@ struct csv_split_offsets_batch {
 };
 
 constexpr size_t npos = std::numeric_limits<size_t>::max();
+constexpr unsigned quoted_record_miss_limit = 4;
 constexpr uint32_t max_column_index = 2024;
 constexpr uint64_t max_projection_length = 2024;
 constexpr uint16_t no_selected_output = std::numeric_limits<uint16_t>::max();
@@ -401,6 +402,14 @@ std::unique_ptr<csv_split_offsets_batch> find_csv_safe_split_offsets(const char*
     batch->offsets.push_back(file_size);
   }
   return batch;
+}
+
+bool is_ascii(const uint8_t* data, size_t len) {
+  uint8_t combined = 0;
+  for (size_t i = 0; i < len; ++i) {
+    combined |= data[i];
+  }
+  return combined < 0x80;
 }
 
 void append_latin1_scalar(std::string& out, const uint8_t* data, size_t len) {
@@ -747,7 +756,7 @@ public:
     strict_quote_syntax_ = strict;
     parse_failed_ = false;
     emitted_rows_ = 0;
-    parse(data, len);
+    parse<true>(data, len);
     if (!parse_failed_ && final && !limit_reached()) {
       finish_stream();
     } else if (!parse_failed_) {
@@ -1056,7 +1065,7 @@ private:
     strict_quote_syntax_ = strict;
     parse_failed_ = false;
     emitted_rows_ = 0;
-    parse(data, len);
+    parse<true>(data, len);
     if (final && !limit_reached()) {
       finish_stream();
     } else {
@@ -1278,6 +1287,7 @@ private:
     }
 
     size_t i = 0;
+    unsigned misses_left = quoted_record_miss_limit;
     while (i < len) {
       if (in_quotes_) {
         if (pending_quote_) {
@@ -1337,6 +1347,18 @@ private:
       }
 
       if (byte == '"' && at_field_start_) {
+        if (!saw_row_data_ && current_column_ == 0 && misses_left != 0) {
+          const size_t consumed = try_quoted_record(data + i, len - i);
+          if (consumed != 0) {
+            if (parse_failed_ || limit_reached()) {
+              return;
+            }
+            i += consumed;
+            misses_left = quoted_record_miss_limit;
+            continue;
+          }
+          --misses_left;
+        }
         const size_t close_quote = find_complete_quoted_field_close(data + i, len - i);
         if (close_quote != npos) {
           append_latin1_batch_quoted_field(data + i, close_quote);
@@ -1457,6 +1479,10 @@ private:
       return 0;
     }
     if (rows_to_skip_ != 0) {
+      // Strict reads validate skipped widths and may capture the original header.
+      if (strict_quote_syntax_) {
+        return 0;
+      }
       --rows_to_skip_;
       return cursor;
     }
@@ -1486,7 +1512,7 @@ private:
         fail_parse("invalid field transform");
         return cursor;
       }
-    } else if (layout_ == batch_layout::latin1_quoted_spans) {
+    } else if (layout_ == batch_layout::latin1_quoted_spans && prepared_configuration_) {
       // Each span includes its opening quote, closing quote and one terminator.
       batch_->data.append(reinterpret_cast<const char*>(data), cursor);
       const size_t first = batch_->field_offsets.size();
@@ -1496,29 +1522,36 @@ private:
       }
       batch_->quoted_rows.resize(batch_->row_offsets.size(), 0);
       batch_->quoted_rows.back() = 1;
+    } else if (encoding_ == csv_encoding::latin1 && !is_ascii(data, cursor)) {
+      for (size_t column = 0; column < field_count; ++column) {
+        const auto field = field_at(column);
+        append_latin1(batch_->data, reinterpret_cast<const uint8_t*>(field.data()), field.size());
+        batch_->field_offsets.push_back(batch_->data.size());
+      }
     } else {
       const size_t payload_size = cursor - 3 * field_count;
       batch_->data.resize(output + payload_size);
+      const size_t first = batch_->field_offsets.size();
+      batch_->field_offsets.resize(first + field_count);
       for (size_t column = 0; column < field_count; ++column) {
         const auto field = field_at(column);
         if (!field.empty()) {
           std::memcpy(batch_->data.data() + output, field.data(), field.size());
         }
         output += field.size();
-        batch_->field_offsets.push_back(output);
+        batch_->field_offsets[first + column] = output;
       }
     }
     finish_batch_row();
-    record_emitted_row();
+    if (!parse_failed_) {
+      record_emitted_row();
+    }
     return cursor;
   }
 
   bool append_transformed_quoted_record(const uint8_t* data, size_t len, size_t field_count, const auto& field_at) {
     // One ASCII check covers all payloads in this complete record.
-    uint8_t combined = 0;
-    for (size_t i = 0; i < len; ++i)
-      combined |= data[i];
-    const bool ascii = combined < 0x80;
+    const bool ascii = is_ascii(data, len);
     if (ascii && transforms_.only_ascii_cleanup()) {
       // Each field has two quotes and a terminator. Trim and ASCII casing fit in the original payload.
       size_t output = batch_->data.size();
@@ -1548,9 +1581,7 @@ private:
   }
 
   bool supports_quoted_records() const {
-    const bool supported_layout =
-        transform_matched_rows_ ? layout_ == batch_layout::utf8 : layout_ != batch_layout::utf8;
-    if (!supported_layout || !conjunctive_filters_ || projection_enabled_) {
+    if ((transform_matched_rows_ && layout_ != batch_layout::utf8) || !conjunctive_filters_ || projection_enabled_) {
       return false;
     }
     for (const auto& filter : filters_) {
@@ -1592,7 +1623,6 @@ private:
     size_t i = 0;
     // Skipping a rejected tail ignores delimiters, which fixed-width validation needs to count.
     const bool can_skip_rejected_tail = !strict_quote_syntax_ && fixed_columns_ == 0;
-    constexpr unsigned quoted_record_miss_limit = 4;
     unsigned misses_left = quoted_record_miss_limit;
     const auto finish_borrowed_field = [this, data, len, can_skip_rejected_tail](std::string_view field,
                                                                                  size_t terminator_index) -> size_t {

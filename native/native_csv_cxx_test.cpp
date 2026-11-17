@@ -406,6 +406,40 @@ TEST_CASE("native C ABI decodes latin1 batches to utf8") {
   csv_batch_destroy(batch);
 }
 
+TEST_CASE("plain native batches keep quoted payload bytes and offsets across chunk boundaries") {
+  const std::string binary{"\0\xe9\xff", 3};
+  const std::string input = "\"a\";\"\";\"b\"\n"
+                            "\"x;y\";\"" +
+                            binary +
+                            "\";\"c\nd\"\n"
+                            "plain;\"e\"\"f\";g\r\n"
+                            "\"last\";\"\";\"row\"\n";
+  const auto* data = reinterpret_cast<const uint8_t*>(input.data());
+  for (int encoding : {0, 1}) {
+    const auto payload = encoding == 0
+                             ? binary
+                             : decode_latin1_reference(reinterpret_cast<const uint8_t*>(binary.data()), binary.size());
+    const std::vector<std::vector<std::string>> expected = {
+        {"a", "", "b"}, {"x;y", payload, "c\nd"}, {"plain", "e\"f", "g"}, {"last", "", "row"}};
+    for (bool fixed : {false, true}) {
+      for (size_t split = 0; split <= input.size(); ++split) {
+        CAPTURE(encoding, fixed, split);
+        void* parser = csv_parser_create(encoding, ';');
+        REQUIRE(parser != nullptr);
+        const auto write = [&](const uint8_t* chunk, size_t len, bool final) {
+          return fixed ? csv_parser_write_fixed_batch(parser, chunk, len, final, 3)
+                       : csv_parser_write_batch(parser, chunk, len, final);
+        };
+        std::vector<std::vector<std::string>> rows;
+        append_batch_rows(write(data, split, false), rows);
+        append_batch_rows(write(data + split, input.size() - split, true), rows);
+        csv_parser_destroy(parser);
+        REQUIRE(rows == expected);
+      }
+    }
+  }
+}
+
 TEST_CASE("native C ABI decodes full latin1 high range to utf8") {
   std::vector<uint8_t> input;
   std::string expected;

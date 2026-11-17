@@ -94,6 +94,16 @@ test.each(['utf8', 'latin1'] as const)('strict %s validation includes the skippe
   await rejects(collect(csv.rows(path, { ...fileOptions, minDataRows: 3 })), /got 2/);
 });
 
+test.each(['utf8', 'latin1'] as const)('strict %s quoted batches capture the skipped header and validate widths', async (encoding) => {
+  const options = { encoding, strict: true, expectedHeaders: ['id', 'région'], skipRows: 1, limit: 1 } as const;
+  const input = Buffer.from('"id","région"\n"1","São Paulo"\n"wrong width"\n', encoding);
+  for (const schema of [options, { ...options, fixedColumns: 2 }]) {
+    expect(await csv.parse(input, schema)).toEqual([['1', 'São Paulo']]);
+    await rejects(csv.parse(input, { ...schema, skipRows: 2 }), /column count mismatch/);
+    await rejects(csv.parse(input, { ...schema, expectedHeaders: ['wrong', 'header'] }), /header/);
+  }
+});
+
 test('a large filtered write preserves long quoted fields, row limits, and width errors', () => {
   const payload = 'x,'.repeat(192 * 1024);
   const first = `keep,"a""b\n${payload}"\r\n`;
