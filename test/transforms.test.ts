@@ -29,9 +29,9 @@ test.each(['utf8', 'latin1'] as const)('post-filter chains agree across all read
   await Bun.write(path, input);
   const entries = new Map([['', '❤️']]);
   const transform = [
-    csv.column(0).trim().removeDiacritics().upper().replaceAll(' ', '-'),
+    csv.column(0).trim().unaccent().upper().replaceAll(' ', '-'),
     csv.column(1).trim().lower(),
-    csv.column(2).lookup(entries),
+    csv.column(2).map(entries),
   ];
   entries.clear();
   const options = { columns: [2, 0, 1] as const, encoding, skipRows: 1, transform, delimiter: ';' as const };
@@ -79,7 +79,7 @@ test('Unicode transformations distinguish diacritics, other marks and standalone
     ['a\u034f\u0301', 'a\u034f'],
     ['a\u05a2\u0301', 'a\u05a2'], // U+05A2 lacks the Diacritic property in Unicode 15.1.
   ] as const;
-  const stripped = csv.column(0).removeDiacritics();
+  const stripped = csv.column(0).unaccent();
   expect(await csv.parse(Buffer.from(cases.map(([s,]) => s).join('\n')), { transform: [stripped] }))
     .toEqual(cases.map(([, s,]) => [s]));
   const lower = csv.column(0).trim().lower();
@@ -100,7 +100,7 @@ test('strict validation reads the original header before projection and transfor
     expectedHeaders: ['cité', 'val'],
     columns: [0] as const,
     limit: 2,
-    transform: [csv.column(0).removeDiacritics().lower(), csv.column(1).replaceAll('1', 'one')],
+    transform: [csv.column(0).unaccent().lower(), csv.column(1).replaceAll('1', 'one')],
   };
   expect(await csv.parse(input, options)).toEqual([['cite'], ['a']]);
   expect(await csv.parse(input, { ...options, skipRows: 1 })).toEqual([['a'], ['b']]);
@@ -119,7 +119,7 @@ test('chains are reusable and validate their operands and targets', async () => 
   const column = csv.column(0);
   const prefix = column.replaceAll('aa', 'a');
   const source = Buffer.from('aaa\nÉ\ne\u0301');
-  expect(await csv.parse(source, { transform: [prefix.lookup(new Map([['É', 'hit'], ['e\u0301', 'separate']]))] }))
+  expect(await csv.parse(source, { transform: [prefix.map(new Map([['É', 'hit'], ['e\u0301', 'separate']]))] }))
     .toEqual([['aa'], ['hit'], ['separate']]);
   expect(await csv.parse(Buffer.from('aaa'), { transform: [prefix.replaceAll('a', '')] })).toEqual([['']]);
   expect(() => column.replaceAll('', 'x')).toThrow('empty');
@@ -130,8 +130,8 @@ test('chains are reusable and validate their operands and targets', async () => 
 
 test('reusable chains bind to multiple physical columns and can be extended or rebound independently', async () => {
   const entries = new Map([['SAO', 'São Paulo']]);
-  const clean = csv.transform().trim().removeDiacritics().upper();
-  const city = clean.lookup(entries);
+  const clean = csv.transform().trim().unaccent().upper();
+  const city = clean.map(entries);
   entries.clear();
   const both = city.on(0, 2);
   const source = Buffer.from(' São , Bia , sao \nrecife,Ana,Recife');

@@ -18,14 +18,14 @@ enum Op {
   Trim,
   Upper,
   Lower,
-  RemoveDiacritics,
+  Unaccent,
   ReplaceAll,
-  Lookup,
+  Map,
 }
 type Step =
-  | { kind: Op.Trim | Op.Upper | Op.Lower | Op.RemoveDiacritics; }
+  | { kind: Op.Trim | Op.Upper | Op.Lower | Op.Unaccent; }
   | { kind: Op.ReplaceAll; search: string; replacement: string; }
-  | { kind: Op.Lookup; values: ReadonlyMap<string, string>; };
+  | { kind: Op.Map; values: ReadonlyMap<string, string>; };
 
 interface Chain {
   step: Step;
@@ -83,7 +83,7 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
     trim: () => append({ kind: Op.Trim }),
     upper: () => append({ kind: Op.Upper }),
     lower: () => append({ kind: Op.Lower }),
-    removeDiacritics: () => append({ kind: Op.RemoveDiacritics }),
+    unaccent: () => append({ kind: Op.Unaccent }),
     replaceAll: (search, replacement) => {
       requireText(search);
       requireText(replacement);
@@ -92,9 +92,9 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
       }
       return append({ kind: Op.ReplaceAll, search, replacement });
     },
-    lookup: (values) => {
+    map: (values) => {
       if (values == null || typeof values.get !== 'function' || typeof values.entries !== 'function') {
-        throw new TypeError('lookup requires a map of strings');
+        throw new TypeError('map() requires a map of strings');
       }
       const captured = new Map<string, string>();
       for (const [key, value,] of values.entries()) {
@@ -102,7 +102,7 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
         requireText(value);
         captured.set(key, value);
       }
-      return append({ kind: Op.Lookup, values: captured });
+      return append({ kind: Op.Map, values: captured });
     },
   };
 }
@@ -183,7 +183,7 @@ export function prepareTransforms(handle: NativePointer, tokens: readonly CsvTra
         if (step.kind === Op.ReplaceAll) {
           addPair(handle, column, step.search, step.replacement);
         }
-        if (step.kind === Op.Lookup) {
+        if (step.kind === Op.Map) {
           for (const [key, value,] of step.values) {
             addPair(handle, column, key, value);
           }

@@ -110,11 +110,11 @@ export interface CsvTransformMethods<TResult = CsvTransform> {
   /** Apply full, locale-independent Unicode lowercase mapping. */
   readonly lower: () => TResult;
   /** Canonically decompose, remove marks with the Diacritic property, and recompose. */
-  readonly removeDiacritics: () => TResult;
+  readonly unaccent: () => TResult;
   /** Replace non-overlapping literal occurrences of a nonempty string. */
   readonly replaceAll: (search: string, replacement: string) => TResult;
   /** Replace an exact field value once, leaving unknown keys untouched. */
-  readonly lookup: (values: ReadonlyMap<string, string>) => TResult;
+  readonly map: (values: ReadonlyMap<string, string>) => TResult;
 }
 
 /** A reusable sequence of field operations built with csv.transform(). */

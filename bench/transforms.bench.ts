@@ -11,7 +11,7 @@ const cases = [
   ['multilingual', 'utf8', '\u00a0Αθήνα Straße São João ❤️\u202f'],
   ['Latin-1', 'latin1', '\u00a0São João Straße\u00a0'],
 ] as const;
-const transform = [csv.column(1).trim().removeDiacritics().upper()];
+const transform = [csv.column(1).trim().unaccent().upper()];
 const diacritic = /\p{Diacritic}/u;
 const whitespace = /^\p{White_Space}+|\p{White_Space}+$/gu;
 

@@ -148,7 +148,7 @@ and supported regex syntax.
 Define a field transform once with `csv.transform()`. Call `.on(...columns)` to apply it to physical input columns after a row passes `where`.
 
 ```ts
-const cleanName = csv.transform().trim().removeDiacritics().upper();
+const cleanName = csv.transform().trim().unaccent().upper();
 const rows = await csv.parse(
   Buffer.from('São João;active;José\nRecife;inactive;Bia'),
   {
@@ -161,7 +161,7 @@ const rows = await csv.parse(
 // [['SAO JOAO', 'JOSE']]
 ```
 
-See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, and lookup.
+See [field transforms](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#field-transforms) for Unicode rules, replacement, and value mapping.
 
 ### Read compressed files
 
