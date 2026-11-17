@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <uni_algo/case.h>
@@ -134,15 +135,30 @@ bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::st
     return false;
   if (column >= columns_.size())
     columns_.resize(static_cast<size_t>(column) + 1);
-  columns_[column].push_back(
-      {static_cast<transform_kind>(kind), {}, {}, {}, std::optional<std::string>{default_value}});
+  auto& chain = columns_[column];
+  const auto operation = static_cast<transform_kind>(kind);
+  switch (operation) {
+  case transform_kind::trim:
+    chain.trim_ascii = true;
+    break;
+  case transform_kind::upper:
+  case transform_kind::lower:
+    chain.ascii_case = operation;
+    break;
+  case transform_kind::remove_diacritics:
+    break;
+  default:
+    chain.ascii_cleanup = false;
+    only_ascii_cleanup_ = false;
+  }
+  chain.steps.push_back({operation, {}, {}, {}, std::optional<std::string>{default_value}});
   return true;
 }
 
 bool field_transforms::add_pair(uint32_t column, std::string_view key, std::string_view value) {
-  if (column >= columns_.size() || columns_[column].empty())
+  if (column >= columns_.size() || columns_[column].steps.empty())
     return false;
-  auto& step = columns_[column].back();
+  auto& step = columns_[column].steps.back();
   if (step.kind == transform_kind::lookup) {
     step.values.emplace(key, value);
     return true;
@@ -154,13 +170,49 @@ bool field_transforms::add_pair(uint32_t column, std::string_view key, std::stri
   return true;
 }
 
-bool field_transforms::append(std::string& destination, size_t column, std::string_view field) const {
-  if (column >= columns_.size() || columns_[column].empty()) {
+size_t field_transforms::write_ascii(char* out, size_t column, std::string_view field) const {
+  if (field.empty())
+    return 0;
+  if (column < columns_.size()) {
+    const auto& chain = columns_[column];
+    if (chain.trim_ascii) {
+      const auto whitespace = [](char c) { return c == ' ' || (c >= '\t' && c <= '\r'); };
+      while (!field.empty() && whitespace(field.front()))
+        field.remove_prefix(1);
+      while (!field.empty() && whitespace(field.back()))
+        field.remove_suffix(1);
+    }
+    if (chain.ascii_case == transform_kind::upper) {
+      for (size_t i = 0; i < field.size(); ++i)
+        out[i] = field[i] >= 'a' && field[i] <= 'z' ? field[i] - ('a' - 'A') : field[i];
+      return field.size();
+    }
+    if (chain.ascii_case == transform_kind::lower) {
+      for (size_t i = 0; i < field.size(); ++i)
+        out[i] = field[i] >= 'A' && field[i] <= 'Z' ? field[i] + ('a' - 'A') : field[i];
+      return field.size();
+    }
+  }
+  std::memcpy(out, field.data(), field.size());
+  return field.size();
+}
+
+bool field_transforms::append(std::string& destination, size_t column, std::string_view field, bool known_ascii) const {
+  if (column >= columns_.size() || columns_[column].steps.empty()) {
     destination.append(field);
     return true;
   }
+  const auto& chain = columns_[column];
+  if (chain.ascii_cleanup &&
+      (known_ascii || std::none_of(field.begin(), field.end(), [](unsigned char c) { return c >= 0x80; }))) {
+    const size_t start = destination.size();
+    destination.resize(start + field.size());
+    const size_t written = write_ascii(destination.data() + start, column, field);
+    destination.resize(start + written);
+    return true;
+  }
   std::string value{field};
-  for (const auto& step : columns_[column]) {
+  for (const auto& step : chain.steps) {
     switch (step.kind) {
     case transform_kind::trim:
       value = trim(value);

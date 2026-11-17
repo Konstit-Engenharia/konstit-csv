@@ -1,8 +1,9 @@
 const LATIN1_SINGLE: readonly string[] = Array.from({ length: 256 }, (_, byte) => String.fromCharCode(byte));
 // Bun's encoding-specific Buffer method copies just the requested byte range.
-type Latin1Slice = (this: Buffer, start: number, end: number) => string;
-const bufferPrototype: Buffer & { latin1Slice?: Latin1Slice; } = Buffer.prototype;
+type BufferSlice = (this: Buffer, start: number, end: number) => string;
+const bufferPrototype: Buffer & { latin1Slice?: BufferSlice; utf8Slice?: BufferSlice; } = Buffer.prototype;
 const latin1Slice = bufferPrototype.latin1Slice;
+const utf8Slice = bufferPrototype.utf8Slice;
 // Each 16-bit key identifies an immutable two-byte string. ASCII pairs can also be reused for UTF-8.
 const LATIN1_PAIRS = Array.from<string | undefined>({ length: 256 * 256 });
 
@@ -38,5 +39,8 @@ export function decodeMaterializedField(data: Buffer, start: number, end: number
       return latin1Pair(first | (second << 8));
     }
   }
-  return encoding === 'latin1' ? copyLatin1Range(data, start, end) : data.toString('utf8', start, end);
+  if (encoding === 'latin1') {
+    return copyLatin1Range(data, start, end);
+  }
+  return typeof utf8Slice === 'function' ? utf8Slice.call(data, start, end) : data.toString('utf8', start, end);
 }

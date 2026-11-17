@@ -321,12 +321,13 @@ export class NativeCsvBatch {
     const rowOffsetWords = this.#rowOffsetWordsView();
     const fieldOffsetWords = this.#fieldOffsetWordsView();
     const data = this.data();
+    const dataLength = data.byteLength;
     target.length = rowCount;
 
     if (columns !== undefined) {
       for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-        const fieldStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
-        const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+        const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
+        const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
         const existing = target[rowIndex];
         const row = existing === undefined ? [] : existing;
         row.length = selectedColumns.length;
@@ -339,8 +340,8 @@ export class NativeCsvBatch {
             continue;
           }
 
-          const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
-          const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
+          const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', dataLength);
+          const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
           row[outputIndex] = decodeMaterializedField(data, start, end, 'utf8');
         }
         target[rowIndex] = row;
@@ -350,16 +351,17 @@ export class NativeCsvBatch {
     }
 
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-      const fieldStart = offsetAt(rowOffsetWords, rowIndex, `row ${rowIndex} offset`, totalFields);
-      const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, `row ${rowIndex} offset`, totalFields);
+      const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
+      const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
       const existing = target[rowIndex];
       const row = existing === undefined ? [] : existing;
       row.length = fieldEnd - fieldStart;
+      let start = fieldStart < fieldEnd ? offsetAt(fieldOffsetWords, fieldStart, 'field offset', dataLength) : 0;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
-        const start = offsetAt(fieldOffsetWords, fieldIndex, 'field offset', data.byteLength);
-        const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', data.byteLength);
+        const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
         const column = fieldIndex - fieldStart;
         row[column] = decodeMaterializedField(data, start, end, 'utf8');
+        start = end;
       }
       target[rowIndex] = row;
     }
@@ -779,20 +781,24 @@ function offsetWords(offsets: BigUint64Array): Uint32Array {
   return new Uint32Array(offsets.buffer, offsets.byteOffset, offsets.length * 2);
 }
 
-function offsetAt(offsets: Uint32Array, index: number, label: string, upperBound: number): number {
+function offsetAt(offsets: Uint32Array, index: number, label: string | number, upperBound: number): number {
   const wordIndex = index * 2;
   const low = offsets[wordIndex];
   const high = offsets[wordIndex + 1];
+  if (high === 0 && low !== undefined && low <= upperBound && Number.isInteger(index)) {
+    return low;
+  }
+  const description = typeof label === 'number' ? `row ${label} offset` : label;
   if (low === undefined || high === undefined || wordIndex % 2 !== 0) {
-    throw new RangeError(`${label} index out of range: ${index}`);
+    throw new RangeError(`${description} index out of range: ${index}`);
   }
   if (high > MAX_SAFE_OFFSET_HIGH_WORD) {
     const value = BigInt(high) * UINT32_BASE_BIGINT + BigInt(low);
-    throw new RangeError(`${label} exceeds Number.MAX_SAFE_INTEGER: ${value}`);
+    throw new RangeError(`${description} exceeds Number.MAX_SAFE_INTEGER: ${value}`);
   }
   const offset = low + high * UINT32_BASE;
   if (offset > upperBound) {
-    throw new RangeError(`${label} exceeds backing storage: ${offset}`);
+    throw new RangeError(`${description} exceeds backing storage: ${offset}`);
   }
   return offset;
 }

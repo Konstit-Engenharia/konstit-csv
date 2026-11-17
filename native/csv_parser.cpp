@@ -660,7 +660,7 @@ public:
     }
     prepared_configuration_ = true;
     prepared_direct_projection_ = direct_projection_;
-    prepared_quoted_records_ = !transform_matched_rows_ && supports_quoted_records();
+    prepared_quoted_records_ = supports_quoted_records();
     return true;
   }
 
@@ -1481,7 +1481,12 @@ private:
     }
 
     size_t output = batch_->data.size();
-    if (layout_ == batch_layout::latin1_quoted_spans) {
+    if (transform_matched_rows_) {
+      if (!append_transformed_quoted_record(data, cursor, field_count, field_at)) {
+        fail_parse("invalid field transform");
+        return cursor;
+      }
+    } else if (layout_ == batch_layout::latin1_quoted_spans) {
       // Each span includes its opening quote, closing quote and one terminator.
       batch_->data.append(reinterpret_cast<const char*>(data), cursor);
       const size_t first = batch_->field_offsets.size();
@@ -1508,8 +1513,44 @@ private:
     return cursor;
   }
 
+  bool append_transformed_quoted_record(const uint8_t* data, size_t len, size_t field_count, const auto& field_at) {
+    // One ASCII check covers all payloads in this complete record.
+    uint8_t combined = 0;
+    for (size_t i = 0; i < len; ++i)
+      combined |= data[i];
+    const bool ascii = combined < 0x80;
+    if (ascii && transforms_.only_ascii_cleanup()) {
+      // Each field has two quotes and a terminator. Trim and ASCII casing fit in the original payload.
+      size_t output = batch_->data.size();
+      batch_->data.resize(output + (len - 3 * field_count));
+      const size_t first = batch_->field_offsets.size();
+      batch_->field_offsets.resize(first + field_count);
+      for (size_t column = 0; column < field_count; ++column) {
+        output += transforms_.write_ascii(batch_->data.data() + output, column, field_at(column));
+        batch_->field_offsets[first + column] = output;
+      }
+      batch_->data.resize(output);
+      return true;
+    }
+    std::string decoded;
+    for (size_t column = 0; column < field_count; ++column) {
+      auto field = field_at(column);
+      if (!ascii && encoding_ == csv_encoding::latin1) {
+        decoded.clear();
+        append_latin1(decoded, reinterpret_cast<const uint8_t*>(field.data()), field.size());
+        field = decoded;
+      }
+      if (!transforms_.append(batch_->data, column, field, ascii))
+        return false;
+      batch_->field_offsets.push_back(batch_->data.size());
+    }
+    return true;
+  }
+
   bool supports_quoted_records() const {
-    if (layout_ == batch_layout::utf8 || !conjunctive_filters_ || projection_enabled_) {
+    const bool supported_layout =
+        transform_matched_rows_ ? layout_ == batch_layout::utf8 : layout_ != batch_layout::utf8;
+    if (!supported_layout || !conjunctive_filters_ || projection_enabled_) {
       return false;
     }
     for (const auto& filter : filters_) {
@@ -1642,7 +1683,7 @@ private:
           if (!saw_row_data_ && current_column_ == 0) {
             const size_t consumed = try_quoted_record(data + i, len - i);
             if (consumed != 0) {
-              if (limit_reached()) {
+              if (parse_failed_ || limit_reached()) {
                 return;
               }
               misses_left = quoted_record_miss_limit;

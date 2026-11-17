@@ -67,6 +67,55 @@ test.each(['utf8', 'latin1'] as const)('post-filter chains agree across all read
   expect(parser.write(input, true)).toEqual(expected);
 });
 
+test.each(['utf8', 'latin1'] as const)('complete quoted records and split records emit the same transformed bytes (%s)', (encoding) => {
+  const clean = csv.transform().trim().upper().unaccent();
+  const options = {
+    encoding,
+    delimiter: ';' as const,
+    fixedColumns: 4,
+    transform: [clean.on(0, 2), csv.column(1).upper().trim().lower()],
+    equalsFilter: { column: 2, value: ' ok ' },
+  };
+  const input = Buffer.from(
+    '" abc ";"\tXyZ\v";" ok ";"KEEP"\n'
+      + '"\u0000x\u001c";"\f\r";" ok ";""\n'
+      + '"\u0085Éß\u00a0";"ÉTÉ";" ok ";"café"\n'
+      + '"skip";"ignored";"OK";"row"\n'
+      + '" a""b ";" Ab\nCd ";" ok ";"tail"\r\n'
+      + 'unquoted; Last ; ok ;end',
+    encoding,
+  );
+  const expected = [
+    ['ABC', 'xyz', 'OK', 'KEEP'],
+    ['\u0000X\u001c', '', 'OK', ''],
+    ['ESS', 'été', 'OK', 'café'],
+    ['A"B', 'ab\ncd', 'OK', 'tail'],
+    ['UNQUOTED', 'last', 'OK', 'end'],
+  ];
+  using parser = new NativeCsvParser(options);
+  using batch = parser.writeBatch(input, true);
+  expect(batch.rows()).toEqual(expected);
+  for (const [i, row,] of expected.entries()) {
+    for (const [column, field,] of row.entries()) {
+      expect(batch.fieldBuffer(i, column)).toEqual(Buffer.from(field));
+    }
+  }
+  parser.reset();
+  const split = [];
+  for (let start = 0; start < input.length; start += 3) {
+    split.push(...parser.write(input.subarray(start, start + 3)));
+  }
+  expect([...split, ...parser.end()]).toEqual(expected);
+  parser.reset();
+  expect(() => parser.write(Buffer.from('"bad";"width";"rejected"\n'), true)).toThrow('column count');
+});
+
+test('ordered mappings interrupt ASCII case folding, including on empty fields', async () => {
+  const chain = csv.column(0).upper().map({ 'ABC': ' São ', '': ' Ç ' }).trim().lower().unaccent();
+  const rows = await csv.parse(Buffer.from('"abc";"keep"\n"";"keep"\n'), { delimiter: ';', transform: [chain] });
+  expect(rows).toEqual([['sao', 'keep'], ['c', 'keep']]);
+});
+
 test('Unicode transformations distinguish diacritics, other marks and standalone symbols', async () => {
   const cases = [
     ['São João', 'Sao Joao'],
