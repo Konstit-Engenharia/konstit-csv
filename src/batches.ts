@@ -24,6 +24,7 @@ import type {
 } from './types.js';
 
 const visitBatchRows = Symbol('visitBatchRows');
+export const materializeBatchRows = Symbol('materializeBatchRows');
 // Bound the backing string a caller can retain by keeping one field.
 const WINDOW_BYTES = 1024;
 // Long fields amortize a direct decoder call without a speculative copy of nearby bytes.
@@ -320,10 +321,18 @@ export class NativeCsvBatch {
    * exceeds the batch backing storage.
    */
   rowsInto(target: CsvRow[], columns?: CsvColumns): CsvRow[] {
+    return this[materializeBatchRows](target, columns);
+  }
+
+  [materializeBatchRows](target: CsvRow[], columns?: CsvColumns, outputWidth?: number): CsvRow[] {
     const selectedColumns = normalizeColumns(columns);
     const rowCount = this.rowCount;
     const totalFields = this.totalFields;
-    const rowOffsetWords = this.#rowOffsetWordsView();
+    if (outputWidth !== undefined && rowCount * outputWidth !== totalFields) {
+      throw new RangeError('CSV batch field count does not match its fixed width');
+    }
+    const width = outputWidth ?? 0;
+    const rowOffsetWords = outputWidth === undefined ? this.#rowOffsetWordsView() : undefined;
     const fieldOffsetWords = this.#fieldOffsetWordsView();
     const data = this.data();
     const dataLength = data.byteLength;
@@ -331,8 +340,8 @@ export class NativeCsvBatch {
 
     if (columns !== undefined) {
       for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-        const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
-        const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
+        const fieldStart = rowOffsetWords === undefined ? rowIndex * width : offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
+        const fieldEnd = rowOffsetWords === undefined ? fieldStart + width : offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
         const existing = target[rowIndex];
         const row = existing === undefined ? [] : existing;
         row.length = selectedColumns.length;
@@ -360,13 +369,18 @@ export class NativeCsvBatch {
     let text = '';
     let byteIndexed = true;
     let utf16Offsets: Int16Array | undefined;
+    // Validated fixed-width rows are contiguous in both the field table and the byte buffer.
+    let fieldEnd = 0;
+    let start = rowOffsetWords === undefined && totalFields > 0 ? offsetAt(fieldOffsetWords, 0, 'field offset', dataLength) : 0;
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-      const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
-      const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
+      const fieldStart = rowOffsetWords === undefined ? fieldEnd : offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
+      fieldEnd = rowOffsetWords === undefined ? fieldStart + width : offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
       const existing = target[rowIndex];
       const row = existing === undefined ? [] : existing;
       row.length = fieldEnd - fieldStart;
-      let start = fieldStart < fieldEnd ? offsetAt(fieldOffsetWords, fieldStart, 'field offset', dataLength) : 0;
+      if (rowOffsetWords !== undefined && fieldStart < fieldEnd) {
+        start = offsetAt(fieldOffsetWords, fieldStart, 'field offset', dataLength);
+      }
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
         const end = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
         const column = fieldIndex - fieldStart;
