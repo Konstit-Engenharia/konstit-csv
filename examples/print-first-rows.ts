@@ -14,14 +14,14 @@ import {
 const where = FILTER_VALUE === undefined ? undefined : csv.column(FILTER_COLUMN).equals(FILTER_VALUE);
 
 for await (
-  const rows of csv.rows(FILE, {
+  const batch of csv.rows(FILE, {
     columns: COLUMNS,
     delimiter: DELIMITER,
     where,
     limit: LIMIT,
   })
 ) {
-  for (const row of rows) {
+  for (const row of batch) {
     console.log(row);
   }
 }
