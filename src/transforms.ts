@@ -25,7 +25,7 @@ enum Op {
 type Step =
   | { kind: Op.Trim | Op.Upper | Op.Lower | Op.Unaccent; }
   | { kind: Op.ReplaceAll; search: string; replacement: string; }
-  | { kind: Op.Map; values: ReadonlyMap<string, string>; };
+  | { kind: Op.Map; values: ReadonlyMap<string, string>; defaultValue: string | undefined; };
 
 interface Chain {
   step: Step;
@@ -92,9 +92,12 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
       }
       return append({ kind: Op.ReplaceAll, search, replacement });
     },
-    map: (values) => {
+    map: (values, defaultValue) => {
       if (values == null || typeof values.get !== 'function' || typeof values.entries !== 'function') {
         throw new TypeError('map() requires a map of strings');
+      }
+      if (defaultValue !== undefined) {
+        requireText(defaultValue);
       }
       const captured = new Map<string, string>();
       for (const [key, value,] of values.entries()) {
@@ -102,7 +105,7 @@ function methods<T>(append: (step: Step) => T): CsvTransformMethods<T> {
         requireText(value);
         captured.set(key, value);
       }
-      return append({ kind: Op.Map, values: captured });
+      return append({ kind: Op.Map, values: captured, defaultValue });
     },
   };
 }
@@ -177,7 +180,11 @@ export function prepareTransforms(handle: NativePointer, tokens: readonly CsvTra
     steps.reverse();
     for (const column of targets) {
       for (const step of steps) {
-        if (!native.symbols.csv_parser_add_transform(handle, column, step.kind)) {
+        const fallback = step.kind === Op.Map && step.defaultValue !== undefined ? Buffer.from(step.defaultValue) : undefined;
+        const added = fallback !== undefined
+          ? native.symbols.csv_parser_add_map_with_default(handle, column, fallback, fallback)
+          : native.symbols.csv_parser_add_transform(handle, column, step.kind);
+        if (!added) {
           throw new Error('native parser rejected transform step');
         }
         if (step.kind === Op.ReplaceAll) {

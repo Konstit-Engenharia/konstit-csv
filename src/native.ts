@@ -39,6 +39,9 @@ const CSV_SYMBOLS = {
   // bool csv_parser_add_transform(void* parser, uint32_t column, uint32_t kind);
   csv_parser_add_transform: { args: ['ptr', 'u32', 'u32'], returns: 'bool' },
   // C signature:
+  // bool csv_parser_add_map_with_default(void* parser, uint32_t column, const uint8_t* value, uint64_t value_len);
+  csv_parser_add_map_with_default: { args: ['ptr', 'u32', 'buffer', 'buffer_length'], returns: 'bool' },
+  // C signature:
   // bool csv_parser_transform_pair(void* parser, uint32_t column, const uint8_t* key, uint64_t key_len,
   //                                const uint8_t* value, uint64_t value_len);
   csv_parser_transform_pair: { args: ['ptr', 'u32', 'buffer', 'buffer_length', 'buffer', 'buffer_length'], returns: 'bool' },

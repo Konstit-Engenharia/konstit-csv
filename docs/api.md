@@ -178,14 +178,15 @@ const rows = await csv.parse(Buffer.from('Ana;12,50; sp \nBia;9,00;SP'), {
 | `upper()`, `lower()`              | Apply full Unicode default casing. For example, `Straße` uppercases to `STRASSE` and `ΟΣ` lowercases to `ος`.                                                                                       |
 | `unaccent()`                      | Canonically decompose, remove Unicode marks with the Diacritic property, then recompose to NFC. Both `ã` and `a\u0303` become `a`. Letters such as `ø` and emoji variation selectors are preserved. |
 | `replaceAll(search, replacement)` | Replace non-overlapping literal matches. The search string must be nonempty.                                                                                                                        |
-| `map(values)`                     | Look up the whole field once in a `ReadonlyMap<string, string>`. Unknown keys pass through.                                                                                                         |
+| `map(values, defaultValue?)`      | Look up the whole field once in a `ReadonlyMap<string, string>`. An unmatched field emits `defaultValue` when supplied (including `''`), or its current value when omitted.                         |
 
 The Unicode data version is 15.1. Replacement and mapping operands must be well-formed strings and match exactly.
 Steps run left to right. A chain can be reused or extended without mutating it. Supply at most one chain per column.
 For example, `const clean = csv.transform().trim().upper()` can be used as `transform: [clean.on(0, 2)]`
 for one file and `transform: [clean.on(3)]` for another. Calling `.on()` on an already bound chain selects a new set
 of target columns. For a single column, `csv.column(2).trim()` is shorthand for `csv.transform().trim().on(2)`.
-`map(values)` captures its entries when built. Readers capture the list of chains at invocation.
+`map(values, 'Unknown')` emits `'Unknown'` for an unmatched field. Later steps in the chain receive the mapped value or fallback.
+The map captures its entries when the chain is built. Readers capture the list of chains at invocation.
 A present empty field can be mapped with the key `''`. A missing projected field emits `''` padding.
 An unselected field receives no transform. Manual parser resets retain transforms, and count writes bypass them.
 

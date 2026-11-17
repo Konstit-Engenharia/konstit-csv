@@ -91,12 +91,12 @@ std::string_view trim(std::string_view field) {
 }
 } // namespace
 
-bool field_transforms::add(uint32_t column, uint32_t kind) {
+bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::string_view> map_default) {
   if (kind > static_cast<uint32_t>(transform_kind::lookup))
     return false;
   if (column >= columns_.size())
     columns_.resize(static_cast<size_t>(column) + 1);
-  columns_[column].push_back({static_cast<transform_kind>(kind), {}, {}, {}});
+  columns_[column].push_back({static_cast<transform_kind>(kind), {}, {}, {}, std::optional<std::string>{map_default}});
   return true;
 }
 
@@ -139,6 +139,8 @@ bool field_transforms::append(std::string& destination, size_t column, std::stri
     case transform_kind::lookup:
       if (auto it = step.values.find(value); it != step.values.end())
         value = it->second;
+      else if (step.map_default.has_value())
+        value = *step.map_default;
       break;
     case transform_kind::replace_all: {
       if (step.search.empty())

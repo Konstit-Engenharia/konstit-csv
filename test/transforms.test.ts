@@ -128,6 +128,23 @@ test('chains are reusable and validate their operands and targets', async () => 
   expect(() => csv.rows('unused', { transform: [column.equals('x')] })).toThrow('chain');
 });
 
+test('map uses the default only for present fields missing from the map', async () => {
+  const values = new Map([['A', ''], ['', 'blank']]);
+  const mapped = csv.transform().map(values, 'indéfini').upper();
+  const rows = await csv.parse(Buffer.from('A,,?\n?,A'), {
+    columns: [0, 1, 2] as const,
+    transform: [mapped.on(0, 1, 2)],
+  });
+  expect(rows).toEqual([['', 'BLANK', 'INDÉFINI'], ['INDÉFINI', '', '']]);
+
+  using parser = new NativeCsvParser({
+    strict: true,
+    transform: [csv.column(0).map(values, ''), csv.column(1).map(values, undefined)],
+  });
+  expect(parser.write(Buffer.from('?,?'), true)).toEqual([['', '?']]);
+  expect(() => csv.transform().map(values, '\ud800')).toThrow('well-formed');
+});
+
 test('reusable chains bind to multiple physical columns and can be extended or rebound independently', async () => {
   const entries = new Map([['SAO', 'São Paulo']]);
   const clean = csv.transform().trim().unaccent().upper();
