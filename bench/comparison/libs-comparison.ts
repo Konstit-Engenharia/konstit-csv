@@ -1,8 +1,13 @@
 // End-to-end file parsing workloads from bytebrujo/bun-csv's benchmark-comparison.ts (MIT).
 import { parse } from 'csv-parse/sync';
+import csvParser from 'csv-parser';
 import { parseString } from 'fast-csv';
-import { readFileSync } from 'node:fs';
+import {
+  createReadStream,
+  readFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import Papa from 'papaparse';
 import { CSVParser } from 'turbocsv';
 import { csv } from '../../src/index.ts';
@@ -129,6 +134,15 @@ const parsers: readonly ParserCase[] = [
       for (const row of records) {
         visit(row[idColumn]);
       }
+    },
+  },
+  {
+    name: 'csv-parser',
+    read({ path, idColumn }, visit) {
+      return pipeline(
+        createReadStream(path),
+        csvParser({}).on('data', (row: RecordRow) => visit(row[idColumn])),
+      );
     },
   },
   {
