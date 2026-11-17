@@ -133,6 +133,12 @@ This command caches an Ubuntu 24.04 builder image with Clang, CMake, and Ninja,
 mounts the repository at `/work`, builds the existing `linux-x64-release`
 preset, and stages `prebuilds/linux-x64/libcsv_native.so`.
 
+To rebuild and stage all three targets locally, run this on macOS with Docker running:
+
+```sh
+bun run prebuilds:all
+```
+
 For direct target-specific builds, use the CMake presets. Use `ctest` to run the
 native test suite after building with the sanitize preset:
 

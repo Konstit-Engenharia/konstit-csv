@@ -1,6 +1,5 @@
 import { csv } from '../src/index.ts';
 import {
-  CHUNK_SIZE,
   COLUMNS,
   DELIMITER,
   FILE,
