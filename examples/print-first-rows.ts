@@ -12,21 +12,16 @@ import {
 // `csv.rows()` owns file reads, parser finalization, and native batch cleanup.
 // It yields one materialized row batch at a time.
 const where = FILTER_VALUE === undefined ? undefined : csv.column(FILTER_COLUMN).equals(FILTER_VALUE);
-let printed = 0;
 
-outer: for await (
+for await (
   const rows of csv.rows(FILE, {
-    chunkSize: CHUNK_SIZE,
     columns: COLUMNS,
     delimiter: DELIMITER,
     where,
+    limit: LIMIT,
   })
 ) {
   for (const row of rows) {
     console.log(row);
-    ++printed;
-    if (printed >= LIMIT) {
-      break outer;
-    }
   }
 }

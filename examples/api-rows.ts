@@ -16,7 +16,6 @@ import {
  * Select strict mode when malformed CSV or schema mismatches must reject the
  * operation; see `api-strict-options.ts` for that contract.
  */
-let printed = 0;
 const options = {
   // `chunkSize` controls file-read granularity. It is not a row-count limit,
   // and quoted records may span more than one input chunk.
@@ -27,18 +26,14 @@ const options = {
   // Filters always address a physical source column, even when that column is
   // absent from the projected output.
   where: FILTER_VALUE === undefined ? undefined : csv.column(FILTER_COLUMN).equals(FILTER_VALUE),
+  // Limit the total number of rows yielded, regardless of batch size.
+  limit: LIMIT,
 };
 
 // Every yielded value is the set of rows materialized from a parsed batch.
 // Consume one batch at a time to avoid retaining the entire file in memory.
-for await (const rows of csv.rows(FILE, options)) {
-  for (const row of rows) {
+for await (const batch of csv.rows(FILE, options)) {
+  for (const row of batch) {
     console.log(row);
-    printed += 1;
-    if (printed >= LIMIT) {
-      // Appropriate for this standalone printer; reusable application code
-      // should prefer cooperative cancellation over terminating the process.
-      process.exit(0);
-    }
   }
 }

@@ -25,14 +25,13 @@ for await (
     delimiter: DELIMITER,
     // High-level filters run before rows are exposed through the native batch.
     where: FILTER_VALUE === undefined ? undefined : csv.column(FILTER_COLUMN).equals(FILTER_VALUE),
+    // Limit the total number of rows yielded, regardless of batch size.
+    limit: LIMIT,
   })
 ) {
   // The row view is reused as iteration advances. Copy data that must outlive
   // this callback or the current batch.
   batch.forEachRow((row) => {
-    if (printed >= LIMIT) {
-      return;
-    }
     console.log({
       // `rowIndex` is local to this batch, not a file-global row number.
       rowIndex: row.rowIndex,
