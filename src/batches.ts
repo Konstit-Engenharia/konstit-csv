@@ -1,9 +1,6 @@
 import { read } from 'bun:ffi';
-import { isAscii } from 'node:buffer';
-import {
-  copyLatin1Range,
-  decodeMaterializedField,
-} from './materialize-field.js';
+import { isUtf8 } from 'node:buffer';
+import { decodeMaterializedField } from './materialize-field.js';
 import {
   EMPTY_BUFFER,
   native,
@@ -28,7 +25,7 @@ import type {
 
 const visitBatchRows = Symbol('visitBatchRows');
 // Bound the backing string a caller can retain by keeping one field.
-const ASCII_WINDOW_BYTES = 1024;
+const WINDOW_BYTES = 1024;
 // Long fields amortize a direct decoder call without a speculative copy of nearby bytes.
 const MAX_WINDOW_FIELD_BYTES = 64;
 
@@ -360,7 +357,9 @@ export class NativeCsvBatch {
 
     let windowStart = 0;
     let windowEnd = 0;
-    let asciiWindow = '';
+    let text = '';
+    let byteIndexed = true;
+    let utf16Offsets: Int16Array | undefined;
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
       const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
@@ -373,16 +372,31 @@ export class NativeCsvBatch {
         const column = fieldIndex - fieldStart;
         const length = end - start;
         let value: string | undefined;
-        // In an ASCII window byte offsets are also string offsets. Empty fields
-        // and one- or two-byte fields already have a cheap decoder.
         if (length > 2 && length <= MAX_WINDOW_FIELD_BYTES) {
           if (start < windowStart || end > windowEnd) {
             windowStart = start;
-            windowEnd = Math.min(dataLength, start + ASCII_WINDOW_BYTES);
-            asciiWindow = isAscii(data.subarray(start, windowEnd)) ? copyLatin1Range(data, start, windowEnd) : '';
+            windowEnd = utf8WindowEnd(data, start);
+            text = decodeMaterializedField(data, start, windowEnd, 'utf8');
+            // UTF-8 decoding emits at most one UTF-16 unit per input byte.
+            // Equal lengths mean every field boundary maps directly, including lone invalid bytes.
+            byteIndexed = text.length === windowEnd - start;
+            if (!byteIndexed) {
+              utf16Offsets ??= new Int16Array(WINDOW_BYTES + 1);
+              if (!indexUtf16Boundaries(data.subarray(start, windowEnd), utf16Offsets)) {
+                text = '';
+              }
+            }
           }
-          if (asciiWindow.length > 0) {
-            value = asciiWindow.slice(start - windowStart, end - windowStart);
+          const from = start - windowStart;
+          const to = end - windowStart;
+          if (byteIndexed) {
+            value = text.slice(from, to);
+          } else if (text.length > 0 && utf16Offsets !== undefined) {
+            const first = utf16Offsets[from] ?? -1;
+            const last = utf16Offsets[to] ?? -1;
+            if (first >= 0 && last >= 0) {
+              value = text.slice(first, last);
+            }
           }
         }
         row[column] = value ?? decodeMaterializedField(data, start, end, 'utf8');
@@ -804,6 +818,38 @@ const MAX_DIRECT_ROW_INDEX_EXCLUSIVE = Math.floor(0x7fff_ffff / BigUint64Array.B
 function offsetWords(offsets: BigUint64Array): Uint32Array {
   // Native offsets are little-endian on every supported target.
   return new Uint32Array(offsets.buffer, offsets.byteOffset, offsets.length * 2);
+}
+
+function utf8WindowEnd(data: Buffer, start: number): number {
+  const limit = start + WINDOW_BYTES;
+  if (limit >= data.length) {
+    return data.length;
+  }
+  // Back up to the leading byte if the cutoff bisects a UTF-8 scalar.
+  let end = limit;
+  while (limit - end < 3 && ((data[end] as number) & 0xc0) === 0x80) {
+    --end;
+  }
+  return end;
+}
+
+function indexUtf16Boundaries(bytes: Buffer, offsets: Int16Array): boolean {
+  if (!isUtf8(bytes)) {
+    return false;
+  }
+  let units = 0;
+  for (let i = 0; i < bytes.length; ++i) {
+    const byte = bytes[i] as number;
+    if ((byte & 0xc0) === 0x80) {
+      // Fields that split a scalar must be decoded separately.
+      offsets[i] = -1;
+    } else {
+      offsets[i] = units;
+      units += byte >= 0xf0 ? 2 : 1;
+    }
+  }
+  offsets[bytes.length] = units;
+  return true;
 }
 
 function offsetAt(offsets: Uint32Array, index: number, label: string | number, upperBound: number): number {

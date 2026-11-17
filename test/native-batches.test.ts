@@ -291,6 +291,32 @@ describe('NativeCsvParser batches and materialization', () => {
     expect(rows).toEqual([ascii, ['a\uFFFD', '\uFFFD\uFFFDb', 'é中🙂', long, 'tail']]);
   });
 
+  test('decodes mixed UTF-8 rows across window edges and split code points', () => {
+    // The first emoji straddles byte 1024 of the concatenated field data.
+    const prefix = ['abc', 'x'.repeat(1020)];
+    const mixed = ['🙂中', 'a\u0301', 'São Paulo', '\uFEFFabc', '𐐷', ''];
+    const split = Buffer.from([0x61, 0xf0, 0x9f, 0x2c, 0x98, 0x80, 0x62]);
+    const input = Buffer.concat([
+      Buffer.from(`${prefix.join(',')},${mixed.join(',')}\n`),
+      split,
+      Buffer.from(`,${mixed.join(',')}\n`),
+      Buffer.from(`${mixed.join(',')}\n`.repeat(80)),
+      Buffer.from([0x78, 0xff, 0x79, 0x0a]),
+    ]);
+    using parser = new NativeCsvParser();
+    using batch = parser.writeBatch(input, true);
+    const expected = [
+      [...prefix, ...mixed],
+      ['a\uFFFD', '\uFFFD\uFFFDb', ...mixed],
+      ...Array.from({ length: 80 }, () => mixed),
+      ['x\uFFFDy'],
+    ];
+    const rows = batch.rows();
+    batch.data().fill(0);
+    batch.close();
+    expect(rows).toEqual(expected);
+  });
+
   test('short-field materialization observes byte and offset mutations with reused rows', () => {
     using parser = new NativeCsvParser({ delimiter: ';' });
     using batch = parser.writeBatch(Buffer.from(';a;SP;long\n'), true);
