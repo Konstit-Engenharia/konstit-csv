@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -159,7 +160,7 @@ struct csv_row_counter {
 
 template <bool defer_crlf, bool count_plain_lf_blocks = false, typename OnRowEnd>
 HWY_ATTR bool scan_csv_row_ends(const uint8_t* data, size_t len, uint8_t delimiter, uint64_t base_offset,
-                                csv_structural_state& state, OnRowEnd&& on_row_end) {
+                                csv_structural_state& state, OnRowEnd&& on_row_end, size_t* column = nullptr) {
   // BitsFromMask exposes one bit per lane in a uint64_t, so keep blocks at most 64 bytes wide.
   const hn::CappedTag<uint8_t, 64> du8;
   const size_t lanes = hn::Lanes(du8);
@@ -175,13 +176,16 @@ HWY_ATTR bool scan_csv_row_ends(const uint8_t* data, size_t len, uint8_t delimit
     const auto lf_mask = hn::Eq(bytes, lf_v);
     const auto cr_mask = hn::Eq(bytes, cr_v);
     const auto row_end_mask = hn::Or(lf_mask, cr_mask);
-    // Delimiters only affect whether a later quote opens a field. The byte immediately before that
-    // quote is sufficient, which keeps common delimiter-heavy CSV data out of the scalar event loop.
+    // Only quotes and record terminators need individual state transitions.
     const auto special_mask = hn::Or(quote_mask, row_end_mask);
     const uint64_t valid_bits =
         block_size == 64 ? std::numeric_limits<uint64_t>::max() : (uint64_t{1} << block_size) - 1;
     const uint64_t quote_bits = hn::BitsFromMask(du8, quote_mask) & valid_bits;
     const uint64_t special_bits = hn::BitsFromMask(du8, special_mask) & valid_bits;
+    uint64_t delimiters = 0;
+    if (column != nullptr) {
+      delimiters = hn::BitsFromMask(du8, hn::Eq(bytes, hn::Set(du8, delimiter))) & valid_bits;
+    }
 
     if constexpr (count_plain_lf_blocks) {
       if (!state.in_quotes && !state.pending_quote && !state.previous_was_cr && quote_bits == 0 &&
@@ -248,6 +252,11 @@ HWY_ATTR bool scan_csv_row_ends(const uint8_t* data, size_t len, uint8_t delimit
       }
 
       const uint64_t candidates = special_bits & (std::numeric_limits<uint64_t>::max() << cursor);
+      if (column != nullptr) {
+        // With no event left, the mask covers the rest of the block.
+        const uint64_t before_event = (candidates & -candidates) - 1;
+        *column += std::popcount((delimiters & before_event) >> cursor);
+      }
       if (candidates == 0) {
         state.saw_row_data = true;
         state.at_field_start = data[block_start + block_size - 1] == delimiter;
@@ -712,7 +721,7 @@ public:
     emitted_rows_ = 0;
     select_input(data, len, false);
     parse(data, len);
-    if (final && !limit_reached()) {
+    if (final && !parse_failed_ && !limit_reached()) {
       finish_stream();
     }
     return error_.empty() ? emitted_rows_ : prepared_count_error;
@@ -1615,7 +1624,9 @@ private:
       return;
     }
 
-    if (mode_ == output_mode::count && filters_.empty() && fixed_columns_ == 0) {
+    // A fixed-width count with an empty projection carries only the physical column across writes.
+    if (mode_ == output_mode::count && filters_.empty() &&
+        (fixed_columns_ == 0 || (projection_enabled_ && selected_columns_len_ == 0))) {
       parse_count_only(data, len);
       return;
     }
@@ -1824,7 +1835,24 @@ private:
         .previous_was_cr = previous_was_cr_,
         .saw_row_data = saw_row_data_,
     };
-    if (rows_left_ == std::numeric_limits<uint64_t>::max()) {
+    if (fixed_columns_ != 0) {
+      scan_csv_row_ends<false>(
+          data, len, delimiter_, 0, state,
+          [&](uint64_t) {
+            if (current_column_ != fixed_columns_ - 1) {
+              fail_parse("fixed row column count mismatch");
+              return false;
+            }
+            current_column_ = 0;
+            if (rows_to_skip_ != 0) {
+              --rows_to_skip_;
+            } else {
+              record_emitted_row();
+            }
+            return !limit_reached();
+          },
+          &current_column_);
+    } else if (rows_left_ == std::numeric_limits<uint64_t>::max()) {
       csv_row_counter on_row_end{emitted_rows_, current_column_};
       scan_csv_row_ends<false, true>(data, len, delimiter_, 0, state, on_row_end);
     } else {

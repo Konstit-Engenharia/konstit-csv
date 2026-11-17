@@ -2,11 +2,16 @@ import {
   bench,
   summary,
 } from 'mitata';
+import assert from 'node:assert/strict';
 import {
   createReadStream,
   statSync,
 } from 'node:fs';
-import { NativeCsvParser } from '../src/index.ts';
+import { prepareCsvFileInput } from '../src/file-stream.ts';
+import {
+  csv,
+  NativeCsvParser,
+} from '../src/index.ts';
 
 // Measures the supported fixed-column materialization path against the general parser baseline.
 const GENERATED_ROWS = Number(Bun.env['CSV_BENCH_GENERATED_ROWS'] ?? 5_000_000);
@@ -33,6 +38,26 @@ summary(async () => {
   for (const [name, fn,] of cases) {
     bench(name, async () => await fn());
   }
+});
+
+// Compare end-to-end counting with the same file reader, chunk size and physical width check.
+const options = { delimiter: DELIMITER, fixedColumns: FIXED_COLUMNS, chunkSize: CHUNK_SIZE };
+async function countViaBatches(): Promise<number> {
+  await using input = await prepareCsvFileInput(FILE, options, 'count');
+  using parser = new NativeCsvParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
+  let rows = 0;
+  for await (const chunk of input.chunks()) {
+    using batch = parser.writeBatch(chunk);
+    rows += batch.rowCount;
+  }
+  using last = parser.endBatch();
+  return rows + last.rowCount;
+}
+
+const expected = Bun.env['CSV_BENCH_FILE'] === undefined ? GENERATED_ROWS : await countViaBatches();
+summary(() => {
+  bench('fixed count / batch rowCount', async () => assert.equal(await countViaBatches(), expected));
+  bench('fixed count / csv.count', async () => assert.equal(await csv.count(FILE, options), expected));
 });
 
 async function countRows(fixedColumns: boolean): Promise<number> {

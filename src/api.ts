@@ -195,8 +195,7 @@ export async function count(path: string, suppliedOptions: CsvCountOptions = {})
   if (options.strict === true && filters !== undefined) {
     throw new Error('strict CSV validation is not supported for count filters');
   }
-  using parser = createPreparedParser(toParserOptions(options, input.parserEncoding, input.delimiter), undefined, filters);
-  return await countFileChunks(input, parser, options);
+  return await countFileChunks(input, toParserOptions(options, input.parserEncoding, input.delimiter), filters);
 }
 
 /**

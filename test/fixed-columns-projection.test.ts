@@ -94,4 +94,34 @@ describe('fixed columns with projection and filters', () => {
     expect(parser.writeCount(Buffer.from('a;b;c\nx;'))).toBe(1);
     expect(() => parser.writeCount(Buffer.from('y'), true)).toThrow(mismatch);
   });
+
+  test('counts physical columns across quoted separators, split CRLFs and an unterminated final record', async () => {
+    const path = join(directory, 'count.csv');
+    const text = 'id;name;value\r\n1;"a;""b\r\nc";\r2;;x"y\n;;"tail;open';
+    await Bun.write(path, text);
+    for (const chunkSize of [1, 2, 15, 16, 17, 64]) {
+      const options = { chunkSize, encoding: 'utf8', delimiter: ';', fixedColumns: 3, skipRows: 1 } as const;
+      expect(await csv.count(path, options)).toBe(3);
+      expect(await countCsvFile(path, options)).toBe(3);
+    }
+  });
+
+  test('validates skipped widths and stops checking at the limit', async () => {
+    const path = join(directory, 'count-selection.csv');
+    const options = { delimiter: ';', fixedColumns: 2, skipRows: 1, limit: 1 };
+    await Bun.write(path, 'bad\r\na;b\r\n');
+    await rejects(csv.count(path, options), mismatch);
+    await Bun.write(path, ';\r\na;b\r\ntoo;many;fields');
+    expect(await csv.count(path, options)).toBe(1);
+    await rejects(csv.count(path, { ...options, limit: 2 }), mismatch);
+  });
+
+  test('counts empty records as one field and ignores empty input', async () => {
+    const path = join(directory, 'empty-count.csv');
+    await Bun.write(path, '');
+    expect(await csv.count(path, { fixedColumns: 1 })).toBe(0);
+    await Bun.write(path, '\r\n\nlast');
+    expect(await csv.count(path, { fixedColumns: 1 })).toBe(3);
+    await rejects(csv.count(path, { fixedColumns: 2 }), mismatch);
+  });
 });

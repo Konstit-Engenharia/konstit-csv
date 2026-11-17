@@ -73,9 +73,12 @@ export async function* parseFileChunks(
 
 export async function countFileChunks(
   input: CsvFileInput,
-  parser: NativeCsvParser,
-  options: Pick<CsvParserOptions, 'limit' | 'strict'>,
+  options: CsvParserOptions,
+  filters?: readonly CsvNativeFilterProgramEntry[],
 ): Promise<number> {
+  // A count-only stream can discard every field, including those in an unfinished record.
+  const columns = options.fixedColumns !== undefined && options.strict !== true && filters === undefined ? [] : undefined;
+  using parser = createPreparedParser(options, columns, filters);
   let total = 0;
   if (options.strict === true) {
     for await (using batch of parseFileChunks(input, parser, options.limit)) {

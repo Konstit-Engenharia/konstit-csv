@@ -302,6 +302,5 @@ export async function countCsvFile(path: string, suppliedOptions: CsvFileOptions
   const options = snapshotCsvOptions(suppliedOptions);
   rejectStrictSchemaUnsupported(options, 'count');
   await using input = await prepareCsvFileInput(path, options, 'count');
-  using parser = createPreparedParser({ ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
-  return await countFileChunks(input, parser, options);
+  return await countFileChunks(input, { ...options, encoding: input.parserEncoding, delimiter: input.delimiter });
 }
