@@ -20,7 +20,11 @@ import {
   resolveNativeLibraryPath,
 } from '../src/native.ts';
 import { NativeCsvParser } from '../src/parser.ts';
-import type { CsvRegex } from '../src/types.ts';
+import { selectTransforms } from '../src/transforms.ts';
+import type {
+  CsvRegex,
+  CsvTransform,
+} from '../src/types.ts';
 import { csvFixturePath } from './fixtures.ts';
 
 // The callbacks keep each test's offset array alive while the parser borrows its address.
@@ -91,6 +95,38 @@ test('prepared parsers distinguish native errors from empty results and reject u
   expect(() => parser.endCount()).toThrow('native CSV parser is closed');
 });
 
+test('projection and Latin-1 parser preparation reject unbound transform chains', async () => {
+  // @ts-expect-error An unbound chain is invalid input to either preparation path.
+  const transforms: CsvTransform[] = [csv.transform().trim()];
+  expect(() => selectTransforms(transforms, [0])).toThrow('expected a bound transform chain');
+  using destroy = spyOn(native.symbols, 'csv_parser_destroy');
+  const rows = latin1Rows([], ',', undefined, undefined, latin1RowsParser(undefined, true), undefined, { transform: transforms });
+  await assert.rejects(rows.next(), /expected a bound transform chain/);
+  expect(destroy).toHaveBeenCalledTimes(1);
+});
+
+test('native rejection of transform steps or operands releases the parser', () => {
+  using destroy = spyOn(native.symbols, 'csv_parser_destroy');
+  using add = spyOn(native.symbols, 'csv_parser_add_transform');
+  add.mockReturnValueOnce(false);
+  expect(() => new NativeCsvParser({ transform: [csv.column(0).upper()] })).toThrow('native parser rejected transform step');
+  expect(destroy).toHaveBeenCalledTimes(1);
+
+  using pair = spyOn(native.symbols, 'csv_parser_transform_pair');
+  pair.mockReturnValueOnce(false);
+  expect(() => new NativeCsvParser({ transform: [csv.column(0).map({ x: 'y' })] })).toThrow('native parser rejected transform operands');
+  expect(destroy).toHaveBeenCalledTimes(2);
+});
+
+test('a failed strict transform releases the validated batch', () => {
+  using parser = new NativeCsvParser({ strict: true, transform: [csv.column(0).upper()] });
+  using destroy = spyOn(native.symbols, 'csv_batch_destroy');
+  using transform = spyOn(native.symbols, 'csv_parser_transform_validated_batch');
+  transform.mockReturnValueOnce(null);
+  expect(() => parser.writeBatch(Buffer.from('a\n'), true)).toThrow('native CSV parser failed');
+  expect(destroy).toHaveBeenCalledTimes(1);
+});
+
 test('incremental parsers enforce delimiter and strict-mode restrictions', () => {
   expect(() => new NativeCsvParser({ delimiter: ',,' })).toThrow('delimiter must be one character');
   expect(() => new NativeCsvParser({ delimiter: '"' })).toThrow('failed to create native CSV parser');
@@ -140,6 +176,18 @@ test('Latin-1 offsets support wide values within the backing range', () => {
   expect(() => checkedOffset(offset, 0, 2 ** 32)).toThrow('exceeds backing storage');
   expect(() => checkedOffset(offset, 1, 0)).toThrow('out of range');
   expect(() => checkedOffset(new Uint32Array([0, 0x200000]), 0, Number.MAX_SAFE_INTEGER)).toThrow('out of range');
+});
+
+test('batch field ranges retain both words of valid 64-bit byte offsets', () => {
+  using parser = new NativeCsvParser();
+  using batch = parser.writeBatch(Buffer.from('a,b'), true);
+  // fieldRange reads only metadata, so the native data length can model a multi-GiB payload.
+  const start = 2 ** 32 + 1;
+  const end = start + 2;
+  batch.fieldOffsets().set([0n, BigInt(start), BigInt(end)]);
+  using dataLength = spyOn(native.symbols, 'csv_batch_data_len');
+  dataLength.mockReturnValueOnce(BigInt(end));
+  expect(batch.fieldRange(0, 1)).toEqual({ start, end });
 });
 
 test('Latin-1 materialization rejects invalid delimiters and truncated quoted spans', async () => {

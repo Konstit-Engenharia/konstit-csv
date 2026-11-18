@@ -4,6 +4,7 @@ import {
   expect,
   test,
 } from 'bun:test';
+import { rejects } from 'node:assert/strict';
 import {
   mkdtemp,
   rm,
@@ -14,6 +15,7 @@ import {
   csv,
   NativeCsvParser,
 } from '../src/index.ts';
+import { MAX_COLUMN_INDEX } from '../src/normalize.ts';
 
 let directory: string;
 beforeAll(async () => {
@@ -476,4 +478,25 @@ test('bindings require valid, distinct columns, including across chains', () => 
   expect(() => clean.on(2025)).toThrow('out of range');
   expect(() => clean.on(0, 0)).toThrow('repeated: 0');
   expect(() => new NativeCsvParser({ transform: [clean.on(2, 3), csv.column(3).upper()] })).toThrow('repeated: 3');
+});
+
+test('transform options require an array and allow one binding per supported column', () => {
+  const clean = csv.transform().trim();
+  const remaining = Array.from({ length: MAX_COLUMN_INDEX }, (_, index) => index + 1);
+  const first = clean.on(0);
+  // @ts-expect-error JavaScript callers can supply a single token instead of an array.
+  expect(() => csv.rows('unused', { transform: first })).toThrow('transform must be an array');
+
+  expect(() => clean.on(0, ...remaining)).not.toThrow();
+  expect(() => clean.on(0, ...remaining, MAX_COLUMN_INDEX + 1)).toThrow('too many transform columns');
+  const tokens = [first, ...remaining.map((column) => clean.on(column))];
+  expect(() => csv.rows('unused', { transform: tokens })).not.toThrow();
+  expect(() => csv.rows('unused', { transform: [...tokens, first] })).toThrow('too many transform columns');
+});
+
+test('projection prepares only transforms bound to selected columns', async () => {
+  const transform = [csv.column(0).replace(/(?=x)/, 'y'), csv.column(1).upper()];
+  const input = Buffer.from('x,kept');
+  expect(await csv.parse(input, { columns: [1], transform })).toEqual([['KEPT']]);
+  await rejects(csv.parse(input, { columns: [0], transform }), SyntaxError);
 });
