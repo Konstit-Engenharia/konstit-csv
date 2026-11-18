@@ -171,14 +171,14 @@ const rows = await csv.parse(Buffer.from('Ana;12,50; sp \nBia;9,00;SP'), {
 // [['São Paulo', 'Ana', '12.50']]
 ```
 
-| Operation                      | Behavior                                                                                                                                                                                            |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `trim()`                       | Remove leading and trailing Unicode White_Space.                                                                                                                                                    |
-| `upper()`, `lower()`           | Apply full Unicode default casing. For example, `Straße` uppercases to `STRASSE` and `ΟΣ` lowercases to `ος`.                                                                                       |
-| `unaccent()`                   | Canonically decompose, remove Unicode marks with the Diacritic property, then recompose to NFC. Both `ã` and `a\u0303` become `a`. Letters such as `ø` and emoji variation selectors are preserved. |
-| `replace(search, replacement)` | Replace every non-overlapping match of a nonempty literal string or an RE2-compatible `RegExp`.                                                                                                     |
-| `map(values, defaultValue?)`   | Look up the whole field once in a map or plain object. An unmatched field emits `defaultValue` when supplied (including `''`), or its current value when omitted.                                   |
-| `date(format, defaultValue?)`  | Emit a valid date as `YYYY-MM-DD`, `DD-MM-YYYY`, or `DD/MM/YYYY`. Invalid fields emit the fallback string, which defaults to `''`.                                                                  |
+| Operation                      | Behavior                                                                                                                                                          |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trim()`                       | Remove leading and trailing Unicode White_Space.                                                                                                                  |
+| `upper()`, `lower()`           | Apply full Unicode default casing. For example, `Straße` uppercases to `STRASSE` and `ΟΣ` lowercases to `ος`.                                                     |
+| `unaccent()`                   | Canonically decompose, remove every character with the Unicode Diacritic property, then recompose to NFC. `ã`, `a\u0303`, `a´` and `a^` all become `a`.           |
+| `replace(search, replacement)` | Replace every non-overlapping match of a nonempty literal string or an RE2-compatible `RegExp`.                                                                   |
+| `map(values, defaultValue?)`   | Look up the whole field once in a map or plain object. An unmatched field emits `defaultValue` when supplied (including `''`), or its current value when omitted. |
+| `date(format, defaultValue?)`  | Emit a valid date as `YYYY-MM-DD`, `DD-MM-YYYY`, or `DD/MM/YYYY`. Invalid fields emit the fallback string, which defaults to `''`.                                |
 
 With a string search, both arguments are literal. For example, `.replace('.', '$1')` changes `a.b.c` to `a$1b$1c`.
 With a regex search, the parser compiles each active pattern and parses its replacement templates once during setup. Columns, batches and stream resets reuse them.
@@ -193,7 +193,8 @@ All other text, including backslashes and JavaScript’s prefix and suffix refer
 It checks Gregorian month lengths and leap years. For example, `.date('DD/MM/YYYY', 'Unknown')` converts
 `20261117` to `17/11/2026` and `29/02/2023` to `Unknown`. Chain `.trim()` first to accept surrounding whitespace.
 
-The Unicode data version is 15.1. Literal replacement and mapping operands must be well-formed strings and match exactly.
+`unaccent()` uses the Unicode 17.0 Diacritic property. Normalization, case conversion and whitespace use Unicode 15.1.
+Literal replacement and mapping operands must be well-formed strings and match exactly.
 Steps run left to right. A chain can be reused or extended without mutating it. Supply at most one chain per column.
 For example, `const clean = csv.transform().trim().upper()` can be used as `transform: [clean.on(0, 2)]`
 for one file and `transform: [clean.on(3)]` for another. Calling `.on()` on an already bound chain selects a new set

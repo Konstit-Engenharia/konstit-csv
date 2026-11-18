@@ -12,12 +12,11 @@ const cases = [
   ['Latin-1', 'latin1', '\u00a0São João Straße\u00a0'],
 ] as const;
 const transform = [csv.column(1).trim().unaccent().upper()];
-const diacritic = /\p{Diacritic}/u;
 const whitespace = /^\p{White_Space}+|\p{White_Space}+$/gu;
 
 function cleanup(value: string): string {
   return value.replace(whitespace, '').normalize('NFD')
-    .replace(/\p{M}/gu, (c) => diacritic.test(c) ? '' : c).normalize('NFC').toUpperCase();
+    .replace(/\p{Diacritic}/gu, '').normalize('NFC').toUpperCase();
 }
 
 for (const [label, encoding, name,] of cases) {

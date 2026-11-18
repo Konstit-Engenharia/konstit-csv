@@ -23,9 +23,11 @@ constexpr interval diacritics[] = {
 #include "diacritic_ranges.inc"
 };
 
-bool is_diacritic_mark(char32_t cp) {
-  if (!una::codepoint::prop{cp}.General_Category_M())
-    return false;
+constexpr bool is_ascii_diacritic(char32_t cp) { return cp == '^' || cp == '`'; }
+
+bool is_diacritic(char32_t cp) {
+  if (cp < 0x80)
+    return is_ascii_diacritic(cp);
   const auto it = std::lower_bound(std::begin(diacritics), std::end(diacritics), cp,
                                    [](interval range, char32_t c) { return range.last < c; });
   return it != std::end(diacritics) && it->first <= cp;
@@ -39,11 +41,11 @@ std::string remove_diacritics(std::string_view source) {
   std::u32string retained;
   for (char32_t cp : una::views::utf8(source)) {
     if (una::codepoint::prop_norm{cp}.NFD_Quick_Check_Yes()) {
-      if (!is_diacritic_mark(cp))
+      if (!is_diacritic(cp))
         retained.push_back(cp);
     } else {
       for (char32_t part : una::codepoint::to_decompose_u32(cp)) {
-        if (!is_diacritic_mark(part))
+        if (!is_diacritic(part))
           retained.push_back(part);
       }
     }
@@ -130,6 +132,13 @@ std::string format_date(std::string_view field, const field_transform& step) {
   return std::string(year).append(1, separator).append(month).append(1, separator).append(day);
 }
 } // namespace
+
+bool is_ascii_without_diacritics(std::string_view text) {
+  uint8_t special = 0;
+  for (unsigned char byte : text)
+    special |= (byte >> 7) | is_ascii_diacritic(byte);
+  return special == 0;
+}
 
 bool field_transforms::add(uint32_t column, uint32_t kind, std::optional<std::string_view> default_value) {
   if (kind > static_cast<uint32_t>(transform_kind::replace_regex))
@@ -231,14 +240,14 @@ size_t field_transforms::write_ascii(char* out, size_t column, std::string_view 
   return field.size();
 }
 
-bool field_transforms::append(std::string& destination, size_t column, std::string_view field, bool known_ascii) const {
+bool field_transforms::append(std::string& destination, size_t column, std::string_view field,
+                              bool known_ascii_without_diacritics) const {
   if (column >= columns_.size() || columns_[column].steps.empty()) {
     destination.append(field);
     return true;
   }
   const auto& chain = columns_[column];
-  if (chain.ascii_cleanup &&
-      (known_ascii || std::none_of(field.begin(), field.end(), [](unsigned char c) { return c >= 0x80; }))) {
+  if (chain.ascii_cleanup && (known_ascii_without_diacritics || is_ascii_without_diacritics(field))) {
     const size_t start = destination.size();
     destination.resize(start + field.size());
     const size_t written = write_ascii(destination.data() + start, column, field);
@@ -258,7 +267,7 @@ bool field_transforms::append(std::string& destination, size_t column, std::stri
       value = una::cases::to_lowercase_utf8(value);
       break;
     case transform_kind::remove_diacritics:
-      if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 0x80; }))
+      if (!is_ascii_without_diacritics(value))
         value = remove_diacritics(value);
       break;
     case transform_kind::lookup:

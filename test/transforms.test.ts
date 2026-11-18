@@ -121,6 +121,7 @@ test.each(['utf8', 'latin1'] as const)('materialized cleanup rows mix quoted spa
   const clean = csv.transform().upper().trim().unaccent().lower().upper();
   const transform = [clean.on(0, 1, 2)];
   const text = '"abc";"xYz";""\n'
+    + '"^ab";"c\u0060d";"^\u0060"\n'
     + '" \t\n\v\f\rabc \t\n\v\f\r";"\t\r";"kept"\n'
     + '"\u001cabc\u001c";"\u0000";"tail"\n'
     + '"\u0085Éß\u00a0";"ÉTÉ";"µcafé"\n'
@@ -132,6 +133,7 @@ test.each(['utf8', 'latin1'] as const)('materialized cleanup rows mix quoted spa
   await Bun.write(path, input);
   const expected = [
     ['ABC', 'XYZ', ''],
+    ['AB', 'CD', ''],
     ['ABC', '', 'KEPT'],
     ['\u001cABC\u001c', '\u0000', 'TAIL'],
     ['ESS', 'ETE', 'ΜCAFE'],
@@ -190,17 +192,20 @@ test('materialized quoted cleanup handles alphabetic delimiters and nonuniform c
   expect(fallback).toEqual(await csv.parse(input, nonuniform));
 });
 
-test('Unicode transformations distinguish diacritics, other marks and standalone symbols', async () => {
+test('unaccent removes combining and standalone Diacritic characters', async () => {
   const cases = [
     ['São João', 'Sao Joao'],
     ['Sa\u0303o Joa\u0303o', 'Sao Joao'],
     ['Αθήνα', 'Αθηνα'],
-    ['❤️ 1️⃣ Łø ^', '❤️ 1️⃣ Łø ^'],
+    ['❤️ 1️⃣ Łø^', '❤️ 1️⃣ Łø'],
+    ['A^\u0060¨¯´·¸B', 'AB'],
+    ['Aʰ゛B', 'AB'],
     ['か\u3099', 'か'],
     ['한글', '한글'],
     [`a${'\u0301'.repeat(70)}`, 'a'],
     ['a\u034f\u0301', 'a\u034f'],
-    ['a\u05a2\u0301', 'a\u05a2'], // U+05A2 lacks the Diacritic property in Unicode 15.1.
+    ['a\u05a2\u0301', 'a'], // Unicode 17.0 classifies the Hebrew accent at U+05A2 as Diacritic.
+    ['a\u{1e5ee}b', 'ab'], // Ol Onal sign MU is outside uni-algo's Unicode 15.1 tables.
   ] as const;
   const stripped = csv.column(0).unaccent();
   expect(await csv.parse(Buffer.from(cases.map(([s,]) => s).join('\n')), { transform: [stripped] }))
@@ -214,6 +219,16 @@ test('Unicode transformations distinguish diacritics, other marks and standalone
     streamed.push(...batch);
   }
   expect(streamed).toEqual([['E"A\nSS']]);
+});
+
+test('unaccent and trim respect step order when stripping ASCII diacritics exposes whitespace', async () => {
+  const input = Buffer.from('"^ x ^";"^ x ^";"^ x ^";"T"\n');
+  const transform = [
+    csv.column(0).trim().unaccent(),
+    csv.column(1).unaccent().trim(),
+    csv.column(3).map({ T: '^mapped^' }).unaccent(),
+  ];
+  expect(await csv.parse(input, { delimiter: ';', transform })).toEqual([[' x ', 'x', '^ x ^', 'mapped']]);
 });
 
 test('strict validation reads the original header before projection and transformation', async () => {

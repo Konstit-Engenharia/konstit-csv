@@ -1565,8 +1565,8 @@ private:
   bool append_transformed_quoted_record(const uint8_t* data, size_t len, size_t field_count,
                                         const std::array<uint16_t, 64>& ends, const auto& field_at) {
     const auto* uniform = transforms_.uniform_ascii_cleanup(field_count);
-    const bool ascii = is_ascii(data, len);
-    if (ascii && uniform != nullptr && (!uniform->trim || !quoted_record_may_need_trim(data, len))) {
+    const bool plain_ascii = is_ascii_without_diacritics({reinterpret_cast<const char*>(data), len});
+    if (plain_ascii && uniform != nullptr && (!uniform->trim || !quoted_record_may_need_trim(data, len))) {
       const size_t output = batch_->data.size();
       // The materializer skips syntax bytes, so alphabetic delimiters may be cased too.
       if (uniform->casing.has_value()) {
@@ -1583,7 +1583,7 @@ private:
       finish_quoted_spans(output, ends, field_count);
       return true;
     }
-    if (ascii && transforms_.only_ascii_cleanup()) {
+    if (plain_ascii && transforms_.only_ascii_cleanup()) {
       // Each field has two quotes and a terminator. Trim and ASCII casing fit in the original payload.
       size_t output = batch_->data.size();
       batch_->data.resize(output + (len - 3 * field_count));
@@ -1599,12 +1599,12 @@ private:
     std::string decoded;
     for (size_t column = 0; column < field_count; ++column) {
       auto field = field_at(column);
-      if (!ascii && encoding_ == csv_encoding::latin1) {
+      if (!plain_ascii && encoding_ == csv_encoding::latin1) {
         decoded.clear();
         append_latin1(decoded, reinterpret_cast<const uint8_t*>(field.data()), field.size());
         field = decoded;
       }
-      if (!transforms_.append(batch_->data, column, field, ascii))
+      if (!transforms_.append(batch_->data, column, field, plain_ascii))
         return false;
       batch_->field_offsets.push_back(batch_->data.size());
     }

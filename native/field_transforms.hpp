@@ -12,6 +12,8 @@
 #include <vector>
 
 namespace csv_native {
+bool is_ascii_without_diacritics(std::string_view text);
+
 enum class transform_kind : uint32_t {
   trim,
   upper,
@@ -48,15 +50,16 @@ public:
   const ascii_cleanup* uniform_ascii_cleanup(size_t field_count) const {
     return field_count <= uniform_ascii_columns_ ? &uniform_ascii_cleanup_ : nullptr;
   }
-  bool append(std::string& destination, size_t column, std::string_view field, bool known_ascii = false) const;
+  bool append(std::string& destination, size_t column, std::string_view field,
+              bool known_ascii_without_diacritics = false) const;
   bool only_ascii_cleanup() const { return only_ascii_cleanup_; }
-  // ASCII cleanup never expands the field. The caller reserves room for its original width.
+  // The caller checks that the field is ASCII without diacritics and reserves its original width.
   size_t write_ascii(char* out, size_t column, std::string_view field) const;
 
 private:
   struct column_chain {
     std::vector<field_transform> steps;
-    // On ASCII, unaccent is an identity and trimming commutes with case conversion.
+    // On ASCII without diacritics, only trimming and the last case conversion affect the output.
     bool ascii_cleanup = true;
     bool trim_ascii = false;
     std::optional<transform_kind> ascii_case;

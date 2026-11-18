@@ -110,7 +110,7 @@ export interface CsvTransformMethods<TResult = CsvTransform> {
   readonly upper: () => TResult;
   /** Apply full, locale-independent Unicode lowercase mapping. */
   readonly lower: () => TResult;
-  /** Canonically decompose, remove marks with the Diacritic property, and recompose. */
+  /** Canonically decompose, remove every character with the Unicode 17.0 Diacritic property, and recompose to NFC. */
   readonly unaccent: () => TResult;
   /** Replace every non-overlapping match. String operands are literal with a string search. Regex replacements accept $1–$99, $<name>, $& and $$. */
   readonly replace: (search: string | RegExp, replacement: string) => TResult;
