@@ -1,6 +1,9 @@
 import { read } from 'bun:ffi';
 import { isUtf8 } from 'node:buffer';
-import { decodeMaterializedField } from './materialize-field.js';
+import {
+  decodeMaterializedField,
+  prepareRow,
+} from './materialize-field.js';
 import {
   EMPTY_BUFFER,
   native,
@@ -333,9 +336,7 @@ export class NativeCsvBatch {
       for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
         const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
         const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
-        const existing = target[rowIndex];
-        const row = existing === undefined ? [] : existing;
-        row.length = selectedColumns.length;
+        const row = prepareRow(target[rowIndex], selectedColumns.length);
 
         for (let outputIndex = 0; outputIndex < selectedColumns.length; ++outputIndex) {
           const column = selectedColumns[outputIndex] ?? 0;
@@ -362,16 +363,14 @@ export class NativeCsvBatch {
     let utf16Offsets: Int16Array | undefined;
     const flags = native.symbols.csv_batch_quoted_rows_ptr(this.#requireHandle());
     const quotedRows = flags === null ? undefined : new Uint8Array(toArrayBuffer(flags, 0, rowCount));
+    let fieldStart = offsetAt(rowOffsetWords, 0, 0, totalFields);
+    let start = offsetAt(fieldOffsetWords, fieldStart, 'field offset', dataLength);
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
-      const fieldStart = offsetAt(rowOffsetWords, rowIndex, rowIndex, totalFields);
       const fieldEnd = offsetAt(rowOffsetWords, rowIndex + 1, rowIndex, totalFields);
-      const existing = target[rowIndex];
-      const row = existing === undefined ? [] : existing;
-      row.length = fieldEnd - fieldStart;
+      const row = prepareRow(target[rowIndex], fieldEnd - fieldStart);
       // In a quoted span, the opening quote, closing quote and terminator surround the payload.
       const leading = quotedRows?.[rowIndex] ?? 0;
       const trailing = leading * 2;
-      let start = fieldStart < fieldEnd ? offsetAt(fieldOffsetWords, fieldStart, 'field offset', dataLength) : 0;
       for (let fieldIndex = fieldStart; fieldIndex < fieldEnd; ++fieldIndex) {
         const rawEnd = offsetAt(fieldOffsetWords, fieldIndex + 1, 'field offset', dataLength);
         const end = rawEnd - trailing;
@@ -410,6 +409,7 @@ export class NativeCsvBatch {
         start = rawEnd;
       }
       target[rowIndex] = row;
+      fieldStart = fieldEnd;
     }
 
     return target;

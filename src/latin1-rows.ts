@@ -1,6 +1,7 @@
 import {
   copyLatin1Range,
   latin1Pair,
+  prepareRow,
 } from './materialize-field.js';
 import {
   EMPTY_BUFFER,
@@ -119,9 +120,8 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
       // A raw span starts with a quote and ends with a quote and delimiter or LF.
       const leading = quotedRows?.[rowIndex] ?? 0;
       const trailing = leading * 2;
-      const row = reusableRows?.[rowIndex] ?? [];
       const width = fieldEnd - fieldStart;
-      row.length = width;
+      const row = prepareRow(reusableRows?.[rowIndex], width);
       for (let column = 0; column < width; ++column) {
         const end = checkedOffset(fieldOffsets, fieldStart + column + 1, dataLength);
         const payload = start + leading;

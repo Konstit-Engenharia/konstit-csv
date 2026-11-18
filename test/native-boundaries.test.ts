@@ -5,6 +5,7 @@ import {
   test,
 } from 'bun:test';
 import assert from 'node:assert/strict';
+import { csv } from '../src/api.ts';
 import { NativeCsvRowView } from '../src/batches.ts';
 import { findCsvSafeShards } from '../src/files.ts';
 import {
@@ -25,6 +26,16 @@ import { csvFixturePath } from './fixtures.ts';
 // The callbacks keep each test's offset array alive while the parser borrows its address.
 type OffsetReader = (handle: NativePointer) => NativePointer | null;
 const offsetReaders: Record<'csv_split_offsets_batch_ptr' | 'csv_batch_field_offsets_ptr', OffsetReader> = native.symbols;
+
+test('csv.rows releases each native batch before yielding its rows', async () => {
+  using destroy = spyOn(native.symbols, 'csv_batch_destroy');
+  const retained: string[][][] = [];
+  for await (const rows of csv.rows(csvFixturePath('rfc4180/simple-lf.csv'), { encoding: 'utf8' })) {
+    retained.push(rows);
+    expect(destroy).toHaveBeenCalledTimes(retained.length);
+  }
+  expect(retained).toEqual([[['id', 'name', 'total']], [['7', 'Ada', '12']]]);
+});
 
 test('resolves both packaged and explicitly configured native library paths', () => {
   const packaged = resolveNativeLibraryPath(undefined);

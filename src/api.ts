@@ -86,12 +86,7 @@ export async function parse<TColumns extends CsvColumns | undefined = undefined>
     filters,
     options.transform,
   );
-  const batch = parser.writeBatch(input.bytes, true);
-  try {
-    return materializeRows<TColumns>(batch, columns, projected);
-  } finally {
-    batch.close();
-  }
+  return consumeBatchRows<TColumns>(parser.writeBatch(input.bytes, true), columns, projected);
 }
 
 /**
@@ -140,8 +135,8 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
     return;
   }
   using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters, options.transform, 'rows');
-  for await (using batch of parseFileChunks(input, parser, options.limit)) {
-    yield materializeRows<TColumns>(batch, columns, projected, reusableRows);
+  for await (const batch of parseFileChunks(input, parser, options.limit)) {
+    yield consumeBatchRows<TColumns>(batch, columns, projected, reusableRows);
   }
 }
 
@@ -376,12 +371,13 @@ function toParserOptions(
   };
 }
 
-function materializeRows<TColumns extends CsvColumns | undefined>(
-  batch: NativeCsvBatch,
+function consumeBatchRows<TColumns extends CsvColumns | undefined>(
+  nativeBatch: NativeCsvBatch,
   columns: CsvColumns | undefined,
   projected: boolean,
   target: CsvRow[] = [],
 ): CsvProjectedRow<TColumns>[] {
+  using batch = nativeBatch;
   return batch.rowsInto(target, projected ? undefined : columns) as CsvProjectedRow<TColumns>[];
 }
 

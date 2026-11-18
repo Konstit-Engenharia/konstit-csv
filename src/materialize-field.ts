@@ -7,6 +7,15 @@ const utf8Slice = bufferPrototype.utf8Slice;
 // Each 16-bit key identifies an immutable two-byte string. ASCII pairs can also be reused for UTF-8.
 const LATIN1_PAIRS = Array.from<string | undefined>({ length: 256 * 256 });
 
+export function prepareRow(row: string[] | undefined, width: number): string[] {
+  if (row === undefined) {
+    // oxlint-disable-next-line unicorn/no-new-array -- Allocate the final width before decoding fields into their slots.
+    return new Array<string>(width);
+  }
+  row.length = width;
+  return row;
+}
+
 export function latin1Pair(key: number): string {
   const cached = LATIN1_PAIRS[key];
   if (cached !== undefined) {
