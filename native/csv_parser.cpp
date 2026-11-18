@@ -38,7 +38,12 @@ enum class csv_encoding : int {
   latin1 = 1,
 };
 
-enum class batch_layout { utf8, latin1, latin1_quoted_spans };
+enum class batch_layout { utf8, latin1, latin1_quoted_spans, latin1_cleanup };
+
+// Shared with the private row materializer in src/latin1-rows.ts.
+enum row_storage : uint8_t { packed = 0, quoted_span = 1, packed_utf8 = 2 };
+constexpr size_t max_quoted_fields = 64;
+using quoted_field_ends = std::array<uint16_t, max_quoted_fields>;
 
 enum class output_mode {
   batch,
@@ -679,6 +684,9 @@ public:
     prepared_configuration_ = true;
     prepared_direct_projection_ = direct_projection_;
     prepared_quoted_records_ = supports_quoted_records();
+    if (prepared_quoted_records_ && layout_ == batch_layout::latin1_cleanup) {
+      quoted_cleanup_columns_ = transforms_.bound_columns(max_quoted_fields);
+    }
     return true;
   }
 
@@ -1416,7 +1424,7 @@ private:
   // Zero leaves all parser and batch state at the record start for the general parser.
   HWY_ATTR size_t try_quoted_record(const uint8_t* data, size_t available) {
     const size_t len = std::min<size_t>(available, std::numeric_limits<uint16_t>::max());
-    std::array<uint16_t, 64> ends;
+    quoted_field_ends ends;
 #if defined(__aarch64__)
     constexpr size_t lanes = 64;
     auto quote_mask = [](const uint8_t* input) {
@@ -1551,7 +1559,7 @@ private:
     return cursor;
   }
 
-  void finish_quoted_spans(size_t output, const std::array<uint16_t, 64>& ends, size_t field_count) {
+  void finish_quoted_spans(size_t output, const quoted_field_ends& ends, size_t field_count) {
     // Each span includes its opening quote, closing quote and one terminator.
     const size_t first = batch_->field_offsets.size();
     batch_->field_offsets.resize(first + field_count);
@@ -1559,11 +1567,29 @@ private:
       batch_->field_offsets[first + column] = output + ends[column] + 2;
     }
     batch_->quoted_rows.resize(batch_->row_offsets.size(), 0);
-    batch_->quoted_rows.back() = 1;
+    batch_->quoted_rows.back() = row_storage::quoted_span;
   }
 
   bool append_transformed_quoted_record(const uint8_t* data, size_t len, size_t field_count,
-                                        const std::array<uint16_t, 64>& ends, const auto& field_at) {
+                                        const quoted_field_ends& ends, const auto& field_at) {
+    if (layout_ == batch_layout::latin1_cleanup) {
+      const auto& bound = quoted_cleanup_columns_;
+      if (std::all_of(bound.begin(), bound.end(), [&](uint32_t column) {
+            return column >= field_count || transforms_.can_keep_latin1_span(column, field_at(column));
+          })) {
+        const size_t output = batch_->data.size();
+        batch_->data.append(reinterpret_cast<const char*>(data), len);
+        for (const auto column : bound) {
+          if (column < field_count) {
+            const auto field = field_at(column);
+            const size_t start = field.data() - reinterpret_cast<const char*>(data);
+            transforms_.write_ascii(batch_->data.data() + output + start, column, field);
+          }
+        }
+        finish_quoted_spans(output, ends, field_count);
+        return true;
+      }
+    }
     const auto* uniform = transforms_.uniform_ascii_cleanup(field_count);
     const bool plain_ascii = is_ascii_without_diacritics({reinterpret_cast<const char*>(data), len});
     if (plain_ascii && uniform != nullptr && (!uniform->trim || !quoted_record_may_need_trim(data, len))) {
@@ -1596,6 +1622,7 @@ private:
       batch_->data.resize(output);
       return true;
     }
+    const size_t row_start = batch_->data.size();
     std::string decoded;
     for (size_t column = 0; column < field_count; ++column) {
       auto field = field_at(column);
@@ -1608,11 +1635,26 @@ private:
         return false;
       batch_->field_offsets.push_back(batch_->data.size());
     }
+    if (layout_ == batch_layout::latin1_cleanup) {
+      mark_utf8_output(row_start);
+    }
     return true;
   }
 
+  void mark_utf8_output(size_t row_start) {
+    const auto* data = reinterpret_cast<const uint8_t*>(batch_->data.data() + row_start);
+    if (!is_ascii(data, batch_->data.size() - row_start)) {
+      batch_->quoted_rows.resize(batch_->row_offsets.size(), 0);
+      batch_->quoted_rows.back() = row_storage::packed_utf8;
+    }
+  }
+
   bool supports_quoted_records() const {
-    if ((transform_matched_rows_ && layout_ != batch_layout::utf8) || !conjunctive_filters_ || projection_enabled_) {
+    if (layout_ == batch_layout::latin1_cleanup && (filters_.empty() || !transforms_.only_ascii_cleanup())) {
+      return false;
+    }
+    if ((transform_matched_rows_ && layout_ != batch_layout::utf8 && layout_ != batch_layout::latin1_cleanup) ||
+        !conjunctive_filters_ || projection_enabled_) {
       return false;
     }
     for (const auto& filter : filters_) {
@@ -2422,12 +2464,12 @@ private:
     }
 
     // Private row materialization stores Latin1 bytes, but predicates always consume UTF-8.
-    if (layout_ != batch_layout::utf8) {
+    const bool raw_latin1 = layout_ == batch_layout::latin1 || layout_ == batch_layout::latin1_quoted_spans;
+    if (raw_latin1) {
       utf8_filter_field_.clear();
       append_latin1(utf8_filter_field_, reinterpret_cast<const uint8_t*>(field.data()), field.size());
     }
-    const std::string_view filter_field =
-        layout_ != batch_layout::utf8 ? std::string_view(utf8_filter_field_) : std::string_view(field);
+    const std::string_view filter_field = raw_latin1 ? std::string_view(utf8_filter_field_) : std::string_view(field);
     bool changed = false;
     for (uint32_t filter_index = first_filter_by_column_[current_column_];
          filter_index != std::numeric_limits<uint32_t>::max(); filter_index = next_filter_[filter_index]) {
@@ -2586,6 +2628,7 @@ private:
 
     if (transform_matched_rows_) {
       const auto& fields = projection_enabled_ ? projected_fields_ : row_fields_;
+      const size_t row_start = batch_->data.size();
       for (size_t i = 0; i < fields.size(); ++i) {
         const size_t column = projection_enabled_ ? selected_columns_[i] : i;
         if (column < current_column_ && !transforms_.append(batch_->data, column, fields[i])) {
@@ -2593,6 +2636,9 @@ private:
           return;
         }
         batch_->field_offsets.push_back(batch_->data.size());
+      }
+      if (layout_ == batch_layout::latin1_cleanup) {
+        mark_utf8_output(row_start);
       }
       finish_batch_row();
     } else if (projection_enabled_) {
@@ -2745,6 +2791,7 @@ private:
   bool configuration_initialized_ = false;
   bool prepared_configuration_ = false;
   field_transforms transforms_;
+  std::vector<uint32_t> quoted_cleanup_columns_;
   bool transform_matched_rows_ = false;
   bool prepared_direct_projection_ = false;
   bool prepared_quoted_records_ = false;
@@ -3099,6 +3146,15 @@ CSV_EXPORT void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_
 
 CSV_EXPORT void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter) {
   return csv_parser_create_latin1_quoted_rows(delimiter, 0);
+}
+
+// Quoted spans retain Latin-1 bytes. The ordinary field parser decodes split and escaped fields as UTF-8.
+CSV_EXPORT void* csv_parser_create_latin1_cleanup_rows(uint8_t delimiter, uint32_t fixed_columns) {
+  if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
+    return nullptr;
+  }
+  return new csv_native::csv_parser(csv_native::csv_encoding::latin1, delimiter,
+                                    csv_native::batch_layout::latin1_cleanup, fixed_columns);
 }
 
 // Internal materialization path. Ordinary batch callers need packed UTF-8 offsets.

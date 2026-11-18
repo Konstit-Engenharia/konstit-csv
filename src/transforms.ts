@@ -179,6 +179,20 @@ export function snapshotTransforms(transforms: readonly CsvTransform[] | undefin
   return Object.freeze(captured);
 }
 
+const cleanupOps = new Set([Op.Trim, Op.Upper, Op.Lower, Op.Unaccent]);
+
+export function hasOnlyCleanupTransforms(tokens: readonly CsvTransform[]): boolean {
+  return tokens.every((token) => {
+    const binding = bindings.get(token);
+    for (let node = binding?.chain; node; node = node.previous) {
+      if (!cleanupOps.has(node.step.kind)) {
+        return false;
+      }
+    }
+    return binding !== undefined;
+  });
+}
+
 /** Strict row projection happens after full-width validation and transformation. */
 export function selectTransforms(tokens: readonly CsvTransform[], columns: CsvColumns): readonly CsvTransform[] {
   const selected = new Set(columns);

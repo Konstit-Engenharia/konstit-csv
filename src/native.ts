@@ -309,6 +309,9 @@ const CSV_SYMBOLS = {
   // void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_t fixed_columns);
   csv_parser_create_latin1_quoted_rows: { args: ['u8', 'u32'], returns: 'ptr' },
   // C signature:
+  // void* csv_parser_create_latin1_cleanup_rows(uint8_t delimiter, uint32_t fixed_columns);
+  csv_parser_create_latin1_cleanup_rows: { args: ['u8', 'u32'], returns: 'ptr' },
+  // C signature:
   // const uint8_t* csv_batch_quoted_rows_ptr(void* batch);
   csv_batch_quoted_rows_ptr: { args: ['ptr'], returns: 'ptr' },
   // C signature:
@@ -321,8 +324,9 @@ const CSV_SYMBOLS = {
 
 export const native = dlopen(resolveNativeLibraryPath(process.env['CSV_NATIVE_LIBRARY_PATH']), CSV_SYMBOLS);
 
-export function latin1RowsParser(fixedColumns: number | undefined): (delimiter: number) => NativePointer | null {
-  return (delimiter) => native.symbols.csv_parser_create_latin1_quoted_rows(delimiter, fixedColumns ?? 0);
+export function latin1RowsParser(fixedColumns: number | undefined, cleanup = false): (delimiter: number) => NativePointer | null {
+  const create = cleanup ? native.symbols.csv_parser_create_latin1_cleanup_rows : native.symbols.csv_parser_create_latin1_quoted_rows;
+  return (delimiter) => create(delimiter, fixedColumns ?? 0);
 }
 
 export function resolveNativeLibraryPath(configuredPath: string | undefined): string {

@@ -17,7 +17,10 @@ import {
   not,
   re,
 } from './filter.js';
-import { latin1Rows } from './latin1-rows.js';
+import {
+  canUseFilteredLatin1Cleanup,
+  latin1Rows,
+} from './latin1-rows.js';
 import { latin1RowsParser } from './native.js';
 import {
   normalizeFixedColumnsCount,
@@ -121,19 +124,22 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
   const columns = options.columns;
   const projected = filters !== undefined || (options.strict !== true && columns !== undefined);
   await using input = await prepareCsvFileInput(path, options, 'read-ahead', probeFormat);
-  const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
-  if (options.strict !== true && input.parserEncoding === 'latin1' && !options.transform?.length) {
+  if (
+    options.strict !== true && input.parserEncoding === 'latin1'
+    && (!options.transform?.length || canUseFilteredLatin1Cleanup(columns, filters, options.transform))
+  ) {
     validateRowSelection(options);
     const fixedColumns = normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
-    const createParser = latin1RowsParser(fixedColumns);
+    const createParser = latin1RowsParser(fixedColumns, Boolean(options.transform?.length));
     const chunks = options.limit === 0 ? [] : input.chunks();
-    yield* latin1Rows(chunks, input.delimiter, columns, filters, createParser, reusableRows, parserOptions) as AsyncGenerator<
+    yield* latin1Rows(chunks, input.delimiter, columns, filters, createParser, reusableRows, options) as AsyncGenerator<
       CsvProjectedRow<TColumns>[],
       void
     >;
     return;
   }
+  const parserOptions = toParserOptions(options, input.parserEncoding, input.delimiter);
   using parser = createPreparedParser(parserOptions, projected ? columns : undefined, filters, options.transform, 'rows');
   for await (const batch of parseFileChunks(input, parser, options.limit)) {
     yield consumeBatchRows<TColumns>(batch, columns, projected, reusableRows);

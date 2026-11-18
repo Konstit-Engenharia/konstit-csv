@@ -53,6 +53,8 @@ public:
   bool append(std::string& destination, size_t column, std::string_view field,
               bool known_ascii_without_diacritics = false) const;
   bool only_ascii_cleanup() const { return only_ascii_cleanup_; }
+  std::vector<uint32_t> bound_columns(size_t limit) const;
+  bool can_keep_latin1_span(size_t column, std::string_view field) const;
   // The caller checks that the field is ASCII without diacritics and reserves its original width.
   size_t write_ascii(char* out, size_t column, std::string_view field) const;
 

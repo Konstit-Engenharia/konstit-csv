@@ -51,4 +51,23 @@ for (const [name, options,] of [['plain', plain], ['cleanup', cleanup]] as const
   }]);
 }
 
+// Measure sparse address cleanup on the active domestic establishments, with the default owned row arrays.
+const where = csv.all(csv.column(5).equals('02'), csv.column(19).doesNotEqual('EX'));
+for (const [name, transform,] of [['plain', []], ['address cleanup', [chain.on(13, 14, 16, 17)]]] as const) {
+  cases.push([`filtered Latin-1 rows / ${name}`, async () => {
+    let rows = 0;
+    let characters = 0;
+    for await (const batch of csv.rows(FILE, { ...plain, where, transform })) {
+      rows += batch.length;
+      for (const row of batch) {
+        characters += (row[13]?.length ?? 0) + (row[14]?.length ?? 0) + (row[16]?.length ?? 0) + (row[17]?.length ?? 0);
+      }
+    }
+    if (characters === 0) {
+      throw new Error('expected address fields in matching rows');
+    }
+    return rows;
+  }]);
+}
+
 await runExampleBenchCases(cases);

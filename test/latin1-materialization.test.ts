@@ -3,6 +3,7 @@ import {
   beforeAll,
   describe,
   expect,
+  spyOn,
   test,
 } from 'bun:test';
 import { rejects } from 'node:assert/strict';
@@ -17,6 +18,7 @@ import {
   type CsvFilter,
   type CsvRowsOptions,
 } from '../src/index.ts';
+import { native } from '../src/native.ts';
 
 let directory = '';
 let bytesPath = '';
@@ -117,6 +119,60 @@ async function collect(path: string, options: CsvRowsOptions<readonly number[] |
 }
 
 describe('private Latin1 row materialization compatibility', () => {
+  test('filtered cleanup preserves Latin-1 spans and decodes Unicode fallback across chunk boundaries', async () => {
+    const path = join(directory, 'filtered-cleanup.csv');
+    const text = '"ok";"aBc";"ÿ"\n"no";"drop";"ñ"\n"ok";" ^çß^ ";"é"\n'
+      + '"ok";"µ";"ñ"\n"ok";"a""b";"ø"\r\n"ok";"x\ny";""\n"ok"\n"ok";"eOf";"é"';
+    await Bun.write(path, Buffer.from(text, 'latin1'));
+    const where = csv.all(csv.column(0).equals('ok'), csv.column(0).doesNotEqual(Buffer.from('no')));
+    const transform = [csv.transform().trim().upper().unaccent().on(1, 99), csv.column(0).lower()];
+    const expected = [
+      ['ok', 'ABC', 'ÿ'],
+      ['ok', 'CSS', 'é'],
+      ['ok', 'Μ', 'ñ'],
+      ['ok', 'A"B', 'ø'],
+      ['ok', 'X\nY', ''],
+      ['ok'],
+      ['ok', 'EOF', 'é'],
+    ];
+    using create = spyOn(native.symbols, 'csv_parser_create_latin1_cleanup_rows');
+    for (const chunkSize of [1, 17, 4096]) {
+      for (const reuseArrays of [false, true]) {
+        const rows = [];
+        for await (const batch of csv.rows(path, { delimiter: ';', encoding: 'latin1', chunkSize, where, transform, reuseArrays })) {
+          for (const row of batch) {
+            rows.push(reuseArrays ? row.slice() : row);
+          }
+        }
+        expect(rows).toEqual(expected);
+      }
+    }
+    expect(create).toHaveBeenCalledTimes(6);
+  });
+
+  test('mixed transform chains, projected rows and unsupported filters use the generic materializer', async () => {
+    const where = csv.column(0).equals('1');
+    const clean = csv.column(2).trim().upper().unaccent();
+    using create = spyOn(native.symbols, 'csv_parser_create_latin1_cleanup_rows');
+    for (
+      const step of [
+        clean.replace('SAO', '東京'),
+        clean.replace(/^SAO$/, '東京'),
+        clean.map({ SAO: '東京' }),
+        clean.date('YYYY-MM-DD', '東京'),
+      ]
+    ) {
+      expect(await collect(filtersPath, { where, transform: [csv.column(1).upper(), step.lower()] })).toEqual([
+        ['1', 'ÉRICO', '東京', 'quoted "é"'],
+      ]);
+    }
+    expect(await collect(filtersPath, { columns: [2, 1], transform: [clean], where })).toEqual([['SAO', 'Érico']]);
+    for (const predicate of [csv.column(1).equals('João'), csv.column(0).startsWith('2')]) {
+      expect(await collect(filtersPath, { transform: [clean], where: predicate })).toEqual([['2', 'João', 'RIO', 'line\nbreak']]);
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
+
   test('captures replaced projections before iteration and across split records and final rows', async () => {
     for (const encoding of ['utf8', 'latin1'] as const) {
       // The first chunk ends inside the next record, including a UTF-8 character.

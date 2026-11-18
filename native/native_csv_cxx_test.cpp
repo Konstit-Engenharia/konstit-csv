@@ -17,6 +17,7 @@ void* csv_parser_create(int encoding, uint8_t delimiter);
 void* csv_parser_create_latin1_rows(uint8_t delimiter);
 void* csv_parser_create_latin1_rows_with_quoted_spans(uint8_t delimiter);
 void* csv_parser_create_latin1_quoted_rows(uint8_t delimiter, uint32_t fixed_columns);
+void* csv_parser_create_latin1_cleanup_rows(uint8_t delimiter, uint32_t fixed_columns);
 void* csv_parser_create_latin1_rows_with_fixed_columns(uint8_t delimiter, uint32_t fixed_columns);
 void csv_parser_destroy(void* parser);
 void csv_parser_reset(void* parser);
@@ -1170,6 +1171,33 @@ TEST_CASE("prepared Latin-1 rows match ASCII predicates across quoted records, f
       }
     }
   }
+}
+
+TEST_CASE("filtered Latin-1 cleanup copies quoted spans only when the bound fields keep their widths") {
+  void* parser = csv_parser_create_latin1_cleanup_rows(';', 3);
+  REQUIRE(parser != nullptr);
+  REQUIRE(csv_parser_add_transform(parser, 1, 0)); // trim
+  REQUIRE(csv_parser_add_transform(parser, 1, 1)); // upper
+  const uint8_t values[] = "ok";
+  const uint32_t offsets[] = {0, 2};
+  const uint32_t filter[] = {1, 0, 0, 1};
+  REQUIRE(csv_parser_prepare(parser, false, nullptr, 0, filter, 1, values, 2, offsets, 1));
+  const std::string input = "\"ok\";\"aBc\";\"\xe9\"\n"
+                            "\"no\";\"aBc\";\"\xe9\"\n"
+                            "\"ok\";\" a \";\"b\"\n"
+                            "\"ok\";\"\xb5\";\"\xe9\"\n";
+  void* batch =
+      csv_parser_write_prepared_batch(parser, reinterpret_cast<const uint8_t*>(input.data()), input.size(), true);
+  REQUIRE(batch != nullptr);
+  REQUIRE(csv_batch_row_count(batch) == 3);
+  const auto* flags = csv_batch_quoted_rows_ptr(batch);
+  REQUIRE(flags != nullptr);
+  REQUIRE(std::vector<uint8_t>(flags, flags + 3) == std::vector<uint8_t>{1, 0, 2});
+  const std::string expected = "\"ok\";\"ABC\";\"\xe9\"\nokAbok\xce\x9c\xc3\xa9";
+  REQUIRE(std::string_view(reinterpret_cast<const char*>(csv_batch_data_ptr(batch)), csv_batch_data_len(batch)) ==
+          expected);
+  csv_batch_destroy(batch);
+  csv_parser_destroy(parser);
 }
 
 TEST_CASE("materialized transformed spans mix raw ASCII and packed UTF-8 across chunk splits") {

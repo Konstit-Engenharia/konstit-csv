@@ -213,16 +213,34 @@ void field_transforms::prepare_ascii_cleanup() {
     uniform_ascii_columns_ = std::numeric_limits<size_t>::max();
 }
 
+std::vector<uint32_t> field_transforms::bound_columns(size_t limit) const {
+  std::vector<uint32_t> bound;
+  for (size_t i = 0; i < std::min(limit, columns_.size()); ++i) {
+    if (!columns_[i].steps.empty())
+      bound.push_back(static_cast<uint32_t>(i));
+  }
+  return bound;
+}
+
+static constexpr bool ascii_whitespace(char c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
+
+bool field_transforms::can_keep_latin1_span(size_t column, std::string_view field) const {
+  if (field.empty())
+    return true;
+  if (columns_[column].trim_ascii && (ascii_whitespace(field.front()) || ascii_whitespace(field.back())))
+    return false;
+  return is_ascii_without_diacritics(field);
+}
+
 size_t field_transforms::write_ascii(char* out, size_t column, std::string_view field) const {
   if (field.empty())
     return 0;
   if (column < columns_.size()) {
     const auto& chain = columns_[column];
     if (chain.trim_ascii) {
-      const auto whitespace = [](char c) { return c == ' ' || (c >= '\t' && c <= '\r'); };
-      while (!field.empty() && whitespace(field.front()))
+      while (!field.empty() && ascii_whitespace(field.front()))
         field.remove_prefix(1);
-      while (!field.empty() && whitespace(field.back()))
+      while (!field.empty() && ascii_whitespace(field.back()))
         field.remove_suffix(1);
     }
     if (chain.ascii_case == transform_kind::upper) {

@@ -1,5 +1,7 @@
+import { isAscii } from 'node:buffer';
 import {
   copyLatin1Range,
+  decodeMaterializedField,
   latin1Pair,
   prepareRow,
 } from './materialize-field.js';
@@ -17,19 +19,46 @@ import {
   prepareNativeParser,
   setRowSelection,
 } from './parser.js';
+import {
+  hasOnlyCleanupTransforms,
+  prepareTransforms,
+} from './transforms.js';
 import type {
   CsvColumns,
   CsvDelimiter,
   CsvNativeFilterProgramEntry,
   CsvParserOptions,
   CsvRow,
+  CsvTransform,
+  CsvTransformOptions,
 } from './types.js';
 
 // Bound the backing string retained by a single sliced field.
 const WINDOW_BYTES = 1024;
 const MAX_WINDOW_FIELD_BYTES = 64;
 
-// These opaque batches contain Latin1 bytes and are never wrapped in NativeCsvBatch.
+// Values are shared with row_storage in native/csv_parser.cpp.
+enum RowStorage {
+  QuotedSpan = 1,
+  PackedUtf8 = 2,
+}
+
+// The native quoted-record scanner accepts whole rows and conjunctive ASCII equality/inequality predicates.
+export function canUseFilteredLatin1Cleanup(
+  columns: CsvColumns | undefined,
+  filters: readonly CsvNativeFilterProgramEntry[] | undefined,
+  transforms: readonly CsvTransform[],
+): boolean {
+  return columns === undefined && filters !== undefined && hasOnlyCleanupTransforms(transforms) && filters.every((entry) => {
+    if ('operator' in entry) {
+      return entry.operator === 'all';
+    }
+    const operand = 'value' in entry ? entry.value : 'notEquals' in entry ? entry.notEquals : undefined;
+    return typeof operand === 'string' ? Buffer.byteLength(operand) === operand.length : operand !== undefined && isAscii(operand);
+  });
+}
+
+// These private batches may mix quoted Latin-1 spans with packed transformed UTF-8 rows.
 export async function* latin1Rows(
   chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
   delimiter: CsvDelimiter,
@@ -37,7 +66,7 @@ export async function* latin1Rows(
   filters: readonly CsvNativeFilterProgramEntry[] | undefined,
   createParser: (delimiter: number) => NativePointer | null,
   reusableRows?: CsvRow[],
-  options: CsvParserOptions = {},
+  options: Pick<CsvParserOptions, 'limit' | 'skipRows'> & CsvTransformOptions = {},
 ): AsyncGenerator<CsvRow[], void> {
   if (delimiter === 'auto') {
     throw new Error('automatic delimiter detection is only supported by file APIs');
@@ -54,6 +83,9 @@ export async function* latin1Rows(
   nativeCsvParserFinalizer.register(lifetime, parser, lifetime);
   try {
     setRowSelection(parser, options);
+    if (options.transform?.length) {
+      prepareTransforms(parser, options.transform, columns);
+    }
     const prepared = prepareNativeParser(parser, columns, filters);
     let remaining = options.limit;
     if (remaining === 0) {
@@ -117,11 +149,22 @@ function consumeLatin1Batch(parser: NativePointer, batch: NativePointer | null, 
     let text = '';
     for (let rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
       const fieldEnd = checkedOffset(rowOffsets, rowIndex + 1, totalFields);
-      // A raw span starts with a quote and ends with a quote and delimiter or LF.
-      const leading = quotedRows?.[rowIndex] ?? 0;
-      const trailing = leading * 2;
+      const storage = quotedRows?.[rowIndex] ?? 0;
       const width = fieldEnd - fieldStart;
       const row = prepareRow(reusableRows?.[rowIndex], width);
+      if (storage === RowStorage.PackedUtf8) {
+        for (let column = 0; column < width; ++column) {
+          const end = checkedOffset(fieldOffsets, fieldStart + column + 1, dataLength);
+          row[column] = decodeMaterializedField(bytes, start, end, 'utf8');
+          start = end;
+        }
+        rows[rowIndex] = row;
+        fieldStart = fieldEnd;
+        continue;
+      }
+      // A quoted span includes its opening quote, closing quote and terminator.
+      const leading = storage === RowStorage.QuotedSpan ? 1 : 0;
+      const trailing = leading * 2;
       for (let column = 0; column < width; ++column) {
         const end = checkedOffset(fieldOffsets, fieldStart + column + 1, dataLength);
         const payload = start + leading;
