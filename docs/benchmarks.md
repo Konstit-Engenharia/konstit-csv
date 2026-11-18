@@ -5,8 +5,9 @@
 Run benchmarks from a repository checkout after following the [development setup](../CONTRIBUTING.md).
 Full-file runs are CPU-bound; run them serially to avoid competing for CPU time when comparing results.
 
-Results below were measured on November 16, 2026 at commit `bfb5042`, on an Apple M4 with 16 GiB of RAM,
-macOS 27.2 arm64 and Bun 1.4.4. All `@konstit/csv` timings used the tracked `prebuilds/darwin-arm64/libcsv_native.dylib`.
+Results below were measured on November 18, 2026 at commit `f1db222`, on an Apple M4 with 16 GiB of RAM,
+macOS 27.2 arm64 and Bun 1.4.4. All `@konstit/csv` timings used the tracked `prebuilds/darwin-arm64/libcsv_native.dylib`,
+which matched a fresh local build byte for byte.
 The ZIP count, ZIP API and CLI, and full-file filtered comparisons used hyperfine 2.0.0.
 Where shown, ± denotes one sample standard deviation.
 
@@ -57,7 +58,7 @@ CSV_NATIVE_LIBRARY_PATH="$PWD/prebuilds/darwin-arm64/libcsv_native.dylib" \
   hyperfine --warmup 1 --runs 5 --show-output 'bun --silent src/cli.ts count corpus/large/example.csv.zip'
 ```
 
-After one warmup, the five measured scans averaged **5.756 ± 0.044 s** (range: 5.711–5.819 s).
+After one warmup, the five measured scans averaged **6.303 ± 0.353 s**, with a range of 6.014–6.722 s.
 
 The producer inflates and CRC-checks the next chunk while the CSV parser scans the current one.
 Copying each chunk into a reusable parser buffer keeps the background thread's memory independent of Bun's heap.
@@ -69,9 +70,9 @@ with row and batch parsing. It uses system zlib on macOS arm64 and zlib-ng on Li
 
 | Workload              | Mean wall time ± σ | Output check                                                    |
 | --------------------- | -----------------: | --------------------------------------------------------------- |
-| CLI `count`           |    5.869 ± 0.082 s | 29,093,533 records                                              |
-| Filtered `csv.rows()` |    8.201 ± 0.010 s | 11,516,955 rows, 345,508,650 cells and 1,808,786,228 characters |
-| Filtered CLI `lines`  |    6.325 ± 0.036 s | Same SHA-256 digest on all three runs                           |
+| CLI `count`           |    6.151 ± 0.060 s | 29,093,533 records                                              |
+| Filtered `csv.rows()` |    6.736 ± 0.068 s | 11,516,955 rows, 345,508,650 cells and 1,808,786,228 characters |
+| Filtered CLI `lines`  |    6.372 ± 0.015 s | Same SHA-256 digest on all three runs                           |
 
 The row benchmark uses the Latin-1 filters and materialization loop described below, reading the `example.csv`
 entry in 1 MiB chunks. The CLI output benchmark includes the cost of hashing the projected records.
@@ -102,14 +103,13 @@ Throughput uses the 6,780,467,695-byte uncompressed size for both inputs.
 
 | Input             | Chunk size | Mean wall time |       Min–max | Throughput |
 | ----------------- | ---------: | -------------: | ------------: | ---------: |
-| `example.csv`     |      1 MiB |        16.52 s | 16.20–16.78 s |  391 MiB/s |
-| `example.csv.zip` |      1 MiB |        16.52 s | 15.81–17.02 s |  391 MiB/s |
-| `example.csv`     |    256 KiB |        16.74 s | 16.32–17.78 s |  386 MiB/s |
-| `example.csv.zip` |    256 KiB |        16.53 s | 15.86–17.77 s |  391 MiB/s |
+| `example.csv`     |      1 MiB |        10.43 s | 10.25–10.52 s |  620 MiB/s |
+| `example.csv.zip` |      1 MiB |        10.40 s | 10.22–10.68 s |  622 MiB/s |
+| `example.csv`     |    256 KiB |        10.52 s | 10.23–10.84 s |  615 MiB/s |
+| `example.csv.zip` |    256 KiB |        10.39 s | 10.22–10.62 s |  622 MiB/s |
 
-At 1 MiB, plain CSV and ZIP had the same mean to the nearest 0.01 s. At 256 KiB the ZIP mean was
-0.21 s lower, within the observed run-to-run variation. The native ZIP reader inflates and CRC-checks
-the next chunk while the current chunk is parsed and materialized.
+The ZIP mean was 0.03 s lower at 1 MiB and 0.13 s lower at 256 KiB. The measured ranges overlapped at both chunk sizes.
+The native ZIP reader inflates and CRC-checks the next chunk while the current chunk is parsed and materialized.
 
 ## Full-file filtered materialization
 
@@ -127,10 +127,10 @@ bun run bench:csv-parser:example
 All four runs produced 11,516,955 rows, 345,508,650 cells, and
 1,808,786,228 characters from the 6,780,467,695-byte corpus.
 
-| Implementation                   | Mean wall time ± σ |  Throughput | Mean peak RSS ± σ | Throughput vs. csv-parser |
-| -------------------------------- | -----------------: | ----------: | ----------------: | ------------------------: |
-| `@konstit/csv` with `csv.rows()` |    7.852 ± 0.062 s | 823.5 MiB/s |    94.6 ± 0.6 MiB |                    13.13× |
-| `iconv-lite` + `csv-parser`      |  103.115 ± 0.493 s |  62.7 MiB/s |  135.3 ± 11.1 MiB |                     1.00× |
+| Implementation                   | Mean wall time ± σ |    Throughput | Mean peak RSS ± σ | Throughput vs. csv-parser |
+| -------------------------------- | -----------------: | ------------: | ----------------: | ------------------------: |
+| `@konstit/csv` with `csv.rows()` |    5.588 ± 0.091 s | 1,157.2 MiB/s |    96.9 ± 1.3 MiB |                    18.55× |
+| `iconv-lite` + `csv-parser`      |  103.634 ± 1.095 s |    62.4 MiB/s |  156.9 ± 21.0 MiB |                     1.00× |
 
 Throughput is the original corpus size divided by mean wall time.
 
@@ -157,46 +157,46 @@ PapaParse, csv-parse (sync), csv-parser, and fast-csv parse header-keyed objects
 After one warmup per parser and file, the runner takes the mean of the middle three of five timed reads.
 The multiplier in parentheses is elapsed time divided by the fastest time for that fixture.
 
-| Parser                 | 1k rows (ms) | 1k MiB/s |  10k rows (ms) | 10k MiB/s |  100k rows (ms) | 100k MiB/s |
-| ---------------------- | -----------: | -------: | -------------: | --------: | --------------: | ---------: |
-| `@konstit/csv batches` | 0.47 (1.13×) |    204.1 |   2.49 (1.09×) |     391.2 |   17.62 (1.01×) |      564.3 |
-| `@konstit/csv rows`    | 0.45 (1.10×) |    209.8 |   2.29 (1.00×) |     425.3 |   17.52 (1.00×) |      567.4 |
-| TurboCSV               | 0.98 (2.37×) |     97.6 |   5.59 (2.44×) |     174.1 |   47.23 (2.70×) |      210.5 |
-| TurboCSV fast          | 0.41 (1.00×) |    231.2 |   3.47 (1.52×) |     280.3 |   29.37 (1.68×) |      338.5 |
-| PapaParse              | 0.62 (1.51×) |    152.9 |   5.66 (2.48×) |     171.7 |   53.94 (3.08×) |      184.3 |
-| csv-parse (sync)       | 2.90 (7.04×) |     32.9 |  22.15 (9.69×) |      43.9 | 211.77 (12.09×) |       47.0 |
-| csv-parser             | 1.82 (4.41×) |     52.4 |  10.90 (4.77×) |      89.2 |  106.15 (6.06×) |       93.7 |
-| fast-csv               | 3.41 (8.26×) |     28.0 | 24.40 (10.67×) |      39.9 | 238.37 (13.60×) |       41.7 |
+| Parser                 |  1k rows (ms) | 1k MiB/s |  10k rows (ms) | 10k MiB/s |  100k rows (ms) | 100k MiB/s |
+| ---------------------- | ------------: | -------: | -------------: | --------: | --------------: | ---------: |
+| `@konstit/csv batches` |  0.42 (1.43×) |    225.7 |   2.65 (1.54×) |     366.6 |   17.70 (1.48×) |      561.6 |
+| `@konstit/csv rows`    |  0.30 (1.00×) |    323.1 |   1.72 (1.00×) |     565.6 |   12.00 (1.00×) |      828.8 |
+| TurboCSV               |  0.62 (2.10×) |    153.9 |   5.51 (3.21×) |     176.4 |   47.91 (3.99×) |      207.5 |
+| TurboCSV fast          |  0.39 (1.32×) |    245.6 |   3.36 (1.95×) |     289.7 |   28.20 (2.35×) |      352.6 |
+| PapaParse              |  0.60 (2.02×) |    159.9 |   5.60 (3.26×) |     173.6 |   52.76 (4.40×) |      188.5 |
+| csv-parse (sync)       | 3.01 (10.19×) |     31.7 | 21.30 (12.39×) |      45.6 | 211.19 (17.60×) |       47.1 |
+| csv-parser             |  1.83 (6.21×) |     52.0 |  10.95 (6.37×) |      88.8 |  110.68 (9.23×) |       89.8 |
+| fast-csv               | 3.37 (11.40×) |     28.3 | 24.62 (14.32×) |      39.5 | 241.95 (20.17×) |       41.1 |
 
 The quoted customer fixtures were 17,159 bytes (100 rows) and 17,317,579 bytes (100k rows).
 
 | Parser                 | 100 customers (ms) | 100 MiB/s | 100k customers (ms) | 100k MiB/s |
 | ---------------------- | -----------------: | --------: | ------------------: | ---------: |
-| `@konstit/csv batches` |       0.14 (1.78×) |     117.3 |       23.34 (1.11×) |      707.5 |
-| `@konstit/csv rows`    |       0.09 (1.18×) |     177.4 |       20.96 (1.00×) |      788.0 |
-| TurboCSV               |       0.08 (1.00×) |     208.6 |       54.38 (2.59×) |      303.7 |
-| PapaParse              |       0.16 (2.05×) |     101.8 |       57.09 (2.72×) |      289.3 |
-| csv-parse (sync)       |      0.82 (10.45×) |      20.0 |     315.33 (15.05×) |       52.4 |
-| csv-parser             |       0.39 (4.97×) |      42.0 |      162.89 (7.77×) |      101.4 |
-| fast-csv               |       0.41 (5.21×) |      40.1 |     318.58 (15.20×) |       51.8 |
+| `@konstit/csv batches` |       0.21 (2.41×) |      77.6 |       21.14 (1.44×) |      781.3 |
+| `@konstit/csv rows`    |       0.09 (1.00×) |     187.0 |       14.70 (1.00×) |    1,123.5 |
+| TurboCSV               |       0.09 (1.06×) |     177.1 |       52.78 (3.59×) |      312.9 |
+| PapaParse              |       0.17 (1.95×) |      95.7 |       57.42 (3.91×) |      287.6 |
+| csv-parse (sync)       |      0.88 (10.03×) |      18.6 |     312.42 (21.25×) |       52.9 |
+| csv-parser             |       0.39 (4.49×) |      41.7 |     163.85 (11.15×) |      100.8 |
+| fast-csv               |       0.45 (5.10×) |      36.6 |     312.50 (21.26×) |       52.8 |
 
 `bun run bench -- comparison/libs-comparison.bench.ts` measures the same workloads with mitata.
 The values below are mitata's mean milliseconds to read each file and consume its IDs.
 
 | Parser                 | 1k rows | 10k rows | 100k rows | 100 customers | 100k customers |
 | ---------------------- | ------: | -------: | --------: | ------------: | -------------: |
-| `@konstit/csv batches` |   0.233 |     2.09 |     18.49 |         0.075 |          20.53 |
-| `@konstit/csv rows`    |   0.230 |     1.96 |     17.32 |         0.076 |          19.48 |
-| TurboCSV               |   0.587 |     4.71 |     47.87 |         0.075 |          51.32 |
-| TurboCSV fast          |   0.264 |     2.45 |     26.44 |             — |              — |
-| PapaParse              |   0.499 |     5.15 |     53.41 |         0.074 |          54.34 |
-| csv-parse (sync)       |    2.04 |    20.86 |    208.87 |         0.350 |         311.25 |
-| csv-parser             |    1.10 |    10.59 |    108.62 |         0.216 |         164.12 |
-| fast-csv               |    2.34 |    22.57 |    235.53 |         0.318 |         323.95 |
+| `@konstit/csv batches` |   0.226 |     2.01 |     18.69 |         0.075 |          20.96 |
+| `@konstit/csv rows`    |   0.199 |     1.39 |     13.36 |         0.074 |          15.18 |
+| TurboCSV               |   0.477 |     4.77 |     47.74 |         0.074 |          51.59 |
+| TurboCSV fast          |   0.254 |     2.48 |     26.48 |             — |              — |
+| PapaParse              |   0.501 |     5.08 |     54.79 |         0.074 |          54.92 |
+| csv-parse (sync)       |    2.04 |    20.49 |    209.52 |         0.346 |         310.20 |
+| csv-parser             |    1.09 |    10.80 |    105.94 |         0.218 |         167.45 |
+| fast-csv               |    2.19 |    22.73 |    232.82 |         0.321 |         323.93 |
 
-On the generated 1k-row file, TurboCSV fast had the shortest time in the five-read comparison,
-while `@konstit/csv rows` had the shortest mitata mean. On both 100k-row files, `@konstit/csv rows`
-had the shortest time in both runners.
+`@konstit/csv rows` had the shortest time on all five fixtures in the five-read comparison and on four fixtures
+in mitata. On the 100-customer fixture, the mitata means for PapaParse, TurboCSV, and `@konstit/csv rows`
+all rounded to 0.074 ms.
 
 ## Run smaller benchmarks
 
@@ -210,7 +210,7 @@ Benchmark files live under `bench/` and use the `*.bench.ts` suffix. They regist
 Keep fixture generation and unrelated setup outside measured operations, and validate or consume results.
 
 The field-access benchmark reads one field from 10,000 parsed rows 20 times (200,000 accesses per iteration).
-Mean times were 14.66 ms for `fieldBytes`, 20.60 ms for `fieldBuffer`, and 15.60 ms for `fieldString`.
+Mean times were 13.74 ms for `fieldBytes`, 19.17 ms for `fieldBuffer`, and 14.80 ms for `fieldString`.
 
 This command compares materialized rows, row views, and columnar batches on the same three columns of the checked-in fixture.
 
@@ -224,13 +224,13 @@ Each case took one timed scan with 8 MiB chunks. All seven consumed 25,001 rows 
 
 | Access method                          | Wall time |  Throughput |
 | -------------------------------------- | --------: | ----------: |
-| `csv.rows()`                           |   7.42 ms | 131.4 MiB/s |
-| Native `rowsInto()` with reused arrays |   6.91 ms | 141.1 MiB/s |
-| Batch `scanColumns()`                  |   4.21 ms | 231.5 MiB/s |
-| Batch column ranges                    |   5.30 ms | 184.1 MiB/s |
-| Batch field bytes                      |   8.85 ms | 110.2 MiB/s |
-| Row view bytes                         |   5.87 ms | 166.2 MiB/s |
-| Row view strings                       |   6.93 ms | 140.7 MiB/s |
+| `csv.rows()`                           |   3.56 ms | 273.6 MiB/s |
+| Native `rowsInto()` with reused arrays |   3.45 ms | 282.4 MiB/s |
+| Batch `scanColumns()`                  |   3.80 ms | 256.9 MiB/s |
+| Batch column ranges                    |   4.94 ms | 197.4 MiB/s |
+| Batch field bytes                      |   8.38 ms | 116.4 MiB/s |
+| Row view bytes                         |   5.44 ms | 179.2 MiB/s |
+| Row view strings                       |   6.20 ms | 157.2 MiB/s |
 
 For small correctness and performance checks:
 
@@ -243,15 +243,15 @@ The smoke checks passed on the 25,000-data-row fixture. Medians of three samples
 
 | Operation                 | Median |
 | ------------------------- | -----: |
-| Materialize buffer        | 7.7 ms |
-| Strict materialize buffer | 8.0 ms |
-| Count file                | 3.7 ms |
+| Materialize buffer        | 3.7 ms |
+| Strict materialize buffer | 3.4 ms |
+| Count file                | 3.2 ms |
 | Count where equal         | 2.8 ms |
-| Stream materialize file   | 8.8 ms |
-| Projected filter file     | 3.0 ms |
+| Stream materialize file   | 4.2 ms |
+| Projected filter file     | 2.8 ms |
 
 The count guard returned 100,001 records (including the header) for both parsers. Over five samples,
-the native median was 0.66 ms and the `csv-parser` median was 53.42 ms, a ratio of 81.30× against a 3× minimum.
+the native median was 0.65 ms and the `csv-parser` median was 52.62 ms, a ratio of 80.46× against a 3× minimum.
 
 ## Select the native library
 
