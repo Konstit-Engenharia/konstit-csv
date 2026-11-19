@@ -107,7 +107,7 @@ test('the UTF-8 probe reads past its limit only for a possibly incomplete sequen
   }
 });
 
-test('read-ahead streams a FIFO to EOF and rejects non-seekable ZIP input', async () => {
+test('read-ahead streams a FIFO and detects compressed input', async () => {
   const pipe = join(directory, 'rows.csv');
   const mkfifo = Bun.spawnSync(['mkfifo', pipe]);
   assert.equal(mkfifo.exitCode, 0, mkfifo.stderr.toString());
@@ -118,8 +118,17 @@ test('read-ahead streams a FIFO to EOF and rejects non-seekable ZIP input', asyn
   const raw = readCsvFileChunks(pipe, { compression: 'none', chunkSize: 2 }, 'read-ahead');
   const [chunks,] = await Promise.all([Array.fromAsync(raw, (chunk) => Buffer.from(chunk)), send(Buffer.from('a,b\n'))]);
   expect(Buffer.concat(chunks).toString()).toBe('a,b\n');
-  const auto = readCsvFileChunks(pipe, { compression: 'auto', chunkSize: 4 }, 'read-ahead');
-  await Promise.all([assert.rejects(Array.fromAsync(auto), /ZIP input requires a regular file/), send(Buffer.from([0x50, 0x4b, 3, 4]))]);
+
+  // The zlib stream starts with four printable bytes (x^KL), so detection needs a longer sample.
+  const deflate = Buffer.from('785e4b4cd449e2020004c0015b', 'hex');
+  for (const [data, expected,] of [[Buffer.from('a\n'), 'a\n'], [deflate, 'aa,b\n']] as const) {
+    const auto = readCsvFileChunks(pipe, { compression: 'auto', chunkSize: 4 }, 'read-ahead');
+    const [decoded,] = await Promise.all([Array.fromAsync(auto, (chunk) => Buffer.from(chunk)), send(data)]);
+    expect(Buffer.concat(decoded).toString()).toBe(expected);
+  }
+
+  const archive = readCsvFileChunks(pipe, { compression: 'auto', chunkSize: 4 }, 'read-ahead');
+  await Promise.all([assert.rejects(Array.fromAsync(archive), /ZIP input requires a regular file/), send(Buffer.from([0x50, 0x4b, 3, 4]))]);
 });
 
 test('explicit and detected gzip use the decompression stream for a FIFO', async () => {
@@ -141,6 +150,39 @@ test('explicit and detected gzip use the decompression stream for a FIFO', async
   }
   await assert.rejects(csv.count('/dev/null', { compression: 'gzip' }));
   expect(create).not.toHaveBeenCalled();
+});
+
+test('native gzip validates chunk sizes before creating a reader', async () => {
+  const path = join(directory, 'invalid-gzip-chunk-size.csv.gz');
+  await Bun.write(path, Bun.gzipSync('a,b\n'));
+  using create = spyOn(native.symbols, 'csv_gzip_reader_create');
+  create.mockReturnValue(null);
+  for (const chunkSize of [0, 1.5, 2 ** 32]) {
+    const chunks = readCsvFileChunks(path, { compression: 'gzip', chunkSize });
+    await assert.rejects(chunks[Symbol.asyncIterator]().next(), {
+      name: 'RangeError',
+      message: 'gzip chunkSize must be a positive integer no larger than 4294967295',
+    });
+  }
+  expect(create).not.toHaveBeenCalled();
+});
+
+test('native gzip reports failed creation and closes the reader on an invalid output length', async () => {
+  const path = join(directory, 'gzip-reader-errors.csv.gz');
+  await Bun.write(path, Bun.gzipSync('a,b\n'));
+  const options = { compression: 'gzip', chunkSize: 4 } as const;
+  using create = spyOn(native.symbols, 'csv_gzip_reader_create');
+  using read = spyOn(native.symbols, 'csv_gzip_reader_read');
+  using destroy = spyOn(native.symbols, 'csv_gzip_reader_destroy');
+
+  create.mockReturnValueOnce(null);
+  await assert.rejects(Array.fromAsync(readCsvFileChunks(path, options)), /failed to create native gzip reader/);
+  expect(read).not.toHaveBeenCalled();
+  expect(destroy).not.toHaveBeenCalled();
+
+  read.mockReturnValueOnce(5n);
+  await assert.rejects(Array.fromAsync(readCsvFileChunks(path, options)), /native gzip reader returned an invalid output length/);
+  expect(destroy).toHaveBeenCalledTimes(1);
 });
 
 test('a read-ahead failure is delivered after the preceding chunk', async () => {
