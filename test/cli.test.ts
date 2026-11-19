@@ -1053,15 +1053,31 @@ describe('csv CLI', () => {
       [['--transform', '0,0=trim'], 'transform column repeated: 0'],
       [['--transform-json', '['], 'invalid value'],
       [['--transform-json', '{}'], '--transform-json must be a JSON array of chains'],
+      [['--transform-json', '[null]'], '--transform-json[0] must be an object with columns and steps'],
+      [['--transform-json', '[{"columns":0,"steps":[{"op":"trim"}]}]'], '--transform-json[0].columns must be a non-empty array'],
       [['--transform-json', '[{"columns":[],"steps":[{"op":"trim"}]}]'], '--transform-json[0].columns must be a non-empty array'],
+      [['--transform-json', '[{"columns":["0"],"steps":[{"op":"trim"}]}]'], '--transform-json[0].columns[0] must be a number'],
       [['--transform-json', '[{"columns":[0],"steps":[]}]'], '--transform-json[0].steps must be a non-empty array'],
+      [['--transform-json', '[{"columns":[0],"steps":["trim"]}]'], '--transform-json[0].steps[0] must be an object with an op property'],
       [
         ['--transform-json', '[{"columns":[0],"steps":[{"op":"trim","value":0}]}]'],
         '--transform-json[0].steps[0] contains unknown property: value',
       ],
       [
+        ['--transform-json', '[{"columns":[0],"steps":[{"op":"map","values":[]}]}]'],
+        '--transform-json[0].steps[0].values must be an object of strings',
+      ],
+      [
         ['--transform-json', '[{"columns":[0],"steps":[{"op":"map","values":{"SP":1}}]}]'],
         '--transform-json[0].steps[0].values["SP"] must be a string',
+      ],
+      [
+        ['--transform-json', '[{"columns":[0],"steps":[{"op":"date","format":"MM/DD/YYYY"}]}]'],
+        '--transform-json[0].steps[0].format must be YYYY-MM-DD, DD-MM-YYYY, or DD/MM/YYYY',
+      ],
+      [
+        ['--transform-json', '[{"columns":[0],"steps":[{"op":"capitalize"}]}]'],
+        '--transform-json[0].steps[0].op is an unknown transform',
       ],
       [
         ['--columns', '0', '--transform-json', '[{"columns":[1],"steps":[{"op":"replace","search":{"source":"(?=a)"},"replacement":""}]}]'],
