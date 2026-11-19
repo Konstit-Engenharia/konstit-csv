@@ -443,6 +443,7 @@ export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]
   }
 
   const stableCandidates: StableDelimiterCandidate[] = [];
+  let hasStableAtSign = false;
   for (let candidateIndex = 0; candidateIndex < DELIMITER_CANDIDATES.length; ++candidateIndex) {
     const separatorCount = rows[0]?.[candidateIndex] ?? 0;
     if (separatorCount === 0) {
@@ -450,14 +451,17 @@ export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]
     }
     if (rows.every((row) => row[candidateIndex] === separatorCount)) {
       const candidate = DELIMITER_CANDIDATES[candidateIndex];
-      if (candidate !== undefined) {
+      if (candidate?.delimiter === '@') {
+        // Unquoted email addresses can give @ a stable count in a file with another separator.
+        hasStableAtSign = true;
+      } else if (candidate !== undefined) {
         stableCandidates.push({ delimiter: candidate.delimiter, separatorCount });
       }
     }
   }
 
   if (stableCandidates.length === 0) {
-    return { reason: 'no-stable-separator' };
+    return hasStableAtSign ? { delimiter: '@' } : { reason: 'no-stable-separator' };
   }
 
   const extensionHint = delimiterFromExtension(path);

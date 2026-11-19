@@ -219,8 +219,9 @@ The result must be a whole number of bytes within the option's range.
 `csv count --help` and `csv lines --help` list the encoding and compression choices.
 Encoding aliases accepted by Bun also work, including `utf-8`, `cp1252`, and `sjis`.
 
-`--delimiter auto` detects comma, tab, semicolon, pipe, colon, caret, tilde, or the at sign (`@`)
-from a bounded prefix while ignoring separators inside quoted fields. Pass a fixed
+`--delimiter auto` detects comma, tab, semicolon, pipe, colon, caret, or tilde
+from a bounded prefix while ignoring separators inside quoted fields. The at sign (`@`) is selected only when
+it has a stable positive count and none of those delimiters do. Pass a fixed
 delimiter for empty, single-column, ragged, or ambiguous input. To force the traditional
 comma and UTF-8 settings, use `--delimiter ',' --encoding utf8`.
 

@@ -74,6 +74,21 @@ describe('automatic delimiter detection', () => {
     }
   });
 
+  test('prefers a stable semicolon delimiter over at signs in email addresses', async () => {
+    const path = join(temporaryDirectory, 'contacts.csv');
+    await Bun.write(path, '1;ana@example.com bia@example.com\n2;dani@example.com eli@example.com\n');
+
+    const rows: string[][] = [];
+    for await (const batch of csv.rows(path, { delimiter: 'auto' })) {
+      rows.push(...batch);
+    }
+
+    expect(rows).toEqual([
+      ['1', 'ana@example.com bia@example.com'],
+      ['2', 'dani@example.com eli@example.com'],
+    ]);
+  });
+
   test('detects a quoted TSV and replays all probe bytes', async () => {
     const rows: string[][] = [];
     for await (const batch of csv.rows(tabPath, { chunkSize: 3, delimiter: 'auto' })) {
