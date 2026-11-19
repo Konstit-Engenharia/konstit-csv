@@ -275,6 +275,8 @@ comma and UTF-8 settings, use `--delimiter ',' --encoding utf8`.
 
 With automatic compression, `csv count data.csv.gz` decompresses gzip, `csv count data.csv` reads plain text,
 and `csv count data.csv.zip` reads the archive's only data file after ignoring directories and OS metadata.
+Regular gzip files use native read-ahead with automatic detection or `--compression gzip`. Gzip from pipes and
+other non-regular inputs uses Bun's `DecompressionStream`.
 Plain CSV, TSV, and text MIME types are recognized, as are `.psv`, `.ssv`, and `.tab`. Use `--compression none`
 to read a known plain file with an unrecognized name, or to read plain input from `/dev/stdin`.
 The advanced byte-boundary helpers

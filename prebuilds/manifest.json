@@ -6,16 +6,19 @@
       "CMakeLists.txt",
       "CMakePresets.json",
       "docker/linux-x64.Dockerfile",
+      "native/chunk_read_ahead.hpp",
       "native/csv_parser.cpp",
       "native/diacritic_ranges.inc",
       "native/field_transforms.cpp",
       "native/field_transforms.hpp",
       "native/file_probe.cpp",
+      "native/gzip_reader.cpp",
       "native/regex_replacement.cpp",
       "native/regex_replacement.hpp",
       "native/regex.hpp",
       "native/runtime.cpp",
       "native/zip_reader.cpp",
+      "native/zlib_compat.hpp",
       "scripts/build-linux-native.ts",
       "scripts/build-native-pgo.ts",
       "scripts/build-native.ts",
@@ -26,25 +29,25 @@
       "toolchains/darwin-x64-clang.cmake",
       "toolchains/linux-x64-clang.cmake"
     ],
-    "sha256": "c2b0312fe283b4fc8f76aba172ce9043947dbb8c3fcf7ddb97ea1d4182715b4f"
+    "sha256": "46fc1639084e8413d7fdb67c0ed76dee12e0e931a50663a062ef10d05be832bc"
   },
   "targets": [
     {
       "file": "darwin-arm64/libcsv_native.dylib",
-      "sha256": "83b0879edb29e0d6ec13b4482647ebff919e15bb379c83ad2e51a57af012dafd",
-      "size": 967280,
+      "sha256": "6533a3291c440ad175a9771d741696624bb923f8cb71c3ab2dfd876bf44c46ff",
+      "size": 968240,
       "target": "darwin-arm64"
     },
     {
       "file": "darwin-x64/libcsv_native.dylib",
-      "sha256": "318c1e31d91d5019abd42c812a7ebc53259f01e792ecab8178ac27008c4f5d51",
-      "size": 1020976,
+      "sha256": "96dcc3a5ab8d6a95884c420994b1d7b3125cbb51baad749577c3aa3fad1f1418",
+      "size": 1026032,
       "target": "darwin-x64"
     },
     {
       "file": "linux-x64/libcsv_native.so",
-      "sha256": "f4d7b0b5816425d538b472997d380ee19e0e06241acde5d09993be0a661c1c67",
-      "size": 1601856,
+      "sha256": "a95556daac12f6c4c4f344f2c57315aec0e7d308550d8bef7ffdd6e4d4794fdc",
+      "size": 1602704,
       "target": "linux-x64"
     }
   ]

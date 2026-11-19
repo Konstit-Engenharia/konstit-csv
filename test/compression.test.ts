@@ -3,6 +3,7 @@ import {
   beforeAll,
   describe,
   expect,
+  spyOn,
   test,
 } from 'bun:test';
 import {
@@ -16,6 +17,7 @@ import {
   deflateRawSync,
   deflateSync,
 } from 'node:zlib';
+import { readCsvFileChunks } from '../src/file-stream.ts';
 import {
   countCsvFile,
   csv,
@@ -23,6 +25,7 @@ import {
   parseCsvFile,
   parseCsvFileProjected,
 } from '../src/index.ts';
+import { native } from '../src/native.ts';
 import { createZip } from './zip-fixture.ts';
 
 const source = Buffer.from('id;name;state\n1;"Ana\nMaria";SP\n2;Bia;RJ\n3;Caio;SP\n');
@@ -297,6 +300,57 @@ describe('compressed CSV file streams', () => {
       csv.count(join(temporaryDirectory, 'corrupt.csv.gz'), { compression: 'gzip', delimiter: ';' }),
     );
     expect(error.message.length).toBeGreaterThan(0);
+  });
+
+  test('uses native read-ahead for explicit and detected gzip and replays the encoding probe in order', async () => {
+    const first = Buffer.from(`start;Ána\n${'1;Bia\n'.repeat(24_000)}`, 'latin1');
+    const second = Buffer.from('end;Caio', 'latin1');
+    const gzip = Buffer.concat([Bun.gzipSync(first), Bun.gzipSync(''), Bun.gzipSync(second)]);
+    const path = join(temporaryDirectory, 'concatenated-gzip');
+    await Bun.write(path, gzip);
+    using create = spyOn(native.symbols, 'csv_gzip_reader_create');
+    using prefetch = spyOn(native.symbols, 'csv_gzip_reader_enable_read_ahead');
+    for (const compression of ['gzip', 'auto'] as const) {
+      const rows = (await Array.fromAsync(csv.rows(path, { compression, chunkSize: 8191, delimiter: 'auto' }))).flat();
+      expect(rows).toHaveLength(24_002);
+      expect(rows[0]).toEqual(['start', 'Ána']);
+      expect(rows.slice(1, -1).every(([id, name,]) => id === '1' && name === 'Bia')).toBe(true);
+      expect(rows.at(-1)).toEqual(['end', 'Caio']);
+      const chunks = await Array.fromAsync(readCsvFileChunks(path, { compression, chunkSize: 32_768 }));
+      expect(Buffer.concat(chunks)).toEqual(Buffer.concat([first, second]));
+    }
+    expect(create).toHaveBeenCalledTimes(4);
+    expect(prefetch).toHaveBeenCalledTimes(4);
+  });
+
+  test('reports late gzip errors on full reads and closes an active producer on early return', async () => {
+    const path = join(temporaryDirectory, 'gzip-trailer.gz');
+    const data = Buffer.from('1,abc\n'.repeat(48_000));
+    const gzip = Bun.gzipSync(data);
+    const badCrc = Buffer.from(gzip);
+    badCrc.writeUInt32LE(~badCrc.readUInt32LE(badCrc.length - 8) >>> 0, badCrc.length - 8);
+    const options = { chunkSize: 65_536, encoding: 'utf8' } as const;
+    for (
+      const [invalid, message,] of [
+        [gzip.subarray(0, -1), 'unexpected end of file'],
+        [badCrc, 'inflate failed'],
+        [Buffer.concat([gzip, Buffer.from('junk')]), 'inflate failed'],
+      ] as const
+    ) {
+      await Bun.write(path, invalid);
+      expect(await csv.count(path, { ...options, limit: 2 })).toBe(2);
+      expect((await rejectedError(csv.count(path, options))).message).toBe(message);
+    }
+    await Bun.write(path, gzip);
+    using destroy = spyOn(native.symbols, 'csv_gzip_reader_destroy');
+    const chunks = readCsvFileChunks(path, { chunkSize: options.chunkSize, compression: 'auto' }, 'parse')[Symbol.asyncIterator]();
+    try {
+      expect((await chunks.next()).value?.byteLength).toBe(options.chunkSize);
+      expect((await chunks.next()).value?.byteLength).toBe(options.chunkSize);
+    } finally {
+      await chunks.return?.();
+    }
+    expect(destroy).toHaveBeenCalledTimes(1);
   });
 
   test('streams a selected deflated ZIP entry through serial APIs', async () => {

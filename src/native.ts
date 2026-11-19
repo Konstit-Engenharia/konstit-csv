@@ -1,5 +1,6 @@
 import {
   dlopen,
+  FFIType,
   type Pointer,
   suffix,
 } from 'bun:ffi';
@@ -230,6 +231,21 @@ const CSV_SYMBOLS = {
     args: ['ptr'],
     returns: 'ptr',
   },
+  // C signature:
+  // void* csv_gzip_reader_create(int fd);
+  csv_gzip_reader_create: { args: ['i32'], returns: 'ptr' },
+  // C signature:
+  // void csv_gzip_reader_destroy(void* reader);
+  csv_gzip_reader_destroy: { args: ['ptr'], returns: 'void' },
+  // C signature:
+  // void csv_gzip_reader_enable_read_ahead(void* reader, uint32_t chunk_size);
+  csv_gzip_reader_enable_read_ahead: { args: ['ptr', 'u32'], returns: 'void' },
+  // C signature:
+  // int64_t csv_gzip_reader_read(void* reader, uint8_t* output, uint64_t capacity);
+  csv_gzip_reader_read: { args: ['ptr', 'buffer', 'buffer_length'], returns: FFIType.i64_fast },
+  // C signature:
+  // const char* csv_gzip_reader_last_error(void* reader);
+  csv_gzip_reader_last_error: { args: ['ptr'], returns: 'cstring' },
   // C signature:
   // void* csv_zip_reader_create(const char* path, const uint8_t* entry_name, uint64_t entry_name_len,
   //                             uint64_t maximum_output_size, uint32_t maximum_compression_ratio);

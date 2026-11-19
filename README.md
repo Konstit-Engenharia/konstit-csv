@@ -194,7 +194,8 @@ for await (
 
 File APIs and the CLI detect compression by default and read plain CSV, TSV, and text files directly.
 For a plain file with an unrecognized name, use `compression: 'none'` or `--compression none`.
-Decompression streams into the parser.
+Regular gzip files use native read-ahead, whether gzip is detected or specified explicitly.
+Gzip from pipes and other non-regular inputs uses Bun's `DecompressionStream`.
 
 ZIP archives automatically select the only data file, ignoring directories and OS metadata.
 For archives with multiple data files, select an entry with `compression: { format: 'zip', entry: 'data.csv' }`. See

@@ -1,6 +1,7 @@
 import { ptr } from 'bun:ffi';
 import { createReadStream } from 'node:fs';
 import {
+  type FileHandle,
   open,
   stat,
 } from 'node:fs/promises';
@@ -10,6 +11,7 @@ import {
   constants,
   inflateSync,
 } from 'node:zlib';
+import { readGzipFileChunks } from './gzip-reader.js';
 import {
   DEFAULT_CHUNK_SIZE,
   EMPTY_BUFFER,
@@ -119,8 +121,9 @@ export async function prepareCsvFileInput(
   const iterator = source()[Symbol.asyncIterator]();
   const compression = options.compression ?? 'auto';
   const reusesReadBuffer = typeof inputEncoding === 'string' && (
-    (readMode === 'read-ahead' && (compression === 'auto' || compression === 'none'))
-    || ((compression === 'auto' || isZipCompression(compression)) && useZipReadAhead(readMode, options.chunkSize ?? DEFAULT_CHUNK_SIZE))
+    (readMode !== 'stream' && (compression === 'auto' || compression === 'gzip'))
+    || (readMode === 'read-ahead' && compression === 'none')
+    || (isZipCompression(compression) && useZipReadAhead(readMode, options.chunkSize ?? DEFAULT_CHUNK_SIZE))
   );
   const bufferedChunks: Uint8Array[] = [];
   let bufferedByteLength = 0;
@@ -192,11 +195,23 @@ export async function prepareCsvFileInput(
 
 // The row parser consumes each chunk before advancing this iterator.
 async function* readAheadFileChunks(path: string, chunkSize: number): AsyncGenerator<Buffer<ArrayBuffer>, void> {
+  validateReadAheadChunkSize(chunkSize);
+  await using file = await open(path, 'r');
+  yield* readAheadOpenFileChunks(file, chunkSize, (await file.stat()).isFile());
+}
+
+function validateReadAheadChunkSize(chunkSize: number): void {
   if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
     throw new RangeError('chunkSize must be a positive safe integer');
   }
-  await using file = await open(path, 'r');
-  if (!(await file.stat()).isFile()) {
+}
+
+async function* readAheadOpenFileChunks(
+  file: FileHandle,
+  chunkSize: number,
+  regularFile: boolean,
+): AsyncGenerator<Buffer<ArrayBuffer>, void> {
+  if (!regularFile) {
     // Pipes and devices can block indefinitely on a speculative read.
     const buffer = Buffer.allocUnsafe(chunkSize);
     let { bytesRead } = await file.read(buffer);
@@ -233,10 +248,16 @@ export function readCsvFileChunks(
   if (isZipCompression(compression)) {
     return readZipEntryChunks(path, compression, chunkSize, zipReadAhead);
   }
-  if (compression === 'auto' || compression === 'none') {
-    const readAhead = readMode === 'read-ahead';
-    const raw = readAhead ? readAheadFileChunks(path, chunkSize) : createReadStream(path, { highWaterMark: chunkSize });
-    return compression === 'none' ? raw : readAutoDetectedCsvFileChunks(path, raw, chunkSize, readAhead, zipReadAhead);
+  if (compression === 'auto') {
+    return readAutoDetectedCsvFileChunks(path, chunkSize, readMode, zipReadAhead);
+  }
+  if (compression === 'none') {
+    return readMode === 'read-ahead'
+      ? readAheadFileChunks(path, chunkSize)
+      : createReadStream(path, { highWaterMark: chunkSize });
+  }
+  if (compression === 'gzip') {
+    return readGzipPathChunks(path, chunkSize, readMode !== 'stream');
   }
   return decompressedCsvFileChunks(path, compression, chunkSize);
 }
@@ -575,59 +596,102 @@ function stripCompressionExtension(path: string): string {
 
 async function* readAutoDetectedCsvFileChunks(
   path: string,
-  raw: AsyncIterable<Uint8Array<ArrayBuffer>>,
   chunkSize: number,
-  reusesBuffer: boolean,
+  readMode: FileReadMode,
   zipReadAhead: boolean,
 ): AsyncGenerator<Uint8Array, void> {
-  const iterator = raw[Symbol.asyncIterator]();
-  // Replay the original chunks on the same descriptor, including for pipes.
+  const reusesBuffer = readMode === 'read-ahead';
+  if (reusesBuffer) {
+    validateReadAheadChunkSize(chunkSize);
+  }
+  await using file = await open(path, 'r');
+  const regularFile = (await file.stat()).isFile();
+  const raw = (): AsyncIterable<Uint8Array<ArrayBuffer>> =>
+    reusesBuffer
+      ? readAheadOpenFileChunks(file, chunkSize, regularFile)
+      : file.createReadStream({ highWaterMark: chunkSize, autoClose: false });
+  const iterator = regularFile ? undefined : raw()[Symbol.asyncIterator]();
   const buffered: Uint8Array<ArrayBuffer>[] = [];
   const prefix = new Uint8Array(64);
   let length = 0;
-  let needed = 4;
   try {
-    while (length < needed) {
-      const next = await iterator.next();
-      if (next.done === true) {
-        break;
+    if (iterator === undefined) {
+      // Peek without advancing the descriptor used to read a regular file.
+      while (length < prefix.length) {
+        const { bytesRead } = await file.read(prefix, length, prefix.length - length, length);
+        if (bytesRead === 0) {
+          break;
+        }
+        length += bytesRead;
       }
-      const chunk = next.value;
-      const take = Math.min(prefix.length - length, chunk.length);
-      prefix.set(chunk.subarray(0, take), length);
-      length += take;
-      if (length >= 4 && isZlibHeader(prefix) && isPrintableZlibHeader(prefix)) {
-        needed = prefix.length;
+    } else {
+      // A pipe cannot seek back to its signature, so replay the original chunks.
+      let needed = 4;
+      while (length < needed) {
+        const next = await iterator.next();
+        if (next.done === true) {
+          break;
+        }
+        const chunk = next.value;
+        const take = Math.min(prefix.length - length, chunk.length);
+        prefix.set(chunk.subarray(0, take), length);
+        length += take;
+        if (length >= 4 && isZlibHeader(prefix) && isPrintableZlibHeader(prefix)) {
+          needed = prefix.length;
+        }
+        buffered.push(reusesBuffer && length < needed ? new Uint8Array(chunk) : chunk);
       }
-      buffered.push(reusesBuffer && length < needed ? new Uint8Array(chunk) : chunk);
     }
     const sample = prefix.subarray(0, length);
     if (isZipSignature(sample)) {
-      if (!(await stat(path)).isFile()) {
+      if (!regularFile || !(await stat(path)).isFile()) {
         throw new Error('ZIP input requires a regular file; save the archive before reading it');
       }
       // The native reader seeks through the ZIP central directory using its own file handle.
-      await closeCsvFileIterator(iterator);
+      await file.close();
       yield* readZipEntryChunks(path, { format: 'zip', entry: '*' }, chunkSize, zipReadAhead);
       return;
     }
     const compression = compressionFromPrefix(path, sample);
-    const replay = replayCsvFileChunks(buffered, iterator);
+    if (compression === 'gzip' && regularFile) {
+      yield* readGzipFileChunks(file.fd, chunkSize, readMode !== 'stream');
+      return;
+    }
+    if (compression === undefined && !isPlainCsvFile(path)) {
+      throw new Error(
+        'compression auto-detection failed: no supported signature or extension and no delimited-text MIME type; specify compression explicitly (none for plain input)',
+      );
+    }
+    const source = iterator === undefined ? raw() : replayCsvFileChunks(buffered, iterator);
     if (compression === undefined) {
-      if (!isPlainCsvFile(path)) {
-        throw new Error(
-          'compression auto-detection failed: no supported signature or extension and no delimited-text MIME type; specify compression explicitly (none for plain input)',
-        );
-      }
-      yield* replay;
+      yield* source;
       return;
     }
     // A Web stream can queue chunks after advancing the file iterator.
-    yield* WebReadableStream.from<NodeJS.BufferSource>(reusesBuffer ? copyFileChunks(replay) : replay)
-      .pipeThrough(new DecompressionStream(compression, { highWaterMark: chunkSize }));
+    yield* decompressFileStream(reusesBuffer ? copyFileChunks(source) : source, compression, chunkSize);
   } finally {
-    await closeCsvFileIterator(iterator);
+    if (iterator !== undefined) {
+      await closeCsvFileIterator(iterator);
+    }
   }
+}
+
+async function* readGzipPathChunks(path: string, chunkSize: number, reuseBuffer: boolean): AsyncGenerator<Uint8Array, void> {
+  await using file = await open(path, 'r');
+  if ((await file.stat()).isFile()) {
+    yield* readGzipFileChunks(file.fd, chunkSize, reuseBuffer);
+    return;
+  }
+  yield* decompressFileStream(file.createReadStream({ highWaterMark: chunkSize, autoClose: false }), 'gzip', chunkSize);
+}
+
+function decompressFileStream(
+  source: AsyncIterable<Uint8Array<ArrayBuffer>>,
+  compression: Bun.CompressionFormat,
+  chunkSize: number,
+): ReadableStream<Uint8Array> {
+  return WebReadableStream.from<NodeJS.BufferSource>(source)
+    .pipeThrough(new DecompressionStream(compression, { highWaterMark: chunkSize }));
 }
 
 async function* copyFileChunks(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array<ArrayBuffer>, void> {

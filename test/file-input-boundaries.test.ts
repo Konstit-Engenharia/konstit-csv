@@ -122,6 +122,27 @@ test('read-ahead streams a FIFO to EOF and rejects non-seekable ZIP input', asyn
   await Promise.all([assert.rejects(Array.fromAsync(auto), /ZIP input requires a regular file/), send(Buffer.from([0x50, 0x4b, 3, 4]))]);
 });
 
+test('explicit and detected gzip use the decompression stream for a FIFO', async () => {
+  const pipe = join(directory, 'rows.csv.gz');
+  const mkfifo = Bun.spawnSync(['mkfifo', pipe]);
+  assert.equal(mkfifo.exitCode, 0, mkfifo.stderr.toString());
+  const compressed = Buffer.concat([Bun.gzipSync('id,name\n'), Bun.gzipSync('1,Ana\n')]);
+  async function send(): Promise<void> {
+    await using writer = await open(pipe, 'w');
+    await writer.writeFile(compressed);
+  }
+  using create = spyOn(native.symbols, 'csv_gzip_reader_create');
+  for (const compression of ['gzip', 'auto'] as const) {
+    const options = { compression, chunkSize: 2 } as const;
+    const [rows,] = await Promise.all([Array.fromAsync(csv.rows(pipe, options)), send()]);
+    expect(rows.flat()).toEqual([['id', 'name'], ['1', 'Ana']]);
+    const [records,] = await Promise.all([csv.count(pipe, options), send()]);
+    expect(records).toBe(2);
+  }
+  await assert.rejects(csv.count('/dev/null', { compression: 'gzip' }));
+  expect(create).not.toHaveBeenCalled();
+});
+
 test('a read-ahead failure is delivered after the preceding chunk', async () => {
   const path = join(directory, 'prefetch.csv');
   await Bun.write(path, 'a,b\n');

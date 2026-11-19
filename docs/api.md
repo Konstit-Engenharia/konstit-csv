@@ -210,6 +210,10 @@ File operations default to `compression: 'auto'`. They stream gzip, deflate, raw
 into the parser and read recognized plain text files directly. ZIP archives automatically select the only data file,
 ignoring directories and OS metadata. Select an entry explicitly for archives containing multiple data files.
 
+Regular gzip files use native read-ahead with either `compression: 'auto'` or `compression: 'gzip'`.
+The native reader inflates the next chunk while the parser consumes the current one. Gzip from pipes and other
+non-regular inputs uses Bun's `DecompressionStream`.
+
 ```ts
 for await (const batch of csv.rows('data.csv.gz')) {
   console.log(batch);

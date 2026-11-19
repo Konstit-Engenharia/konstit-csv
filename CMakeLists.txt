@@ -155,8 +155,13 @@ target_compile_definitions(
 add_library(
   csv_native
   SHARED
-    native/csv_parser.cpp native/field_transforms.cpp native/file_probe.cpp
-    native/regex_replacement.cpp native/runtime.cpp native/zip_reader.cpp)
+    native/csv_parser.cpp
+    native/field_transforms.cpp
+    native/file_probe.cpp
+    native/gzip_reader.cpp
+    native/regex_replacement.cpp
+    native/runtime.cpp
+    native/zip_reader.cpp)
 
 target_compile_features(csv_native PRIVATE cxx_std_20)
 
