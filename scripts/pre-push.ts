@@ -1,3 +1,5 @@
+import { packagedNativeTargets } from './native-target.ts';
+
 await (import.meta.main ? main() : Promise.resolve());
 
 export interface PrePushDependencies {
@@ -5,11 +7,21 @@ export interface PrePushDependencies {
 }
 
 export async function main(dependencies: PrePushDependencies = {}): Promise<void> {
-  await (dependencies.run ?? run)([
+  const runCommand = dependencies.run ?? run;
+  await runCommand([
     process.execPath,
     'run',
     'prepush',
   ], 'pre-push checks');
+
+  // macOS builds both Darwin targets and the Linux x64 target through Docker.
+  const targets = process.platform === 'darwin' ? packagedNativeTargets : [];
+  await runCommand([
+    process.execPath,
+    'run',
+    'stage:native',
+    ...targets,
+  ], 'stage native prebuilds');
 }
 
 export async function run(command: string[], label: string): Promise<void> {

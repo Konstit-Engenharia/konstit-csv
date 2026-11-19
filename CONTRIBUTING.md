@@ -89,17 +89,20 @@ Install the repository's pre-push hook once per clone:
 bun run hooks:install
 ```
 
-The hook runs the full push validation. It builds the host's native libraries
-and the Linux x64 library, checks TypeScript and C++ formatting, runs the
-linters and type checker, runs the Bun test suite against the new host build,
-and runs the native test suite. Linux x64 builds require Docker to be installed
-and running. Run the same checks manually with:
+The hook builds the host's native libraries and the Linux x64 library, checks
+TypeScript and C++ formatting, and runs the linters, type checker, and C++
+tests. It enforces 100% Bun line and function coverage against the fresh host
+library. After validation passes, it copies the built libraries into the
+working tree under `prebuilds/`. On macOS this includes both Darwin targets
+and Linux x64. The Linux x64 build requires Docker to be installed and
+running. Run the full hook manually with:
 
 ```sh
-bun run prepush
+bun scripts/pre-push.ts
 ```
 
-The hook validates the push; it does not publish packages.
+Files copied by the hook are working-tree builds. Release artifacts come from
+the [tracked prebuild workflow](#maintain-tracked-prebuilds).
 
 ## Develop the native library
 

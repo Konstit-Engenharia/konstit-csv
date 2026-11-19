@@ -1,4 +1,4 @@
-// Runs the Bun test suite against the current host's newly built native library.
+// Runs the Bun test suite with coverage against the current host's newly built native library.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -23,7 +23,8 @@ if (libraryPath === undefined) {
 const child = Bun.spawn([
   process.execPath,
   'test',
-  '--parallel',
+  '--dots',
+  '--coverage',
 ], {
   cwd: repoRoot,
   env: {
