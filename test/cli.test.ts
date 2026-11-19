@@ -162,6 +162,7 @@ describe('csv CLI', () => {
       ['lines', ['--columns', '0', '--columns', '2,1']],
       ['lines', ['--limit', '2', '--limit=1']],
       ['lines', ['--json', '--json']],
+      ['lines', ['--transform-json', '[]', '--transform-json', '[]']],
       ['probe', ['--zip-entry', 'rows.csv', '--zip-entry', 'rows.csv']],
     ] as const
   ) {
@@ -981,6 +982,108 @@ describe('csv CLI', () => {
     expect(result.stderr.toString()).toBe('');
   });
 
+  test('applies repeated shorthand transforms to physical columns after filtering', async () => {
+    const path = join(temporaryDirectory, 'transform-shorthand.csv');
+    await Bun.write(path, 'city;state;name\n São Paulo ; sP ; Ádá \n Rio ;SP; Bia \n');
+
+    const result = await runCli(
+      'lines',
+      path,
+      '--skip-rows',
+      '1',
+      '--columns',
+      '2,0,1',
+      '--where-eq',
+      '1= sP ',
+      '--transform',
+      '0,2=trim,unaccent,upper',
+      '--transform',
+      '1=trim,lower',
+      '--json',
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('["ADA","SAO PAULO","sp"]\n');
+    expect(result.stderr.toString()).toBe('');
+  });
+
+  test('combines shorthand and JSON transforms with strict headers and CSV output', async () => {
+    const path = join(temporaryDirectory, 'transform-json.csv');
+    await Bun.write(path, 'city;amount;code;state;date\n São Paulo ;12.50;ab-12 cd-34; sp ;20261117\n Rio ;8.5;other;XX;29/02/2023\n');
+    const chains = [
+      { columns: [1], steps: [{ op: 'replace', search: '.', replacement: ',' }] },
+      { columns: [2], steps: [{ op: 'replace', search: { source: '([A-Z]+)-(\\d+)', flags: 'gi' }, replacement: '$2/$1' }] },
+      { columns: [3], steps: [{ op: 'trim' }, { op: 'upper' }, { op: 'map', values: { SP: 'São Paulo' }, defaultValue: '' }] },
+      { columns: [4], steps: [{ op: 'date', format: 'DD/MM/YYYY', defaultValue: 'Unknown' }] },
+    ];
+
+    const result = await runCli(
+      'lines',
+      path,
+      '--strict',
+      '--expected-header',
+      'city',
+      '--expected-header',
+      'amount',
+      '--expected-header',
+      'code',
+      '--expected-header',
+      'state',
+      '--expected-header',
+      'date',
+      '--skip-rows',
+      '1',
+      '--transform',
+      '0=trim,unaccent,upper',
+      '--transform-json',
+      JSON.stringify(chains),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe('SAO PAULO,"12,50",12/ab 34/cd,São Paulo,17/11/2026\nRIO,"8,5",other,,Unknown\n');
+    expect(result.stderr.toString()).toBe('');
+  });
+
+  test.each(
+    [
+      [['--transform', '0trim'], 'invalid value'],
+      [['--transform', '0,=trim'], '--transform[0] must start with comma-separated decimal column indexes'],
+      [['--transform', '0=trim,replace'], '--transform[0] expected trim, upper, lower, or unaccent'],
+      [['--transform', '2025=trim'], 'transform column out of range'],
+      [['--transform', '0,0=trim'], 'transform column repeated: 0'],
+      [['--transform-json', '['], 'invalid value'],
+      [['--transform-json', '{}'], '--transform-json must be a JSON array of chains'],
+      [['--transform-json', '[{"columns":[],"steps":[{"op":"trim"}]}]'], '--transform-json[0].columns must be a non-empty array'],
+      [['--transform-json', '[{"columns":[0],"steps":[]}]'], '--transform-json[0].steps must be a non-empty array'],
+      [
+        ['--transform-json', '[{"columns":[0],"steps":[{"op":"trim","value":0}]}]'],
+        '--transform-json[0].steps[0] contains unknown property: value',
+      ],
+      [
+        ['--transform-json', '[{"columns":[0],"steps":[{"op":"map","values":{"SP":1}}]}]'],
+        '--transform-json[0].steps[0].values["SP"] must be a string',
+      ],
+      [
+        ['--columns', '0', '--transform-json', '[{"columns":[1],"steps":[{"op":"replace","search":{"source":"(?=a)"},"replacement":""}]}]'],
+        '--transform-json[0].steps[0].search:',
+      ],
+      [
+        ['--transform', '1=trim', '--transform-json', '[{"columns":[1],"steps":[{"op":"upper"}]}]'],
+        'transform column repeated: 1',
+      ],
+    ] as const,
+  )('rejects invalid transform arguments %j before opening the CSV', async (args, message) => {
+    const result = await runCli('lines', join(temporaryDirectory, 'missing.csv'), ...args);
+    expectUsageError(result, message, 'lines');
+  });
+
+  test.each(['count', 'probe'])('rejects transform options in %s', async (command) => {
+    for (const [option, value,] of [['--transform', '0=trim'], ['--transform-json', '[]']] as const) {
+      const result = await runCli(command, join(temporaryDirectory, 'missing.csv'), option, value);
+      expectUsageError(result, `unexpected argument '${option}'`, command);
+    }
+  });
+
   test('quotes fields for the output delimiter', async () => {
     const result = await runCli(
       'lines',
@@ -1334,7 +1437,9 @@ describe('csv CLI', () => {
     const stdout = result.stdout.toString();
 
     expect(result.exitCode).toBe(0);
-    for (const option of Object.keys(countOptionNames).concat('--json', '--output-delimiter', '--limit')) {
+    for (
+      const option of Object.keys(countOptionNames).concat('--json', '--output-delimiter', '--limit', '--transform <', '--transform-json <')
+    ) {
       expect(stdout).toContain(option);
     }
     expect(stdout).toContain('Emit at most N matching records');

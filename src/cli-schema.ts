@@ -203,6 +203,15 @@ const lines = command('lines', {
       valueName: 'N',
       describe: 'Emit at most N matching records (0 emits none)',
     }),
+    option('transform', parsers.keyValue, {
+      repeatable: true,
+      valueName: 'COLUMNS=STEPS',
+      describe: 'Apply comma-separated trim, upper, lower, or unaccent steps to zero-based input columns',
+    }),
+    option('transform-json', parsers.json(), {
+      valueName: 'JSON',
+      describe: 'Apply an array of column transform chains, including replace, map, and date',
+    }),
   ],
   afterHelp: `${fileHelp}
 
@@ -211,7 +220,8 @@ Header and minimum data row checks apply to the consumed input prefix.
 
 Examples:
   csv lines data.csv --json --skip-rows 1 --limit 10
-  csv lines data.csv --columns 0,2 --where-eq 3=active`,
+  csv lines data.csv --columns 0,2 --where-eq 3=active
+  csv lines data.csv --skip-rows 1 --transform '1,2=trim,upper'`,
 });
 export type CountArguments = Infer<typeof count>;
 export type LinesArguments = Infer<typeof lines>;

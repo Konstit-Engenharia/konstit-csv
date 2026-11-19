@@ -193,6 +193,54 @@ Embedded newlines and quotes are escaped according to JSON. `--json` writes
 only NDJSON records to stdout and cannot be combined with
 `--output-delimiter`.
 
+### Transform fields
+
+Use `--transform <columns>=<steps>` with `lines` to apply `trim`, `upper`,
+`lower`, or `unaccent`. Separate column indexes and steps with commas. Steps
+run from left to right. Use `--skip-rows 1` to omit the input header.
+
+```sh
+bunx @konstit/csv lines data.csv --skip-rows 1 \
+  --transform '1,3=trim,unaccent,upper' \
+  --transform '2=trim,lower'
+```
+
+Use `--transform-json <JSON>` to supply an array of chains. Each chain has a
+non-empty `columns` array and a non-empty `steps` array. Each step is an
+object with an `op` and any arguments in the table below.
+
+```sh
+bunx @konstit/csv lines data.csv --skip-rows 1 \
+  --transform-json '[
+    {"columns":[2],"steps":[
+      {"op":"trim"},
+      {"op":"upper"},
+      {"op":"map","values":{"SP":"São Paulo","RJ":"Rio de Janeiro"},"defaultValue":"Unknown"}
+    ]},
+    {"columns":[3],"steps":[{"op":"date","format":"DD/MM/YYYY"}]}
+  ]'
+```
+
+| `op`                                 | Arguments                                                                                                                                                |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `trim`, `upper`, `lower`, `unaccent` | None                                                                                                                                                     |
+| `replace`                            | `search` is a non-empty literal string or a regex object with a string `source` and optional string `flags`. `replacement` is a string.                  |
+| `map`                                | `values` is an object whose values are strings. The optional `defaultValue` string replaces unmatched fields. Omit it to output the current field value. |
+| `date`                               | `format` is `YYYY-MM-DD`, `DD-MM-YYYY`, or `DD/MM/YYYY`. The optional `defaultValue` string replaces invalid dates and defaults to `""`.                 |
+
+Regex replacement accepts flags `g`, `i`, `m`, `s`, and `u` and replaces every
+match. The replacement string can refer to captures, for example
+`{"op":"replace","search":{"source":"([A-Z]+)-(\\d+)"},"replacement":"$2/$1"}`.
+See [field transforms](./api.md#field-transforms) for the replacement syntax
+and date input formats.
+
+Repeat `--transform` as needed and pass `--transform-json` at most once.
+Both can appear in the same command. Each zero-based input column can appear
+in only one chain. Filters and strict validation see the original records.
+Transforms affect emitted fields in both CSV and NDJSON, and `--columns`
+determines their output order. Invalid transform arguments produce a
+diagnostic on stderr and exit with code 2 before opening the input file.
+
 ## Input options
 
 `count` and `lines` accept these file options:

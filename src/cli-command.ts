@@ -12,13 +12,20 @@ import {
 } from './cli-schema.js';
 import { formatBytes } from './format-bytes.js';
 import { inspectCsvFile } from './inspect-file.js';
-import { normalizeFilterColumn } from './normalize.js';
+import {
+  normalizeFilterColumn,
+  validateRegex,
+} from './normalize.js';
+import { snapshotTransforms } from './transforms.js';
 import type {
   CsvColumns,
   CsvCompression,
   CsvCountOptions,
   CsvFilter,
   CsvRowsOptions,
+  CsvTransform,
+  CsvTransformChain,
+  CsvTransformMethods,
 } from './types.js';
 
 const MAX_FILTER_NESTING = 128;
@@ -114,7 +121,7 @@ async function runCount(args: CountArguments, output: CliOutput): Promise<number
 async function runLines(args: LinesArguments, output: CliOutput): Promise<number> {
   let options: CsvRowsOptions<CsvColumns | undefined>;
   try {
-    options = { ...parseCommonOptions(args), limit: args.limit };
+    options = { ...parseCommonOptions(args), limit: args.limit, transform: parseTransformOptions(args) };
   } catch (error) {
     return usageError(output, error instanceof Error ? error.message : String(error), 'csv lines --help');
   }
@@ -216,6 +223,126 @@ function serializeCsvField(field: string, delimiter: string): string {
 
 function isBrokenPipe(error: unknown): boolean {
   return isObject(error) && error['code'] === 'EPIPE';
+}
+
+function parseTransformOptions(args: LinesArguments): readonly CsvTransform[] | undefined {
+  const transforms: CsvTransform[] = [];
+  for (const [index, { key, value },] of args.transform.entries()) {
+    const label = `--transform[${index}]`;
+    const columns = key.split(',').map((column) => {
+      if (!/^[0-9]+$/.test(column)) {
+        throw new Error(`${label} must start with comma-separated decimal column indexes`);
+      }
+      return parseColumnIndex(column, `${label} column`);
+    });
+    const steps = value.split(',').map((op) => {
+      if (!isCleanupTransform(op)) {
+        throw new Error(`${label} expected trim, upper, lower, or unaccent, got ${JSON.stringify(op)}`);
+      }
+      return { op };
+    });
+    transforms.push(parseTransformChain({ columns, steps }, label));
+  }
+
+  const json = args['transform-json'];
+  if (json !== undefined) {
+    if (!Array.isArray(json)) {
+      throw new Error('--transform-json must be a JSON array of chains');
+    }
+    for (const [index, chain,] of json.entries()) {
+      transforms.push(parseTransformChain(chain, `--transform-json[${index}]`));
+    }
+  }
+
+  return transforms.length === 0 ? undefined : snapshotTransforms(transforms);
+}
+
+function parseTransformChain(value: unknown, label: string): CsvTransform {
+  if (!isObject(value)) {
+    throw new Error(`${label} must be an object with columns and steps`);
+  }
+  requireExactKeys(value, ['columns', 'steps'], label);
+  const { columns, steps } = value;
+  if (!Array.isArray(columns)) {
+    throw new Error(`${label}.columns must be a non-empty array of column indexes`);
+  }
+  const [first, ...rest] = columns.map((column: unknown, index) => {
+    if (typeof column !== 'number') {
+      throw new Error(`${label}.columns[${index}] must be a number`);
+    }
+    return column;
+  });
+  if (first === undefined) {
+    throw new Error(`${label}.columns must be a non-empty array of column indexes`);
+  }
+  if (!Array.isArray(steps) || steps.length === 0) {
+    throw new Error(`${label}.steps must be a non-empty array`);
+  }
+  let chain = parseTransformStep(csv.transform(), steps[0], `${label}.steps[0]`);
+  for (let index = 1; index < steps.length; ++index) {
+    chain = parseTransformStep(chain, steps[index], `${label}.steps[${index}]`);
+  }
+  return chain.on(first, ...rest);
+}
+
+function isCleanupTransform(op: unknown): op is 'trim' | 'upper' | 'lower' | 'unaccent' {
+  return op === 'trim' || op === 'upper' || op === 'lower' || op === 'unaccent';
+}
+
+function parseTransformStep(chain: CsvTransformMethods<CsvTransformChain>, step: unknown, label: string): CsvTransformChain {
+  if (!isObject(step)) {
+    throw new Error(`${label} must be an object with an op property`);
+  }
+  const op = requireString(step['op'], `${label}.op`);
+  if (isCleanupTransform(op)) {
+    requireExactKeys(step, ['op'], label);
+    return chain[op]();
+  }
+  switch (op) {
+    case 'replace': {
+      requireExactKeys(step, ['op', 'search', 'replacement'], label);
+      const search = step['search'];
+      const replacement = requireString(step['replacement'], `${label}.replacement`);
+      if (!isObject(search)) {
+        return chain.replace(requireString(search, `${label}.search`), replacement);
+      }
+      const searchLabel = `${label}.search`;
+      requireExactKeys(search, ['source', 'flags'], searchLabel, true);
+      const source = requireString(search['source'], `${searchLabel}.source`);
+      const flags = optionalString(search['flags'], `${searchLabel}.flags`);
+      let regex: RegExp;
+      try {
+        regex = new RegExp(source, flags);
+        // Check RE2 compatibility before opening the CSV, even for unprojected columns.
+        validateRegex({ source: regex.source, flags: regex.flags.replace('g', '') });
+      } catch (error) {
+        throw new Error(`${searchLabel}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+      return chain.replace(regex, replacement);
+    }
+    case 'map': {
+      requireExactKeys(step, ['op', 'values', 'defaultValue'], label, true);
+      const values = step['values'];
+      if (!isObject(values)) {
+        throw new Error(`${label}.values must be an object of strings`);
+      }
+      const mapping = new Map<string, string>();
+      for (const [key, value,] of Object.entries(values)) {
+        mapping.set(key, requireString(value, `${label}.values[${JSON.stringify(key)}]`));
+      }
+      return chain.map(mapping, optionalString(step['defaultValue'], `${label}.defaultValue`));
+    }
+    case 'date': {
+      requireExactKeys(step, ['op', 'format', 'defaultValue'], label, true);
+      const format = step['format'];
+      if (format !== 'YYYY-MM-DD' && format !== 'DD-MM-YYYY' && format !== 'DD/MM/YYYY') {
+        throw new Error(`${label}.format must be YYYY-MM-DD, DD-MM-YYYY, or DD/MM/YYYY`);
+      }
+      return chain.date(format, optionalString(step['defaultValue'], `${label}.defaultValue`));
+    }
+    default:
+      throw new Error(`${label}.op is an unknown transform: ${JSON.stringify(op)}`);
+  }
 }
 
 function parseWhereOptions(values: CountArguments): CsvFilter | undefined {
@@ -389,6 +516,10 @@ function requireString(value: unknown, label: string): string {
     throw new Error(`${label} must be a string`);
   }
   return value;
+}
+
+function optionalString(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : requireString(value, label);
 }
 
 function requireExactKeys(
