@@ -12,6 +12,7 @@ import type {
   CsvNativeFilterOperator,
   CsvNativeFilterProgramEntry,
   CsvNativeProjectionOptions,
+  CsvParserOptions,
   CsvRegex,
 } from './types.js';
 
@@ -135,6 +136,15 @@ export function prepareCsvBufferInput(
 
 export function normalizeChunk(chunk: NodeJS.TypedArray | DataView): NodeJS.TypedArray | DataView {
   return chunk.byteLength === 0 ? EMPTY_BUFFER : chunk;
+}
+
+export function validateCsvDialect({ quote, recordDelimiter }: Pick<CsvParserOptions, 'quote' | 'recordDelimiter'>): void {
+  if (quote !== undefined && typeof quote !== 'boolean') {
+    throw new TypeError('quote must be a boolean');
+  }
+  if (recordDelimiter !== undefined && recordDelimiter !== '\n') {
+    throw new TypeError('recordDelimiter must be LF');
+  }
 }
 
 export function normalizeFixedColumnsCount(value: number | undefined, label: string): number | undefined {

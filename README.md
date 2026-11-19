@@ -201,6 +201,11 @@ For archives with multiple data files, select an entry with `compression: { form
 [Compression](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#compression-and-delimiter-detection)
 for supported formats, detection rules, and limits.
 
+For TSV exports with quoting disabled, use `quote: false` and `recordDelimiter: '\n'`.
+Use `csv.batches()` with `output: 'raw-records'` to filter these files and access each record's original
+decompressed bytes, including its line ending. See
+[Raw record batches](https://github.com/Konstit-Engenharia/csv-parser/blob/main/docs/api.md#raw-record-batches).
+
 ### Validate input
 
 ```ts

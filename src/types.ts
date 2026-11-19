@@ -271,6 +271,13 @@ interface CsvRowSelectionOptions {
   readonly limit?: number;
 }
 
+interface CsvDialectOptions {
+  /** Treat double quotes as literal data when false. Defaults to true, which strict validation requires. */
+  readonly quote?: boolean;
+  /** End records at LF outside quotes and retain CR as data. The default recognizes CRLF, LF, and CR. */
+  readonly recordDelimiter?: '\n';
+}
+
 /**
  * Parser configuration shared by in-memory parsing and file APIs.
  *
@@ -281,7 +288,7 @@ interface CsvRowSelectionOptions {
  * @typeParam TEncoding - Defaults to the native parser's labels. File and buffer
  * parsing accept the full {@link CsvEncoding} set.
  */
-export interface CsvParserOptions<TEncoding extends CsvFileEncoding = CsvNativeEncoding> extends CsvRowSelectionOptions {
+export interface CsvParserOptions<TEncoding extends CsvFileEncoding = CsvNativeEncoding> extends CsvRowSelectionOptions, CsvDialectOptions {
   /** Input field encoding used when decoding bytes into JavaScript strings. Defaults to `'utf8'`. */
   readonly encoding?: TEncoding;
   /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
@@ -321,12 +328,14 @@ export interface CsvFileOptions extends CsvParserOptions<CsvFileEncoding> {
  * Compression is excluded because compressed byte streams cannot be split into
  * independently readable file ranges.
  */
-export type CsvShardingOptions = Omit<CsvFileOptions, 'compression' | 'encoding' | keyof CsvRowSelectionOptions> & {
-  /** Compression is unsupported for byte-offset sharding. */
-  readonly compression?: never;
-  /** Sharding scans raw file bytes and supports native encodings only. */
-  readonly encoding?: CsvNativeEncoding;
-};
+export type CsvShardingOptions =
+  & Omit<CsvFileOptions, 'compression' | 'encoding' | keyof CsvRowSelectionOptions | keyof CsvDialectOptions>
+  & {
+    /** Compression is unsupported for byte-offset sharding. */
+    readonly compression?: never;
+    /** Sharding scans raw file bytes and supports native encodings only. */
+    readonly encoding?: CsvNativeEncoding;
+  };
 
 /** Native equality predicate used by projection and count fast paths. */
 export interface CsvEqualsFilter {
@@ -448,7 +457,8 @@ export interface CsvColumnSelection<TColumns extends CsvColumns | undefined> {
 }
 
 /** Shared operation properties have declarations that editors can use for hover documentation. */
-interface CsvOperationOptions<TColumns extends CsvColumns | undefined> extends CsvColumnSelection<TColumns>, CsvRowSelectionOptions {
+interface CsvOperationOptions<TColumns extends CsvColumns | undefined>
+  extends CsvColumnSelection<TColumns>, CsvRowSelectionOptions, CsvDialectOptions {
   /** Field separator. Defaults to comma. File parsing also accepts `'auto'`. */
   readonly delimiter?: CsvDelimiter;
   /** Require exactly this many fields per row; malformed rows fail instead of being padded or truncated. */
@@ -483,6 +493,8 @@ interface CsvFilteredOperationOptions {
 interface CsvStrictOperationOptions {
   /** Enable RFC-style quote and schema validation. Requires unfiltered input. */
   readonly strict: true;
+  readonly quote?: true;
+  readonly recordDelimiter?: undefined;
   /** Filtering is unavailable with strict validation, which checks every input record. */
   readonly where?: undefined;
 }
@@ -510,13 +522,27 @@ export type CsvRowsOptions<TColumns extends CsvColumns | undefined = undefined> 
     readonly reuseArrays?: boolean;
   };
 
-/** Strict native batches require unfiltered, unprojected input. */
+/** Batches of parsed fields. Strict validation requires unfiltered, unprojected input. */
 export type CsvBatchesOptions =
   & CsvTransformOptions
+  & { readonly output?: 'fields'; }
   & (
     | (CsvFileOperationOptions<CsvColumns | undefined> & CsvFilteredOperationOptions)
     | (CsvFileOperationOptions<undefined> & CsvStrictOperationOptions)
   );
+
+/** Batches of original decompressed records using the literal LF dialect. */
+export type CsvRawRecordBatchesOptions =
+  & Omit<CsvFileOperationOptions<undefined>, 'encoding'>
+  & CsvFilteredOperationOptions
+  & {
+    readonly output: 'raw-records';
+    readonly quote: false;
+    readonly recordDelimiter: '\n';
+    /** Encoding for filter comparisons. Defaults to UTF-8. Output bytes are unchanged. */
+    readonly encoding?: CsvNativeEncoding;
+    readonly transform?: undefined;
+  };
 
 /** Options accepted by `csv.count()`. */
 export type CsvCountOptions = CsvFileOperationOptions<CsvColumns | undefined> & CsvValidationOptions;

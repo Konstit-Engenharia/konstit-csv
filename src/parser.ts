@@ -1,4 +1,7 @@
-import { NativeCsvBatch } from './batches.js';
+import {
+  NativeCsvBatch,
+  NativeCsvRawRecordBatch,
+} from './batches.js';
 import type { CsvFileInput } from './file-stream.js';
 import {
   EMPTY_BUFFER,
@@ -15,6 +18,7 @@ import {
   normalizeNativeFilters,
   projectionFilterProgram,
   rejectSelectedColumns,
+  validateCsvDialect,
 } from './normalize.js';
 import {
   type CsvStrictSchemaValidator,
@@ -40,11 +44,11 @@ function destroyNativeCsvParser(handle: NativePointer): void {
 
 export const nativeCsvParserFinalizer = new FinalizationRegistry<NativePointer>(destroyNativeCsvParser);
 
-export async function* parseFileChunks(
+export async function* parseFileChunks<TBatch extends NativeCsvBatch | NativeCsvRawRecordBatch>(
   input: CsvFileInput,
-  parser: NativeCsvParser,
+  parser: { writeBatch(chunk: Uint8Array, final?: boolean): TBatch; },
   limit: number | undefined,
-): AsyncGenerator<NativeCsvBatch, void> {
+): AsyncGenerator<TBatch, void> {
   let remaining = limit;
   if (remaining !== 0) {
     for await (const chunk of input.chunks()) {
@@ -63,11 +67,38 @@ export async function* parseFileChunks(
       }
     }
   }
-  const final = parser.endBatch();
+  const final = parser.writeBatch(EMPTY_BUFFER, true);
   if (final.rowCount > 0) {
     yield final;
   } else {
     final.close();
+  }
+}
+
+export async function* parseRawRecordChunks(
+  input: CsvFileInput,
+  options: CsvParserOptions,
+  program: readonly CsvNativeFilterProgramEntry[] | undefined,
+): AsyncGenerator<NativeCsvRawRecordBatch, void> {
+  normalizeFixedColumnsCount(options.fixedColumns, 'fixed column count');
+  const handle = createNativeCsvParser(options, true);
+  const parser = {
+    writeBatch(chunk: Uint8Array, final = false): NativeCsvRawRecordBatch {
+      const bytes = normalizeChunk(chunk);
+      const batch = native.symbols.csv_parser_write_raw_records(handle, bytes, bytes, final);
+      if (batch === null) {
+        throw new Error(`native CSV parser failed: ${native.symbols.csv_parser_last_error(handle) ?? 'native parser error unavailable'}`);
+      }
+      return new NativeCsvRawRecordBatch(batch);
+    },
+  };
+  nativeCsvParserFinalizer.register(parser, handle, parser);
+  try {
+    prepareNativeParser(handle, undefined, program);
+    yield* parseFileChunks(input, parser, options.limit);
+  } finally {
+    nativeCsvParserFinalizer.unregister(parser);
+    destroyNativeCsvParser(handle);
   }
 }
 
@@ -111,6 +142,8 @@ export function createPreparedParser(
   return NativeCsvParser[createSchemaParser]({
     encoding: options.encoding,
     delimiter: options.delimiter,
+    quote: options.quote,
+    recordDelimiter: options.recordDelimiter,
     fixedColumns: options.fixedColumns,
     strict: options.strict,
     skipRows: options.skipRows,
@@ -204,8 +237,9 @@ export function setRowSelection(handle: NativePointer, options: CsvParserOptions
 }
 
 function createNativeCsvParser(options: CsvParserOptions, prepared = false): NativePointer {
-  const { skipRows, limit } = options;
+  const { skipRows, limit, quote, recordDelimiter } = options;
   validateRowSelection({ skipRows, limit });
+  validateCsvDialect(options);
   const delimiter = options.delimiter ?? ',';
   if (delimiter === 'auto') {
     throw new Error('automatic delimiter detection is only supported by file APIs');
@@ -214,7 +248,15 @@ function createNativeCsvParser(options: CsvParserOptions, prepared = false): Nat
     throw new Error('delimiter must be one character');
   }
   const encoding = encodingCode(options.encoding);
-  const handle = prepared
+  const handle = quote === false || recordDelimiter !== undefined
+    ? native.symbols.csv_parser_create_dialect(
+      encoding,
+      delimiter.charCodeAt(0),
+      options.fixedColumns ?? 0,
+      quote ?? true,
+      recordDelimiter === '\n',
+    )
+    : prepared
     ? native.symbols.csv_parser_create_prepared(encoding, delimiter.charCodeAt(0), options.fixedColumns ?? 0)
     : native.symbols.csv_parser_create(encoding, delimiter.charCodeAt(0));
   if (handle === null) {
@@ -293,7 +335,11 @@ export class NativeCsvParser {
       throw new Error('strict CSV validation is not supported for projected batches or filters');
     }
     const transforms = snapshotTransforms(options.transform);
-    const prepared = columns !== undefined || program !== undefined || (!this.#strict && Boolean(transforms?.length));
+    const customDialect = options.quote === false || options.recordDelimiter !== undefined;
+    if (customDialect && this.#strict) {
+      throw new Error('strict CSV validation requires the default quote and record delimiter settings');
+    }
+    const prepared = customDialect || columns !== undefined || program !== undefined || (!this.#strict && Boolean(transforms?.length));
     const handle = createNativeCsvParser(options, prepared);
     try {
       const active = transforms?.length ? prepareTransforms(handle, transforms, columns) : false;

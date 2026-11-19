@@ -817,6 +817,102 @@ export class NativeCsvBatch {
   }
 }
 
+/**
+ * Owns a batch of original decompressed records. Consume or copy borrowed bytes
+ * before closing the batch. Each batch can be disposed independently of its iterator.
+ */
+export class NativeCsvRawRecordBatch {
+  #handle: NativePointer | null;
+  #rowCount: number | undefined;
+  #data: Uint8Array | undefined;
+  #byteOffsets: Uint32Array | undefined;
+  #fieldCounts: Uint32Array | undefined;
+
+  /** @internal */
+  constructor(handle: NativePointer) {
+    this.#handle = handle;
+  }
+
+  /** Whether the native storage has been released. */
+  get closed(): boolean {
+    return this.#handle === null;
+  }
+
+  /** Number of accepted records in this batch. */
+  get rowCount(): number {
+    this.#rowCount ??= u64ToSafeNumber(native.symbols.csv_batch_row_count(this.#requireHandle()), 'CSV batch row count');
+    return this.#rowCount;
+  }
+
+  /** Returns the original decompressed bytes for a zero-based row, including its LF when present. */
+  rowBytes(rowIndex: number): Uint8Array {
+    this.#validateRowIndex(rowIndex);
+    if (this.#data === undefined) {
+      const handle = this.#requireHandle();
+      this.#data = new Uint8Array(toArrayBuffer(
+        requirePtr(native.symbols.csv_batch_data_ptr(handle)),
+        0,
+        u64ToSafeNumber(native.symbols.csv_batch_data_len(handle), 'CSV batch data length'),
+      ));
+    }
+    this.#byteOffsets ??= new Uint32Array(toArrayBuffer(
+      requirePtr(native.symbols.csv_batch_field_offsets_ptr(this.#requireHandle())),
+      0,
+      (this.rowCount + 1) * BigUint64Array.BYTES_PER_ELEMENT,
+    ));
+    const data = this.#data;
+    const offsets = this.#byteOffsets;
+    const start = offsetAt(offsets, rowIndex, 'raw row byte offset', data.length);
+    const end = offsetAt(offsets, rowIndex + 1, 'raw row byte offset', data.length);
+    return data.subarray(start, end);
+  }
+
+  /** Returns the physical field count for a zero-based row, including empty fields. */
+  rowFieldCount(rowIndex: number): number {
+    this.#validateRowIndex(rowIndex);
+    this.#fieldCounts ??= new Uint32Array(toArrayBuffer(
+      requirePtr(native.symbols.csv_batch_row_offsets_ptr(this.#requireHandle())),
+      0,
+      (this.rowCount + 1) * BigUint64Array.BYTES_PER_ELEMENT,
+    ));
+    const offsets = this.#fieldCounts;
+    const start = offsetAt(offsets, rowIndex, 'raw row field offset', Number.MAX_SAFE_INTEGER);
+    const end = offsetAt(offsets, rowIndex + 1, 'raw row field offset', Number.MAX_SAFE_INTEGER);
+    return end - start;
+  }
+
+  /** Releases the native storage and invalidates borrowed bytes. Safe to call more than once. */
+  close(): void {
+    if (this.#handle !== null) {
+      native.symbols.csv_batch_destroy(this.#handle);
+      this.#handle = null;
+      this.#rowCount = undefined;
+      this.#data = undefined;
+      this.#byteOffsets = undefined;
+      this.#fieldCounts = undefined;
+    }
+  }
+
+  /** Releases the native storage at the end of a `using` scope. */
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
+  #validateRowIndex(rowIndex: number): void {
+    const count = this.rowCount;
+    if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= count) {
+      throw new RangeError(`row index out of range: ${rowIndex}`);
+    }
+  }
+
+  #requireHandle(): NativePointer {
+    if (this.#handle === null) {
+      throw new Error('native CSV raw-record batch is closed');
+    }
+    return this.#handle;
+  }
+}
+
 const UINT32_BASE = 0x1_0000_0000;
 const UINT32_BASE_BIGINT = 0x1_0000_0000n;
 const MAX_SAFE_OFFSET_HIGH_WORD = 0x1f_ffff;

@@ -6,6 +6,8 @@ import {
 
 const requiredSymbols = [
   'csv_parser_prepare',
+  'csv_parser_create_dialect',
+  'csv_parser_write_raw_records',
   'csv_parser_reset_stream',
   'csv_parser_write_prepared_batch',
   'csv_parser_write_prepared_count',

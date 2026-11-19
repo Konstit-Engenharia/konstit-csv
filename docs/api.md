@@ -81,7 +81,7 @@ The `csv` namespace provides these helpers:
 - `csv.parse(buffer, options)` returns a promise of all materialized rows.
 - `csv.rows(path, options)` streams materialized row batches.
 - `csv.count(path, options)` counts records, optionally through a native filter.
-- `csv.batches(path, options)` streams disposable `NativeCsvBatch` objects.
+- `csv.batches(path, options)` streams disposable native field batches or [raw record batches](#raw-record-batches).
 - `csv.findCsvSafeSplitOffsets(path, count, options)` and `csv.findCsvSafeShards(path, count, options)` find record-safe
   byte boundaries for advanced applications that process file ranges themselves.
 
@@ -441,6 +441,49 @@ for await (
 `Number.MAX_SAFE_INTEGER` and the associated backing data. Columnar `scanColumns()` supplies JavaScript-safe numeric
 ranges in a `Float64Array`. Each scan copies the requested column indexes before the first callback, so every row
 uses the column order supplied for that call.
+
+### Literal TSV
+
+Set `delimiter: '\t'` for TSV and `quote: false` when the producer uses double quotes as ordinary field data.
+Set `recordDelimiter: '\n'` to end records at LF and preserve carriage returns, including a CR before LF.
+These options can be set independently in the JavaScript parsing and counting APIs. Strict validation and
+byte-offset sharding require the default dialect.
+
+### Raw record batches
+
+Use `output: 'raw-records'` with `quote: false` and `recordDelimiter: '\n'` to stream accepted records
+from a file as original decompressed bytes. Filters address zero-based physical columns.
+
+```ts
+import { csv } from '@konstit/csv';
+
+for await (
+  using batch of csv.batches('training.tsv.gz', {
+    compression: 'gzip',
+    delimiter: '\t',
+    quote: false,
+    recordDelimiter: '\n',
+    output: 'raw-records',
+    where: csv.column(1).isOneOf(['br', 'BR', 'Br', 'bR']),
+  })
+) {
+  for (let i = 0; i < batch.rowCount; ++i) {
+    if (batch.rowFieldCount(i) === 3) {
+      const record = batch.rowBytes(i);
+      // Consume the bytes here or call record.slice() to retain a copy.
+    }
+  }
+}
+```
+
+`NativeCsvRawRecordBatch.rowBytes(i)` returns a borrowed `Uint8Array` valid until the batch is closed.
+The view includes CRLF or LF when present. An unterminated final record is returned as-is.
+`rowFieldCount(i)` includes every physical field, including empty fields. Use it before applying
+a caller-defined cap on valid rows. The parser's `limit` counts all filter matches.
+
+Raw batches support native UTF-8 and Latin-1 encodings for filter comparisons and default to UTF-8.
+The output preserves every source byte, including any BOM and bytes that are invalid UTF-8.
+Projection, field transforms, and strict validation are available with parsed field output.
 
 ## Manual parser
 

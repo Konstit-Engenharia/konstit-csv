@@ -12,6 +12,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -518,6 +519,7 @@ HWY_ATTR size_t find_byte_simd(const uint8_t* data, size_t len, uint8_t needle) 
   return npos;
 }
 
+template <bool lf_only = false>
 HWY_ATTR size_t find_plain_special_simd(const uint8_t* data, size_t len, uint8_t delimiter) {
   const hn::ScalableTag<uint8_t> du8;
   const size_t lanes = hn::Lanes(du8);
@@ -529,7 +531,10 @@ HWY_ATTR size_t find_plain_special_simd(const uint8_t* data, size_t len, uint8_t
   while (i + lanes <= len) {
     const auto bytes = hn::LoadU(du8, data + i);
     const auto delimiter_mask = hn::Eq(bytes, delimiter_v);
-    const auto newline_mask = hn::Or(hn::Eq(bytes, lf_v), hn::Eq(bytes, cr_v));
+    auto newline_mask = hn::Eq(bytes, lf_v);
+    if constexpr (!lf_only) {
+      newline_mask = hn::Or(newline_mask, hn::Eq(bytes, cr_v));
+    }
     const intptr_t found = hn::FindFirstTrue(du8, hn::Or(delimiter_mask, newline_mask));
     if (found >= 0) {
       return i + static_cast<size_t>(found);
@@ -539,7 +544,7 @@ HWY_ATTR size_t find_plain_special_simd(const uint8_t* data, size_t len, uint8_t
 
   for (; i < len; ++i) {
     const uint8_t byte = data[i];
-    if (byte == delimiter || byte == '\n' || byte == '\r') {
+    if (byte == delimiter || byte == '\n' || (!lf_only && byte == '\r')) {
       return i;
     }
   }
@@ -576,8 +581,8 @@ HWY_ATTR size_t find_strict_plain_special_simd(const uint8_t* data, size_t len, 
   return npos;
 }
 
-bool is_quoted_field_terminator(uint8_t byte, uint8_t delimiter) {
-  return byte == delimiter || byte == '\n' || byte == '\r';
+template <bool lf_only = false> bool is_quoted_field_terminator(uint8_t byte, uint8_t delimiter) {
+  return byte == delimiter || byte == '\n' || (!lf_only && byte == '\r');
 }
 
 uint64_t clear_mask_bits_through(uint64_t bits, size_t lane) {
@@ -590,8 +595,9 @@ uint64_t clear_mask_bits_through(uint64_t bits, size_t lane) {
 class csv_parser {
 public:
   csv_parser(csv_encoding encoding, uint8_t delimiter, batch_layout layout = batch_layout::utf8,
-             uint32_t fixed_columns = 0)
-      : encoding_(encoding), delimiter_(delimiter), layout_(layout), fixed_columns_(fixed_columns) {}
+             uint32_t fixed_columns = 0, bool quotes = true, bool lf_only = false)
+      : encoding_(encoding), delimiter_(delimiter), layout_(layout), quotes_(quotes), lf_only_(lf_only),
+        fixed_columns_(fixed_columns) {}
 
   void set_row_selection(uint64_t skip, uint64_t limit, bool capture_header) {
     initial_skip_ = skip;
@@ -684,6 +690,7 @@ public:
     prepared_configuration_ = true;
     prepared_direct_projection_ = direct_projection_;
     prepared_quoted_records_ = supports_quoted_records();
+    prepare_raw_pair_filter();
     if (prepared_quoted_records_ && layout_ == batch_layout::latin1_cleanup) {
       quoted_cleanup_columns_ = transforms_.bound_columns(max_quoted_fields);
     }
@@ -733,6 +740,44 @@ public:
       finish_stream();
     }
     return error_.empty() ? emitted_rows_ : prepared_count_error;
+  }
+
+  csv_batch* write_raw_records(const uint8_t* data, size_t len, bool final) {
+    if (!prepared_configuration_ || quotes_ || !lf_only_ || projection_enabled_ || transform_matched_rows_) {
+      set_error("raw records require a prepared literal LF dialect without projection or transforms");
+      return nullptr;
+    }
+    auto batch = std::make_unique<csv_batch>();
+    const auto* start = reinterpret_cast<const char*>(data);
+    while (len != 0 && !limit_reached()) {
+      const auto* lf = static_cast<const char*>(std::memchr(start, '\n', len));
+      if (lf == nullptr) {
+        raw_record_carry_.append(start, len);
+        break;
+      }
+
+      const size_t length = static_cast<size_t>(lf - start) + 1;
+      if (raw_record_carry_.empty()) {
+        if (!append_raw_record(*batch, std::string_view(start, length), length - 1)) {
+          return nullptr;
+        }
+      } else {
+        raw_record_carry_.append(start, length);
+        if (!append_raw_record(*batch, raw_record_carry_, raw_record_carry_.size() - 1)) {
+          return nullptr;
+        }
+        raw_record_carry_.clear();
+      }
+      start += length;
+      len -= length;
+    }
+    if (final && !limit_reached() && !raw_record_carry_.empty()) {
+      if (!append_raw_record(*batch, raw_record_carry_, raw_record_carry_.size())) {
+        return nullptr;
+      }
+      raw_record_carry_.clear();
+    }
+    return batch.release();
   }
 
   csv_batch* write_batch(const uint8_t* data, size_t len, bool final) {
@@ -891,6 +936,7 @@ public:
     skip_state_ = {};
     reset_row_state();
     field_.clear();
+    raw_record_carry_.clear();
     error_.clear();
     batch_ = nullptr;
     parse_failed_ = false;
@@ -943,6 +989,134 @@ public:
   void set_error(const char* value) { error_ = value; }
 
 private:
+  static constexpr size_t max_raw_pair_values = 8;
+
+  void prepare_raw_pair_filter() {
+    raw_pair_values_.reset();
+    if (quotes_ || !lf_only_ || encoding_ != csv_encoding::utf8 || fixed_columns_ != 0 || filters_.size() != 1) {
+      return;
+    }
+    const auto& filter = filters_.front();
+    std::array<uint16_t, max_raw_pair_values> values;
+    if (filter.kind != row_filter_kind::in || filter.value_count == 0 || filter.value_count > values.size()) {
+      return;
+    }
+    for (size_t i = 0; i < filter.value_count; ++i) {
+      const auto start = filter.value_offsets[i];
+      const auto* value = filter.values_data + start;
+      // Matching a fixed-width prefix proves the field length only when the values contain no separator.
+      if (filter.value_offsets[i + 1] - start != sizeof(uint16_t) || std::memchr(value, delimiter_, sizeof(uint16_t))) {
+        return;
+      }
+      std::memcpy(&values[i], value, sizeof(uint16_t));
+    }
+    std::fill(values.begin() + filter.value_count, values.end(), values[0]);
+    raw_pair_values_ = values;
+  }
+
+  HWY_ATTR bool matches_raw_pair(const char* field) const {
+    uint16_t key;
+    std::memcpy(&key, field, sizeof(key));
+    const hn::FixedTag<uint16_t, max_raw_pair_values> tag;
+    return !hn::AllFalse(tag, hn::Eq(hn::LoadU(tag, raw_pair_values_->data()), hn::Set(tag, key)));
+  }
+
+  std::string_view raw_filter_value(const char* start, const char* end) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(start);
+    const size_t length = static_cast<size_t>(end - start);
+    if (encoding_ != csv_encoding::latin1 || is_ascii(bytes, length)) {
+      return {start, length};
+    }
+    utf8_filter_field_.clear();
+    append_latin1(utf8_filter_field_, bytes, length);
+    return utf8_filter_field_;
+  }
+
+  // One predicate can decide a row without updating or clearing Boolean program state.
+  size_t matching_raw_field_count(const char* field, const char* end) {
+    const size_t column = filters_.front().column;
+    for (size_t i = 0; i < column; ++i) {
+      const auto* separator =
+          static_cast<const char*>(std::memchr(field, delimiter_, static_cast<size_t>(end - field)));
+      if (separator == nullptr) {
+        return 0;
+      }
+      field = separator + 1;
+    }
+    const char* separator;
+    if (raw_pair_values_) {
+      const size_t remaining = static_cast<size_t>(end - field);
+      constexpr size_t width = sizeof(uint16_t);
+      if (remaining < width || (remaining > width && field[width] != delimiter_) || !matches_raw_pair(field)) {
+        return 0;
+      }
+      separator = remaining == width ? nullptr : field + width;
+    } else {
+      separator = static_cast<const char*>(std::memchr(field, delimiter_, static_cast<size_t>(end - field)));
+      if (!field_matches_filter(0, raw_filter_value(field, separator == nullptr ? end : separator))) {
+        return 0;
+      }
+    }
+    size_t field_count = column + 1;
+    while (separator != nullptr) {
+      ++field_count;
+      field = separator + 1;
+      separator = static_cast<const char*>(std::memchr(field, delimiter_, static_cast<size_t>(end - field)));
+    }
+    return field_count;
+  }
+
+  void emit_raw_record(csv_batch& batch, std::string_view record, size_t field_count) {
+    batch.data.append(record);
+    // Raw batches store cumulative physical field counts and one byte boundary per record.
+    batch.row_offsets.push_back(batch.row_offsets.back() + field_count);
+    batch.field_offsets.push_back(batch.data.size());
+    record_emitted_row();
+  }
+
+  bool append_raw_record(csv_batch& batch, std::string_view record, size_t payload_length) {
+    const bool skipping = rows_to_skip_ != 0;
+    if (skipping && fixed_columns_ == 0) {
+      --rows_to_skip_;
+      return true;
+    }
+
+    const char* field = record.data();
+    const char* const end = field + payload_length;
+    if (fixed_columns_ == 0 && filters_.size() == 1) {
+      const size_t field_count = matching_raw_field_count(field, end);
+      if (field_count != 0) {
+        emit_raw_record(batch, record, field_count);
+      }
+      return true;
+    }
+
+    while (true) {
+      const auto* separator =
+          static_cast<const char*>(std::memchr(field, delimiter_, static_cast<size_t>(end - field)));
+      if (!skipping && !row_filter_rejected() && is_filter_column(current_column_)) {
+        evaluate_current_field_filters(raw_filter_value(field, separator == nullptr ? end : separator));
+      }
+      ++current_column_;
+      if (separator == nullptr || (fixed_columns_ == 0 && row_filter_rejected())) {
+        break;
+      }
+      field = separator + 1;
+    }
+
+    if (fixed_columns_ != 0 && current_column_ != fixed_columns_) {
+      fail_parse("fixed row column count mismatch");
+      return false;
+    }
+    if (skipping) {
+      --rows_to_skip_;
+    } else if (row_matches_filters()) {
+      emit_raw_record(batch, record, current_column_);
+    }
+    reset_row_state();
+    return true;
+  }
+
   void reserve_filtered_batch(csv_batch& batch, size_t input_len, size_t sample_input_len = 0) const {
     constexpr size_t initial_input_hint = 32 * 1024;
     const size_t initial_len = std::min(input_len, initial_input_hint);
@@ -984,7 +1158,8 @@ private:
       len = 0;
       return;
     }
-    if (rows_to_skip_ == 0 || validate_rows || fixed_columns_ != 0 || data == nullptr || len == 0) {
+    if (rows_to_skip_ == 0 || validate_rows || fixed_columns_ != 0 || data == nullptr || len == 0 || !quotes_ ||
+        lf_only_) {
       return;
     }
     size_t consumed = len;
@@ -1676,20 +1851,38 @@ private:
 
   template <bool try_quoted_records = false> void parse(const uint8_t* data, size_t len) {
     // Choose once per input span so unfiltered fields skip the borrowing checks.
-    if (!filters_.empty() && encoding_ == csv_encoding::utf8) {
+    const bool borrow = !filters_.empty() && encoding_ == csv_encoding::utf8;
+    if (!quotes_ || lf_only_) {
+      if (borrow) {
+        parse_dialect_fields<true>(data, len);
+      } else {
+        parse_dialect_fields<false>(data, len);
+      }
+    } else if (borrow) {
       parse_fields<try_quoted_records, true>(data, len);
     } else {
       parse_fields<try_quoted_records, false>(data, len);
     }
   }
 
-  template <bool try_quoted_records, bool can_borrow_fields> void parse_fields(const uint8_t* data, size_t len) {
+  template <bool borrow> void parse_dialect_fields(const uint8_t* data, size_t len) {
+    if (quotes_) {
+      parse_fields<false, borrow, true>(data, len);
+    } else if (lf_only_) {
+      parse_fields<false, borrow, true, false>(data, len);
+    } else {
+      parse_fields<false, borrow, false, false>(data, len);
+    }
+  }
+
+  template <bool try_quoted_records, bool can_borrow_fields, bool lf_only = false, bool quotes = true>
+  void parse_fields(const uint8_t* data, size_t len) {
     if (data == nullptr || len == 0) {
       return;
     }
 
     // A fixed-width count with an empty projection carries only the physical column across writes.
-    if (mode_ == output_mode::count && filters_.empty() &&
+    if (quotes && !lf_only && mode_ == output_mode::count && filters_.empty() &&
         (fixed_columns_ == 0 || (projection_enabled_ && selected_columns_len_ == 0))) {
       parse_count_only(data, len);
       return;
@@ -1697,17 +1890,17 @@ private:
 
     size_t i = 0;
     // Skipping a rejected tail ignores delimiters, which fixed-width validation needs to count.
-    const bool can_skip_rejected_tail = !strict_quote_syntax_ && fixed_columns_ == 0;
+    const bool can_skip_rejected_tail = quotes && !lf_only && !strict_quote_syntax_ && fixed_columns_ == 0;
     unsigned misses_left = quoted_record_miss_limit;
-    const auto finish_borrowed_field = [this, data, len, can_skip_rejected_tail](std::string_view field,
-                                                                                 size_t terminator_index) -> size_t {
+    const auto finish_borrowed_field = [this, data, len](std::string_view field, size_t terminator_index,
+                                                         bool can_skip_tail) -> size_t {
       saw_row_data_ = true;
       at_field_start_ = false;
       const uint8_t terminator = data[terminator_index];
       size_t next_index = terminator_index + 1;
       if (terminator == delimiter_) {
         finish_field(field);
-        if (can_skip_rejected_tail && row_filter_rejected()) {
+        if (can_skip_tail && row_filter_rejected()) {
           next_index += skip_rejected_row_tail(data + next_index, len - next_index);
         }
         return next_index;
@@ -1715,7 +1908,7 @@ private:
 
       finish_row(field);
       if (!parse_failed_ && !limit_reached()) {
-        previous_was_cr_ = terminator == '\r';
+        previous_was_cr_ = !lf_only && terminator == '\r';
       }
       return next_index;
     };
@@ -1723,7 +1916,7 @@ private:
       i = skip_rejected_row_tail(data, len);
     }
     while (i < len) {
-      if (in_quotes_) {
+      if (quotes && in_quotes_) {
         if (pending_quote_) {
           if (data[i] == '"') {
             append_decoded_byte('"');
@@ -1733,7 +1926,7 @@ private:
             ++i;
             continue;
           }
-          if (strict_quote_syntax_ && !is_quoted_field_terminator(data[i], delimiter_)) {
+          if (strict_quote_syntax_ && !is_quoted_field_terminator<lf_only>(data[i], delimiter_)) {
             fail_parse("strict CSV quote syntax error: unescaped quote in "
                        "quoted field");
             return;
@@ -1756,7 +1949,7 @@ private:
       }
 
       const uint8_t byte = data[i];
-      if (previous_was_cr_ && byte == '\n') {
+      if (!lf_only && previous_was_cr_ && byte == '\n') {
         previous_was_cr_ = false;
         ++i;
         continue;
@@ -1773,7 +1966,7 @@ private:
         continue;
       }
 
-      if (byte == '\n' || byte == '\r') {
+      if (byte == '\n' || (!lf_only && byte == '\r')) {
         finish_row(field_);
         if (parse_failed_ || limit_reached()) {
           return;
@@ -1783,7 +1976,7 @@ private:
         continue;
       }
 
-      if (byte == '"' && at_field_start_) {
+      if (quotes && byte == '"' && at_field_start_) {
         if constexpr (try_quoted_records) {
           if (!saw_row_data_ && current_column_ == 0) {
             const size_t consumed = try_quoted_record(data + i, len - i);
@@ -1802,12 +1995,12 @@ private:
             }
           }
         }
-        const size_t close_quote = find_complete_quoted_field_close(data + i, len - i);
+        const size_t close_quote = find_complete_quoted_field_close<lf_only>(data + i, len - i);
         if (close_quote != npos) {
           const size_t terminator_index = i + close_quote + 1;
           if (can_borrow_fields && !complete_quoted_field_has_escape_ && can_borrow_current_filter_field()) {
             const std::string_view field(reinterpret_cast<const char*>(data + i + 1), close_quote - 1);
-            i = finish_borrowed_field(field, terminator_index);
+            i = finish_borrowed_field(field, terminator_index, can_skip_rejected_tail);
             if (parse_failed_ || limit_reached()) {
               return;
             }
@@ -1825,7 +2018,7 @@ private:
             }
             continue;
           }
-          if (terminator == '\n' || terminator == '\r') {
+          if (terminator == '\n' || (!lf_only && terminator == '\r')) {
             finish_row(field_);
             if (parse_failed_ || limit_reached()) {
               return;
@@ -1850,11 +2043,11 @@ private:
         return;
       }
 
-      const size_t span = find_plain_span(data + i, len - i);
+      const size_t span = find_plain_span<lf_only>(data + i, len - i);
       if (can_borrow_fields && can_borrow_current_filter_field() && span < len - i &&
-          is_quoted_field_terminator(data[i + span], delimiter_)) {
+          is_quoted_field_terminator<lf_only>(data[i + span], delimiter_)) {
         const std::string_view field(reinterpret_cast<const char*>(data + i), span);
-        i = finish_borrowed_field(field, i + span);
+        i = finish_borrowed_field(field, i + span, can_skip_rejected_tail);
         if (parse_failed_ || limit_reached()) {
           return;
         }
@@ -1933,12 +2126,13 @@ private:
     saw_row_data_ = state.saw_row_data;
   }
 
-  size_t find_plain_span(const uint8_t* data, size_t len) const {
+  template <bool lf_only = false> size_t find_plain_span(const uint8_t* data, size_t len) const {
     const size_t found = strict_quote_syntax_ ? find_strict_plain_special_simd(data, len, delimiter_)
-                                              : find_plain_special_simd(data, len, delimiter_);
+                                              : find_plain_special_simd<lf_only>(data, len, delimiter_);
     return found == npos ? len : found;
   }
 
+  template <bool lf_only = false>
   HWY_ATTR size_t find_complete_quoted_field_close(const uint8_t* data, size_t len) const {
     complete_quoted_field_has_escape_ = false;
 
@@ -1972,7 +2166,7 @@ private:
           quote_bits = clear_mask_bits_through(quote_bits, lane + 1);
           continue;
         }
-        if (is_quoted_field_terminator(next, delimiter_)) {
+        if (is_quoted_field_terminator<lf_only>(next, delimiter_)) {
           return quote;
         }
         return npos;
@@ -1999,7 +2193,7 @@ private:
         i += 2;
         continue;
       }
-      if (is_quoted_field_terminator(next, delimiter_)) {
+      if (is_quoted_field_terminator<lf_only>(next, delimiter_)) {
         return i;
       }
       return npos;
@@ -2785,6 +2979,8 @@ private:
   csv_encoding encoding_;
   uint8_t delimiter_;
   const batch_layout layout_;
+  const bool quotes_;
+  const bool lf_only_;
   std::string utf8_filter_field_;
   output_mode mode_ = output_mode::batch;
   csv_batch* batch_ = nullptr;
@@ -2818,6 +3014,8 @@ private:
   std::vector<uint32_t> first_filter_by_column_;
   std::vector<uint32_t> next_filter_;
   std::string field_;
+  std::string raw_record_carry_;
+  std::optional<std::array<uint16_t, max_raw_pair_values>> raw_pair_values_;
   std::vector<std::string> row_fields_;
   std::vector<std::string> projected_fields_;
   std::vector<in_filter_cache> in_filter_caches_;
@@ -3180,12 +3378,18 @@ CSV_EXPORT uint64_t csv_parser_skipped_rows(void* parser) {
   return parser == nullptr ? 0 : csv_native::checked_parser(parser)->skipped_rows();
 }
 
-CSV_EXPORT void* csv_parser_create_prepared(int encoding, uint8_t delimiter, uint32_t fixed_columns) {
+CSV_EXPORT void* csv_parser_create_dialect(int encoding, uint8_t delimiter, uint32_t fixed_columns, bool quotes,
+                                           bool lf_only) {
   if (delimiter == 0 || delimiter == '\n' || delimiter == '\r' || delimiter == '"') {
     return nullptr;
   }
   const auto selected = encoding == 1 ? csv_native::csv_encoding::latin1 : csv_native::csv_encoding::utf8;
-  return new csv_native::csv_parser(selected, delimiter, csv_native::batch_layout::utf8, fixed_columns);
+  return new csv_native::csv_parser(selected, delimiter, csv_native::batch_layout::utf8, fixed_columns, quotes,
+                                    lf_only);
+}
+
+CSV_EXPORT void* csv_parser_create_prepared(int encoding, uint8_t delimiter, uint32_t fixed_columns) {
+  return csv_parser_create_dialect(encoding, delimiter, fixed_columns, true, false);
 }
 
 // The parser owns the projection and predicate buffers after preparation.
@@ -3221,6 +3425,18 @@ CSV_EXPORT void* csv_parser_write_prepared_batch(void* parser, const uint8_t* da
     return nullptr;
   }
   return typed->write_prepared_batch(data, static_cast<size_t>(len), final);
+}
+
+CSV_EXPORT void* csv_parser_write_raw_records(void* parser, const uint8_t* data, uint64_t len, bool final) {
+  if (parser == nullptr) {
+    return nullptr;
+  }
+  auto* typed = csv_native::checked_parser(parser);
+  if (len > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) || (data == nullptr && len != 0)) {
+    typed->set_error("raw record input is invalid");
+    return nullptr;
+  }
+  return typed->write_raw_records(data, static_cast<size_t>(len), final);
 }
 
 CSV_EXPORT uint64_t csv_parser_write_prepared_count(void* parser, const uint8_t* data, uint64_t len, bool final) {

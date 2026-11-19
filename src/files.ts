@@ -246,6 +246,8 @@ export function parseCsvFileProjected(
     snapshotCsvOptions({
       encoding: options.encoding,
       delimiter: options.delimiter,
+      quote: options.quote,
+      recordDelimiter: options.recordDelimiter,
       compression: options.compression,
       chunkSize: options.chunkSize,
       columns: options.columns,

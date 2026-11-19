@@ -96,7 +96,7 @@ async function readCompressedSample(chunks: Iterable<Uint8Array> | AsyncIterable
 
 function inspectFormat(path: string, prefix: Uint8Array, eof: boolean, encoding: string, delimiter: string) {
   let bytes = prefix;
-  let counts: readonly Uint32Array[] | undefined;
+  let counts: ReturnType<typeof scanCsvFileFormat>['counts'] | undefined;
   const encodingSource = encoding === 'auto' ? 'inferred' : 'explicit';
   if (encoding === 'auto') {
     const sample = scanCsvFileFormat(prefix, eof, true);
@@ -118,7 +118,13 @@ function inspectFormat(path: string, prefix: Uint8Array, eof: boolean, encoding:
   return { encoding, encodingSource, ...choice, ...inspectRecords(bytes, eof, choice.delimiter) } as const;
 }
 
-function inspectDelimiter(path: string, bytes: Uint8Array, eof: boolean, counts: readonly Uint32Array[] | undefined, sampleBytes: number) {
+function inspectDelimiter(
+  path: string,
+  bytes: Uint8Array,
+  eof: boolean,
+  counts: ReturnType<typeof scanCsvFileFormat>['counts'] | undefined,
+  sampleBytes: number,
+) {
   // The native probe summarizes stable counts. Per-record counts distinguish an absent separator from an inconsistent one.
   const rows = counts ?? scanDelimiterCounts(bytes, eof);
   const choice = selectDelimiter(path, rows);

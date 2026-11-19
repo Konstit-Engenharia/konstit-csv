@@ -15,7 +15,10 @@ import {
   EMPTY_BUFFER,
   native,
 } from './native.js';
-import { resolveInputEncoding } from './normalize.js';
+import {
+  resolveInputEncoding,
+  validateCsvDialect,
+} from './normalize.js';
 import { snapshotCsvOptions } from './options-snapshot.js';
 import type {
   CsvCompression,
@@ -68,7 +71,9 @@ interface StableDelimiterCandidate {
   separatorCount: number;
 }
 
-export type CsvFileProbe = (path: string, prefix: Uint8Array, sourceEnded: boolean, delimiter: CsvDelimiter) => {
+type ProbeDialect = Pick<CsvFileOptions, 'quote' | 'recordDelimiter'>;
+
+export type CsvFileProbe = (path: string, prefix: Uint8Array, sourceEnded: boolean, delimiter: CsvDelimiter, dialect?: ProbeDialect) => {
   delimiter: CsvDelimiter;
   encoding: 'utf8' | 'latin1' | 'windows-1252' | 'utf-16le' | 'utf-16be';
   skipBytes: number;
@@ -78,11 +83,12 @@ type FileReadMode = 'stream' | 'parse' | 'read-ahead' | 'count';
 
 export async function prepareCsvFileInput(
   path: string,
-  suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter' | 'encoding'>,
+  suppliedOptions: Pick<CsvFileOptions, 'chunkSize' | 'compression' | 'delimiter' | 'encoding'> & ProbeDialect,
   readMode: FileReadMode = 'parse',
   probeFormat: CsvFileProbe = probeCsvFileFormat,
 ): Promise<CsvFileInput> {
   const options = snapshotCsvOptions(suppliedOptions);
+  validateCsvDialect(options);
   const autoEncoding = options.encoding === undefined || options.encoding === 'auto';
   // The encoding probe needs the original bytes after decompression.
   const inputEncoding = autoEncoding ? 'utf8' : resolveInputEncoding(options.encoding, options.delimiter);
@@ -147,8 +153,8 @@ export async function prepareCsvFileInput(
 
     const probe = copyProbePrefix(bufferedChunks, bufferedByteLength);
     const hint = delimiterHintPath(path, options.compression);
-    const format = autoEncoding ? probeFormat(hint, probe, sourceEnded, configuredDelimiter) : undefined;
-    const delimiter = format?.delimiter ?? detectDelimiter(hint, probe, sourceEnded);
+    const format = autoEncoding ? probeFormat(hint, probe, sourceEnded, configuredDelimiter, options) : undefined;
+    const delimiter = format?.delimiter ?? detectDelimiter(hint, probe, sourceEnded, options);
     const replayEncoding = format === undefined ? parserEncoding : resolveInputEncoding(format.encoding, delimiter);
     // A signature can span multiple reads, including one-byte input chunks.
     let skip = format?.skipBytes ?? 0;
@@ -345,13 +351,13 @@ function copyProbePrefix(chunks: readonly Uint8Array[], totalByteLength: number)
   return probe;
 }
 
-export function detectDelimiter(path: string, probe: Uint8Array, sourceEnded: boolean): CsvDelimiter {
-  return requireDelimiter(path, scanDelimiterCounts(probe, sourceEnded));
+export function detectDelimiter(path: string, probe: Uint8Array, sourceEnded: boolean, dialect?: ProbeDialect): CsvDelimiter {
+  return requireDelimiter(path, scanDelimiterCounts(probe, sourceEnded, dialect));
 }
 
 /** Detect the encoding and, when requested, score delimiters on the same prefix. */
-export const probeCsvFileFormat: CsvFileProbe = (path, prefix, sourceEnded, delimiter) => {
-  const { encoding, skipBytes, counts } = scanCsvFileFormat(prefix, sourceEnded, delimiter === 'auto');
+export const probeCsvFileFormat: CsvFileProbe = (path, prefix, sourceEnded, delimiter, dialect) => {
+  const { encoding, skipBytes, counts } = scanCsvFileFormat(prefix, sourceEnded, delimiter === 'auto', dialect);
   return { encoding, delimiter: delimiter === 'auto' ? requireDelimiter(path, counts) : delimiter, skipBytes };
 };
 
@@ -359,11 +365,16 @@ interface CsvFormatSample {
   bytes: Uint8Array;
   encoding: ReturnType<CsvFileProbe>['encoding'];
   skipBytes: number;
-  counts: readonly Uint32Array[];
+  counts: readonly (Uint32Array | number[])[];
 }
 
 /** When scoring delimiters, structural bytes exclude the BOM and use UTF-8 for UTF-16 input. */
-export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scoreDelimiters: boolean): CsvFormatSample {
+export function scanCsvFileFormat(
+  prefix: Uint8Array,
+  sourceEnded: boolean,
+  scoreDelimiters: boolean,
+  dialect?: ProbeDialect,
+): CsvFormatSample {
   let bytes = prefix;
   let bomEncoding: 'utf-16le' | 'utf-16be' | 'utf8' | undefined;
   let skipBytes = 0;
@@ -392,7 +403,8 @@ export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scor
       bytes = new TextEncoder().encode(text);
     }
   }
-  const counts = scoreDelimiters ? new Uint32Array(DELIMITER_CANDIDATES.length + 1) : undefined;
+  const customDialect = scoreDelimiters && (dialect?.quote === false || dialect?.recordDelimiter !== undefined);
+  const counts = scoreDelimiters && !customDialect ? new Uint32Array(DELIMITER_CANDIDATES.length + 1) : undefined;
   const encodingCode = native.symbols.csv_probe_format_v2(
     bytes.length === 0 ? EMPTY_BUFFER : bytes,
     bytes.length,
@@ -403,6 +415,9 @@ export function scanCsvFileFormat(prefix: Uint8Array, sourceEnded: boolean, scor
   const encoding = bomEncoding ?? PROBED_BYTE_ENCODINGS[encodingCode];
   if (encoding === undefined) {
     throw new Error('NUL in encoding probe: specify the encoding explicitly');
+  }
+  if (customDialect) {
+    return { bytes, encoding, skipBytes, counts: scanDelimiterCounts(bytes, sourceEnded, dialect) };
   }
   return { bytes, encoding, skipBytes, counts: counts === undefined || counts[DELIMITER_CANDIDATES.length] === 0 ? [] : [counts] };
 }
@@ -481,7 +496,11 @@ export function selectDelimiter(path: string, rows: readonly ArrayLike<number>[]
   return { reason: 'ambiguous', candidates: strongestCandidates.map((candidate) => candidate.delimiter) };
 }
 
-export function scanDelimiterCounts(probe: Uint8Array, sourceEnded: boolean): number[][] {
+export function scanDelimiterCounts(
+  probe: Uint8Array,
+  sourceEnded: boolean,
+  { quote = true, recordDelimiter }: ProbeDialect = {},
+): number[][] {
   const rows: number[][] = [];
   let counts = Array.from({ length: DELIMITER_CANDIDATES.length }, () => 0);
   let inQuotes = false;
@@ -489,7 +508,7 @@ export function scanDelimiterCounts(probe: Uint8Array, sourceEnded: boolean): nu
 
   for (let index = 0; index < probe.byteLength; ++index) {
     const byte = probe[index];
-    if (byte === 0x22) {
+    if (quote && byte === 0x22) {
       rowHasContent = true;
       if (inQuotes && probe[index + 1] === 0x22) {
         ++index;
@@ -499,7 +518,7 @@ export function scanDelimiterCounts(probe: Uint8Array, sourceEnded: boolean): nu
       continue;
     }
 
-    if (!inQuotes && (byte === 0x0a || byte === 0x0d)) {
+    if (!inQuotes && (byte === 0x0a || (recordDelimiter === undefined && byte === 0x0d))) {
       if (rowHasContent) {
         rows.push(counts);
         if (rows.length === MAX_DELIMITER_PROBE_ROWS) {

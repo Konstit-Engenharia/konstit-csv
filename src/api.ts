@@ -1,4 +1,7 @@
-import type { NativeCsvBatch } from './batches.js';
+import type {
+  NativeCsvBatch,
+  NativeCsvRawRecordBatch,
+} from './batches.js';
 import {
   prepareCsvFileInput,
   rejectAutoDelimiterSharding,
@@ -32,6 +35,7 @@ import {
   countFileChunks,
   createPreparedParser,
   parseFileChunks,
+  parseRawRecordChunks,
   validateRowSelection,
 } from './parser.js';
 import { rejectStrictSchemaUnsupported } from './strict-schema.js';
@@ -46,6 +50,7 @@ import type {
   CsvParseOptions,
   CsvParserOptions,
   CsvProjectedRow,
+  CsvRawRecordBatchesOptions,
   CsvRow,
   CsvRowsOptions,
   CsvShard,
@@ -126,7 +131,7 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
   await using input = await prepareCsvFileInput(path, options, 'read-ahead', probeFormat);
   const reusableRows: CsvRow[] | undefined = options.reuseArrays === true ? [] : undefined;
   if (
-    options.strict !== true && input.parserEncoding === 'latin1'
+    options.strict !== true && input.parserEncoding === 'latin1' && options.quote !== false && options.recordDelimiter === undefined
     && (!options.transform?.length || canUseFilteredLatin1Cleanup(columns, filters, options.transform))
   ) {
     validateRowSelection(options);
@@ -146,14 +151,15 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
   }
 }
 
+type BatchOptions = CsvBatchesOptions | CsvRawRecordBatchesOptions;
+
 /**
  * Stream native batches with explicit lifetime control.
  *
- * Use this when you want low-allocation access to row views, byte ranges, and native-backed
- * column data. Every yielded batch owns native memory and must be closed after use; prefer
- * `for await (using batch of csv.batches(...))` to close each batch at the end of the iteration.
- * Options are captured at invocation time. Projection selects the stored fields in the requested
- * order. Accessors use output positions and filters use physical input indexes.
+ * Field batches provide low-allocation access to row views, byte ranges, and column data.
+ * With `output: 'raw-records'`, batches expose original decompressed bytes for the literal LF
+ * dialect. Filters use physical input indexes. Options are captured at invocation time.
+ * Use `for await (using batch of csv.batches(...))` to close each batch at the end of its iteration.
  *
  * @param path - Path to the CSV file.
  * @param options - File and parser options.
@@ -161,14 +167,35 @@ export async function* iterateRows<TColumns extends CsvColumns | undefined>(
  * @throws {Error} During iteration when the file or validation fails, or when strict validation
  * is combined with projection or filtering.
  */
-export function batches(path: string, options: CsvBatchesOptions = {}): AsyncGenerator<NativeCsvBatch, void> {
+export function batches(path: string, options: CsvRawRecordBatchesOptions): AsyncGenerator<NativeCsvRawRecordBatch, void>;
+export function batches(path: string, options?: CsvBatchesOptions): AsyncGenerator<NativeCsvBatch, void>;
+export function batches(path: string, options: BatchOptions): AsyncGenerator<NativeCsvBatch | NativeCsvRawRecordBatch, void>;
+export function batches(path: string, options: BatchOptions = {}): AsyncGenerator<NativeCsvBatch | NativeCsvRawRecordBatch, void> {
   return iterateBatches(path, snapshotCsvOptions(options));
 }
 
-async function* iterateBatches(path: string, options: CsvBatchesOptions): AsyncGenerator<NativeCsvBatch, void> {
+async function* iterateBatches(path: string, options: BatchOptions): AsyncGenerator<NativeCsvBatch | NativeCsvRawRecordBatch, void> {
   rejectFilteredStrictSchema(options);
   const filters = toNativeFilters(options.where);
-  const columns = options.columns;
+  const { columns, encoding: requestedEncoding, strict, transform } = options;
+  if (options.output === 'raw-records') {
+    if (options.quote !== false || options.recordDelimiter !== '\n') {
+      throw new TypeError('raw-records output requires quote: false and recordDelimiter: LF');
+    }
+    if (columns !== undefined || transform !== undefined || strict === true) {
+      throw new TypeError('raw-records output does not support projection, transforms, or strict CSV validation');
+    }
+    const encoding = requestedEncoding === 'auto' ? undefined : resolveInputEncoding(requestedEncoding);
+    if (typeof encoding !== 'string') {
+      throw new TypeError('raw-records output requires a native UTF-8 or Latin-1 encoding');
+    }
+    await using input = await prepareCsvFileInput(path, { ...options, encoding });
+    yield* parseRawRecordChunks(input, toParserOptions(options, input.parserEncoding, input.delimiter), filters);
+    return;
+  }
+  if (options.output !== undefined && options.output !== 'fields') {
+    throw new TypeError('output must be fields or raw-records');
+  }
   if (options.strict === true && columns !== undefined) {
     throw new Error('strict CSV validation is not supported for projected batches; use csv.rows() for strict projection');
   }
@@ -240,6 +267,9 @@ function findCsvSafeShards(path: string, shardCount: number, suppliedOptions: Cs
 function shardingDelimiter(options: CsvShardingOptions, operation: string): string {
   rejectCompressedSharding(options, operation);
   rejectAutoDelimiterSharding(options, operation);
+  if (('quote' in options && options.quote === false) || ('recordDelimiter' in options && options.recordDelimiter !== undefined)) {
+    throw new Error(`${operation} requires the default quote and record delimiter settings`);
+  }
   if (typeof resolveInputEncoding(options.encoding) !== 'string') {
     throw new Error(`${operation} requires a native UTF-8 or Latin-1 encoding because offsets refer to the source file`);
   }
@@ -318,11 +348,13 @@ export const csv = {
   rows,
   /**
    * Stream disposable native-backed batches.
-   * Columns select stored fields in output order. Filters address the input record.
+   * By default, columns select stored fields in output order. Use `output: 'raw-records'`
+   * to access original decompressed records in the literal LF dialect.
+   * Filters address the input record.
    * Close each yielded batch, or use `for await (using batch of ...)`.
    * @param path - Path to the CSV file.
    * @param options - File and parser options.
-   * @returns An async generator of `NativeCsvBatch` objects.
+   * @returns An async generator of disposable native batches.
    */
   batches,
   /**
@@ -366,6 +398,8 @@ function toParserOptions(
   return {
     delimiter,
     encoding,
+    quote: options.quote,
+    recordDelimiter: options.recordDelimiter,
     strict: options.strict,
     columns: options.columns,
     fixedColumns: options.fixedColumns,
