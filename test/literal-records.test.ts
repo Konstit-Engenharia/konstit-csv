@@ -155,6 +155,27 @@ test('a raw membership filter matches whole present fields, including two-byte b
   }
 });
 
+test('raw batches retain their bytes across later chunks and iterator completion', async () => {
+  const path = join(directory, 'retained.tsv');
+  const rows = ['pt\tbr\tA\n', 'pt\tBR\tB\r\n', 'pt\tBr\tC\n', 'pt\tbR\tD'];
+  const [first, second, third, last,] = rows;
+  await Bun.write(path, `${first}${second}pt\tar\tomit\n${third}${last}`);
+
+  const batches: NativeCsvRawRecordBatch[] = [];
+  try {
+    for await (const batch of csv.batches(path, { ...raw, compression: 'none', chunkSize: 23, where: brazil })) {
+      batches.push(batch);
+    }
+    expect(batches.map((batch) => batch.rowCount)).toEqual([2, 1, 1]);
+    const actual = batches.flatMap((batch) => Array.from({ length: batch.rowCount }, (_, i) => Buffer.from(batch.rowBytes(i)).toString()));
+    expect(actual).toEqual(rows);
+  } finally {
+    for (const batch of batches) {
+      batch.close();
+    }
+  }
+});
+
 test('dialect options are independent and apply across chunk boundaries', () => {
   using noQuotes = new NativeCsvParser({ delimiter: '\t', quote: false, skipRows: 1 });
   expect(noQuotes.write(Buffer.from('a\t"skip\r'))).toEqual([]);

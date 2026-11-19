@@ -107,6 +107,31 @@ struct csv_batch {
   }
 };
 
+struct raw_record_output {
+  csv_batch& batch;
+  std::string_view run;
+
+  void append(std::string_view record, size_t field_count) {
+    // Copy adjacent accepted records together when the run ends.
+    if (!run.empty() && run.data() + run.size() == record.data()) {
+      run = {run.data(), run.size() + record.size()};
+    } else {
+      flush();
+      run = record;
+    }
+    // Raw batches store cumulative physical field counts and one byte boundary per record.
+    batch.row_offsets.push_back(batch.row_offsets.back() + field_count);
+    batch.field_offsets.push_back(batch.field_offsets.back() + record.size());
+  }
+
+  void flush() {
+    if (!run.empty()) {
+      batch.data.append(run);
+      run = {};
+    }
+  }
+};
+
 struct csv_split_offsets_batch {
   std::vector<uint64_t> offsets;
 };
@@ -747,37 +772,7 @@ public:
       set_error("raw records require a prepared literal LF dialect without projection or transforms");
       return nullptr;
     }
-    auto batch = std::make_unique<csv_batch>();
-    const auto* start = reinterpret_cast<const char*>(data);
-    while (len != 0 && !limit_reached()) {
-      const auto* lf = static_cast<const char*>(std::memchr(start, '\n', len));
-      if (lf == nullptr) {
-        raw_record_carry_.append(start, len);
-        break;
-      }
-
-      const size_t length = static_cast<size_t>(lf - start) + 1;
-      if (raw_record_carry_.empty()) {
-        if (!append_raw_record(*batch, std::string_view(start, length), length - 1)) {
-          return nullptr;
-        }
-      } else {
-        raw_record_carry_.append(start, length);
-        if (!append_raw_record(*batch, raw_record_carry_, raw_record_carry_.size() - 1)) {
-          return nullptr;
-        }
-        raw_record_carry_.clear();
-      }
-      start += length;
-      len -= length;
-    }
-    if (final && !limit_reached() && !raw_record_carry_.empty()) {
-      if (!append_raw_record(*batch, raw_record_carry_, raw_record_carry_.size())) {
-        return nullptr;
-      }
-      raw_record_carry_.clear();
-    }
-    return batch.release();
+    return raw_pair_values_ ? write_raw_batch<true>(data, len, final) : write_raw_batch<false>(data, len, final);
   }
 
   csv_batch* write_batch(const uint8_t* data, size_t len, bool final) {
@@ -991,6 +986,46 @@ public:
 private:
   static constexpr size_t max_raw_pair_values = 8;
 
+  template <bool pair_filter> csv_batch* write_raw_batch(const uint8_t* data, size_t len, bool final) {
+    auto batch = std::make_unique<csv_batch>();
+    raw_record_output output{*batch, {}};
+    const auto* start = reinterpret_cast<const char*>(data);
+    while (len != 0 && !limit_reached()) {
+      const auto* lf = static_cast<const char*>(std::memchr(start, '\n', len));
+      if (lf == nullptr) {
+        raw_record_carry_.append(start, len);
+        break;
+      }
+
+      const size_t length = static_cast<size_t>(lf - start) + 1;
+      if (raw_record_carry_.empty()) {
+        if (!append_raw_record<pair_filter>(output, std::string_view(start, length), length - 1)) {
+          return nullptr;
+        }
+      } else {
+        raw_record_carry_.append(start, length);
+        if (!append_raw_record<pair_filter>(output, raw_record_carry_, raw_record_carry_.size() - 1)) {
+          return nullptr;
+        }
+        // Copy the carried record before reusing its storage.
+        output.flush();
+        raw_record_carry_.clear();
+      }
+      start += length;
+      len -= length;
+    }
+    if (final && !limit_reached() && !raw_record_carry_.empty()) {
+      output.flush();
+      if (!append_raw_record<pair_filter>(output, raw_record_carry_, raw_record_carry_.size())) {
+        return nullptr;
+      }
+      output.flush();
+      raw_record_carry_.clear();
+    }
+    output.flush();
+    return batch.release();
+  }
+
   void prepare_raw_pair_filter() {
     raw_pair_values_.reset();
     if (quotes_ || !lf_only_ || encoding_ != csv_encoding::utf8 || fixed_columns_ != 0 || filters_.size() != 1) {
@@ -1033,7 +1068,7 @@ private:
   }
 
   // One predicate can decide a row without updating or clearing Boolean program state.
-  size_t matching_raw_field_count(const char* field, const char* end) {
+  template <bool pair_filter> size_t matching_raw_field_count(const char* field, const char* end) {
     const size_t column = filters_.front().column;
     for (size_t i = 0; i < column; ++i) {
       const auto* separator =
@@ -1044,7 +1079,7 @@ private:
       field = separator + 1;
     }
     const char* separator;
-    if (raw_pair_values_) {
+    if constexpr (pair_filter) {
       const size_t remaining = static_cast<size_t>(end - field);
       constexpr size_t width = sizeof(uint16_t);
       if (remaining < width || (remaining > width && field[width] != delimiter_) || !matches_raw_pair(field)) {
@@ -1066,27 +1101,25 @@ private:
     return field_count;
   }
 
-  void emit_raw_record(csv_batch& batch, std::string_view record, size_t field_count) {
-    batch.data.append(record);
-    // Raw batches store cumulative physical field counts and one byte boundary per record.
-    batch.row_offsets.push_back(batch.row_offsets.back() + field_count);
-    batch.field_offsets.push_back(batch.data.size());
+  void emit_raw_record(raw_record_output& output, std::string_view record, size_t field_count) {
+    output.append(record, field_count);
     record_emitted_row();
   }
 
-  bool append_raw_record(csv_batch& batch, std::string_view record, size_t payload_length) {
+  template <bool pair_filter>
+  bool append_raw_record(raw_record_output& output, std::string_view record, size_t payload_length) {
     const bool skipping = rows_to_skip_ != 0;
-    if (skipping && fixed_columns_ == 0) {
+    if (skipping && (pair_filter || fixed_columns_ == 0)) {
       --rows_to_skip_;
       return true;
     }
 
     const char* field = record.data();
     const char* const end = field + payload_length;
-    if (fixed_columns_ == 0 && filters_.size() == 1) {
-      const size_t field_count = matching_raw_field_count(field, end);
+    if (pair_filter || (fixed_columns_ == 0 && filters_.size() == 1)) {
+      const size_t field_count = matching_raw_field_count<pair_filter>(field, end);
       if (field_count != 0) {
-        emit_raw_record(batch, record, field_count);
+        emit_raw_record(output, record, field_count);
       }
       return true;
     }
@@ -1111,7 +1144,7 @@ private:
     if (skipping) {
       --rows_to_skip_;
     } else if (row_matches_filters()) {
-      emit_raw_record(batch, record, current_column_);
+      emit_raw_record(output, record, current_column_);
     }
     reset_row_state();
     return true;
